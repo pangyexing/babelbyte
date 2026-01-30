@@ -3,10 +3,15 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from config.settings import get_settings
 from src.processors.base import BaseAIProcessor, MockAIProcessor, ProcessingResult
+from src.processors.rule_classifier import (
+    RuleClassifier,
+    should_skip_ai_processing,
+    create_skip_result,
+)
 from src.storage.database import SyncDatabase
 from src.storage.models import ContentItem, DigestItem
 
@@ -77,6 +82,7 @@ class DigestProcessor:
         use_mock: bool = False,
     ):
         self.ai = ai_processor or get_ai_processor(provider=provider, use_mock=use_mock)
+        self.rule_classifier = RuleClassifier()
 
     def process_item(self, item: ContentItem) -> ProcessingResult:
         """
@@ -124,16 +130,31 @@ class DigestGenerator:
         self.db = db
         self.processor = processor or DigestProcessor(provider=provider, use_mock=use_mock)
 
-    def process_unprocessed_items(self, limit: int = 50) -> int:
+    def process_unprocessed_items(
+        self,
+        limit: int = 50,
+        batch_size: int = 3,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> int:
         """
-        Process all unprocessed items in the database.
+        Process all unprocessed items in the database using batch processing.
+
+        Optimizations applied:
+        1. Pre-filter low-value content (skip AI for link-posts, very short content)
+        2. Rule-based classification for known domains/patterns
+        3. Dynamic batch sizing (larger batches for short content)
 
         Args:
             limit: Maximum number of items to process.
+            batch_size: Base batch size for normal content (default 3).
+            progress_callback: Optional callback for progress updates.
+                Signature: (phase: str, current: int, total: int) -> None
 
         Returns:
             Number of items processed.
         """
+        import time
+
         if not self.db:
             raise ValueError("Database not configured")
 
@@ -142,22 +163,208 @@ class DigestGenerator:
             logger.info("No unprocessed items found")
             return 0
 
+        total_start = time.time()
         processed_count = 0
-        for item in items:
-            result = self.processor.process_item(item)
+        skipped_count = 0
+        rule_classified_count = 0
+        ai_processed_count = 0
 
-            if result.success:
-                item.summary = result.summary
-                item.category = result.category
-                item.importance_score = result.importance_score
+        # Items that need AI processing
+        items_for_ai: list[ContentItem] = []
+
+        # Phase 1: Pre-filter and rule-based classification
+        logger.info(f"Phase 1: Pre-filtering {len(items)} items...")
+        phase1_total = len(items)
+        for idx, item in enumerate(items):
+            # Update progress for phase 1
+            if progress_callback:
+                progress_callback("Pre-filtering", idx + 1, phase1_total)
+
+            # Check if content should be skipped entirely
+            should_skip, skip_reason = should_skip_ai_processing(item)
+            if should_skip:
+                summary, category, importance = create_skip_result(item, skip_reason)
+                item.summary = summary
+                item.category = category
+                item.importance_score = importance
                 item.processed_at = datetime.now()
                 self.db.update_content_item(item)
+                skipped_count += 1
                 processed_count += 1
-                logger.info(f"Processed: {item.title[:50]}... -> {result.category}")
-            else:
-                logger.warning(f"Failed to process: {item.title[:50]}... - {result.error_message}")
+                logger.debug(f"Skipped: {item.title[:40]}... ({skip_reason})")
+                continue
+
+            # Try rule-based classification
+            rule_result = self.processor.rule_classifier.classify(item)
+            if rule_result:
+                # Generate a simple summary for rule-classified items
+                item.summary = f"{item.title[:50]}" if len(item.title) > 50 else item.title
+                item.category = rule_result.category
+                item.importance_score = rule_result.importance_score
+                item.processed_at = datetime.now()
+                self.db.update_content_item(item)
+                rule_classified_count += 1
+                processed_count += 1
+                logger.debug(
+                    f"Rule classified: {item.title[:40]}... -> {rule_result.category} "
+                    f"({rule_result.reason})"
+                )
+                continue
+
+            # Needs AI processing
+            items_for_ai.append(item)
+
+        prefilter_count = skipped_count + rule_classified_count
+        logger.info(
+            f"Phase 1 done: {prefilter_count} items handled without AI "
+            f"(skipped={skipped_count}, rules={rule_classified_count}), "
+            f"{len(items_for_ai)} need AI processing"
+        )
+
+        # Phase 2: AI processing with dynamic batch sizing
+        if items_for_ai:
+            logger.info(f"Phase 2: AI processing {len(items_for_ai)} items...")
+            ai_processed_count = self._process_items_with_ai(
+                items_for_ai, batch_size, progress_callback
+            )
+            processed_count += ai_processed_count
+        else:
+            logger.info("Phase 2: No items need AI processing!")
+
+        total_elapsed = time.time() - total_start
+        tokens_saved_pct = (prefilter_count / len(items) * 100) if items else 0
+        logger.info(
+            f"Processing complete in {total_elapsed:.1f}s: {processed_count}/{len(items)} total "
+            f"| Token savings: {tokens_saved_pct:.0f}% ({prefilter_count} items skipped AI)"
+        )
+        return processed_count
+
+    def _process_items_with_ai(
+        self,
+        items: list[ContentItem],
+        base_batch_size: int = 3,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> int:
+        """
+        Process items with AI using dynamic batch sizing.
+
+        Short content (<500 chars) uses larger batches (8 items).
+        Long content uses smaller batches (base_batch_size, default 3).
+
+        Args:
+            items: Items to process with AI.
+            base_batch_size: Batch size for long content.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Number of items successfully processed.
+        """
+        # Separate items by content length
+        short_items = [i for i in items if len(i.content or "") < 500]
+        long_items = [i for i in items if len(i.content or "") >= 500]
+
+        processed_count = 0
+        total_items = len(items)
+        items_done = 0
+
+        # Process short items with larger batches
+        if short_items:
+            short_batch_size = 8  # Larger batch for short content
+            short_processed, short_done = self._process_batch_group(
+                short_items, short_batch_size, "short", progress_callback, items_done, total_items
+            )
+            processed_count += short_processed
+            items_done += short_done
+
+        # Process long items with smaller batches
+        if long_items:
+            long_processed, _ = self._process_batch_group(
+                long_items, base_batch_size, "long", progress_callback, items_done, total_items
+            )
+            processed_count += long_processed
 
         return processed_count
+
+    def _process_batch_group(
+        self,
+        items: list[ContentItem],
+        batch_size: int,
+        group_name: str,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        offset: int = 0,
+        total: int = 0,
+    ) -> tuple[int, int]:
+        """Process a group of items in batches.
+
+        Args:
+            items: Items to process.
+            batch_size: Number of items per batch.
+            group_name: Name for logging (e.g., "short", "long").
+            progress_callback: Optional callback for progress updates.
+            offset: Starting offset for progress tracking.
+            total: Total items for progress tracking.
+
+        Returns:
+            Tuple of (processed_count, items_processed_in_group).
+        """
+        import time
+
+        processed_count = 0
+        items_processed = 0
+        total_batches = (len(items) + batch_size - 1) // batch_size
+        group_start = time.time()
+        actual_total = total if total > 0 else len(items)
+
+        for i in range(0, len(items), batch_size):
+            batch_items = items[i : i + batch_size]
+
+            # Prepare batch data: (index, title, content)
+            batch_data = [(idx, item.title, item.content) for idx, item in enumerate(batch_items)]
+
+            # Process batch with timing
+            batch_num = i // batch_size + 1
+            batch_start = time.time()
+            logger.info(
+                f"[{batch_num}/{total_batches}] Processing {group_name} content "
+                f"({len(batch_items)} items)..."
+            )
+
+            results = self.processor.ai.process_batch(batch_data)
+            batch_elapsed = time.time() - batch_start
+
+            # Update items with results
+            batch_success = 0
+            for item, result in zip(batch_items, results):
+                if result.success:
+                    item.summary = result.summary
+                    item.category = result.category
+                    item.importance_score = result.importance_score
+                    item.processed_at = datetime.now()
+                    self.db.update_content_item(item)
+                    processed_count += 1
+                    batch_success += 1
+                else:
+                    logger.warning(f"Failed: {item.title[:40]}...")
+
+            items_processed += len(batch_items)
+
+            # Update progress after each batch
+            if progress_callback:
+                progress_callback("AI processing", offset + items_processed, actual_total)
+
+            logger.info(
+                f"[{batch_num}/{total_batches}] Done: {batch_success}/{len(batch_items)} "
+                f"in {batch_elapsed:.1f}s"
+            )
+
+        total_elapsed = time.time() - group_start
+        if total_batches > 0:
+            logger.info(
+                f"Finished {group_name} content: {processed_count}/{len(items)} items "
+                f"in {total_elapsed:.1f}s"
+            )
+
+        return processed_count, items_processed
 
     def generate_digest(
         self,

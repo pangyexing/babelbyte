@@ -6,6 +6,7 @@ from datetime import datetime
 import click
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
 from config.settings import get_settings, reload_settings
@@ -215,9 +216,26 @@ def digest(ctx, dry_run, min_importance, max_items, provider):
     try:
         generator = DigestGenerator(db=db, provider=provider, use_mock=mock)
 
-        # First process unprocessed items
+        # First process unprocessed items with progress bar
         console.print("[bold]Processing content with AI...[/bold]")
-        processed = generator.process_unprocessed_items(limit=100)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Initializing...", total=None)
+
+            def update_progress(phase: str, current: int, total: int):
+                progress.update(task, description=phase, completed=current, total=total)
+
+            processed = generator.process_unprocessed_items(
+                limit=100, progress_callback=update_progress
+            )
+
         console.print(f"[dim]Processed {processed} items[/dim]")
 
         # Generate digest
