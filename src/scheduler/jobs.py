@@ -80,10 +80,20 @@ class JobRunner:
                 if result.success:
                     # Store new items
                     new_count = 0
+                    skipped_url = 0
                     for item in result.items:
-                        if not db.content_exists(item.source_type, item.external_id):
-                            db.add_content_item(item)
-                            new_count += 1
+                        # Skip if external_id already exists
+                        if db.content_exists(item.source_type, item.external_id):
+                            continue
+                        # Skip if URL already exists (cross-source deduplication)
+                        if db.url_exists(item.url):
+                            skipped_url += 1
+                            logger.debug(f"Skipping duplicate URL: {item.url[:60]}...")
+                            continue
+                        db.add_content_item(item)
+                        new_count += 1
+                    if skipped_url > 0:
+                        logger.info(f"Skipped {skipped_url} items with duplicate URLs")
 
                     # Update subscription's last fetched time
                     sub.last_fetched_at = datetime.now()

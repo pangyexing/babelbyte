@@ -335,6 +335,43 @@ class Database:
             )
             return await cursor.fetchone() is not None
 
+    async def url_exists(self, url: str) -> bool:
+        """Check if content with this URL already exists (for cross-source deduplication)."""
+        if not url:
+            return False
+        # Normalize URL: strip tracking params, trailing slashes
+        normalized_url = self._normalize_url(url)
+        if not normalized_url:
+            return False
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT 1 FROM content_items WHERE url = ? OR url = ? LIMIT 1",
+                (url, normalized_url),
+            )
+            return await cursor.fetchone() is not None
+
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL for deduplication."""
+        if not url:
+            return ""
+        # Remove common tracking parameters
+        from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+        try:
+            parsed = urlparse(url)
+            # Skip normalization for reddit/twitter URLs (use external_id instead)
+            if any(domain in parsed.netloc for domain in ["reddit.com", "twitter.com", "x.com"]):
+                return ""
+            # Remove tracking params
+            tracking_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "ref", "source"}
+            query_params = parse_qs(parsed.query)
+            filtered_params = {k: v for k, v in query_params.items() if k.lower() not in tracking_params}
+            clean_query = urlencode(filtered_params, doseq=True)
+            # Rebuild URL without tracking params and trailing slash
+            clean_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), parsed.params, clean_query, ""))
+            return clean_url
+        except Exception:
+            return url
+
     def _row_to_content_item(self, row: aiosqlite.Row) -> ContentItem:
         """Convert a database row to a ContentItem object."""
         return ContentItem(
@@ -496,6 +533,9 @@ class SyncDatabase:
 
     def content_exists(self, source_type: SourceType, external_id: str) -> bool:
         return self._run(self._async_db.content_exists(source_type, external_id))
+
+    def url_exists(self, url: str) -> bool:
+        return self._run(self._async_db.url_exists(url))
 
     def get_or_create_profile(self, email: str) -> UserProfile:
         return self._run(self._async_db.get_or_create_profile(email))
