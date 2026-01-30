@@ -6,14 +6,21 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from config.settings import get_settings
-from src.processors.base import BaseAIProcessor, MockAIProcessor, ProcessingResult
+from src.processors.base import (
+    ActionResult,
+    BaseAIProcessor,
+    ImpactResult,
+    KeyPointResult,
+    MockAIProcessor,
+    ProcessingResult,
+)
 from src.processors.rule_classifier import (
     RuleClassifier,
     create_skip_result,
     should_skip_ai_processing,
 )
 from src.storage.database import SyncDatabase
-from src.storage.models import ContentItem, DigestItem
+from src.storage.models import ActionItem, ActionStatus, ContentItem, DigestItem
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +352,13 @@ class DigestGenerator:
                     item.category = result.category
                     item.importance_score = result.importance_score
                     item.processed_at = datetime.now()
+
+                    # Save enhanced fields (Phase 1)
+                    item.one_liner = result.one_liner
+                    item.key_points = self._serialize_key_points(result.key_points)
+                    item.impact_assessment = self._serialize_impact(result.impact_assessment)
+                    item.actionable_items = self._serialize_actions(result.actionable_items)
+
                     self.db.update_content_item(item)
                     processed_count += 1
                     batch_success += 1
@@ -370,6 +384,43 @@ class DigestGenerator:
             )
 
         return processed_count, items_processed
+
+    def _serialize_key_points(self, key_points: list[KeyPointResult]) -> Optional[str]:
+        """Serialize key points to JSON string."""
+        import json
+
+        if not key_points:
+            return None
+        return json.dumps(
+            [{"type": kp.type, "value": kp.value, "impact": kp.impact} for kp in key_points],
+            ensure_ascii=False,
+        )
+
+    def _serialize_impact(self, impact: Optional[ImpactResult]) -> Optional[str]:
+        """Serialize impact assessment to JSON string."""
+        import json
+
+        if not impact:
+            return None
+        return json.dumps(
+            {
+                "short_term": impact.short_term,
+                "long_term": impact.long_term,
+                "certainty": impact.certainty,
+            },
+            ensure_ascii=False,
+        )
+
+    def _serialize_actions(self, actions: list[ActionResult]) -> Optional[str]:
+        """Serialize actionable items to JSON string."""
+        import json
+
+        if not actions:
+            return None
+        return json.dumps(
+            [{"type": a.type, "description": a.description, "priority": a.priority} for a in actions],
+            ensure_ascii=False,
+        )
 
     def generate_digest(
         self,
@@ -428,6 +479,52 @@ class DigestGenerator:
         if item_ids:
             self.db.mark_items_delivered(item_ids)
             logger.info(f"Marked {len(item_ids)} items as delivered")
+
+    def extract_action_items(self, digest: DigestResult) -> int:
+        """
+        Extract actionable items from digest and save to database.
+
+        Phase 5: Automatically creates action items from high-importance content
+        that has actionable_items in its enhanced data.
+
+        Args:
+            digest: The digest result containing processed items
+
+        Returns:
+            Number of action items created
+        """
+        if not self.db:
+            raise ValueError("Database not configured")
+
+        created = 0
+        for digest_item in digest.items:
+            content = digest_item.content_item
+            enhanced = content.get_enhanced_data()
+
+            if not enhanced or not enhanced.actionable_items:
+                continue
+
+            # Only extract actions from high-importance items
+            if content.importance_score and content.importance_score < 7:
+                continue
+
+            for action_data in enhanced.actionable_items:
+                action = ActionItem(
+                    content_item_id=content.id,
+                    type=action_data.type,
+                    description=action_data.description,
+                    priority=action_data.priority,
+                    status=ActionStatus.PENDING,
+                    created_at=datetime.now(),
+                )
+                self.db.create_action_item(action)
+                created += 1
+                logger.debug(f"Created action item: [{action.priority}] {action.type}: {action.description[:30]}...")
+
+        if created:
+            logger.info(f"Extracted {created} action items from digest")
+
+        return created
 
 
 def create_digest_preview(digest: DigestResult) -> str:

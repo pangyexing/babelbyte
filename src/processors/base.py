@@ -3,10 +3,37 @@
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from config.settings import get_settings
+
+
+@dataclass
+class KeyPointResult:
+    """A key point from AI processing."""
+
+    type: str  # 数字/时间/实体/事实
+    value: str
+    impact: str = ""
+
+
+@dataclass
+class ImpactResult:
+    """Impact assessment from AI processing."""
+
+    short_term: str = ""
+    long_term: str = ""
+    certainty: str = "uncertain"
+
+
+@dataclass
+class ActionResult:
+    """Actionable item from AI processing."""
+
+    type: str  # 跟进/验证/决策/触发器
+    description: str
+    priority: str = "中"
 
 
 @dataclass
@@ -20,23 +47,67 @@ class ProcessingResult:
     error_message: Optional[str] = None
     raw_response: Optional[str] = None
 
+    # Enhanced fields (Phase 1)
+    one_liner: str = ""
+    key_points: list[KeyPointResult] = field(default_factory=list)
+    impact_assessment: Optional[ImpactResult] = None
+    actionable_items: list[ActionResult] = field(default_factory=list)
+
 
 class BaseAIProcessor(ABC):
     """Abstract base class for AI processors."""
 
-    # Shared prompt template for content processing (Chinese output)
+    # Enhanced prompt template for content processing (Chinese output)
     # fmt: off
-    PROCESS_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
-评分：9-10重大突破，7-8重要更新，5-6一般，1-4低价值
+    PROCESS_PROMPT = """分析内容，返回JSON（仅JSON，无其他文字）：
+{{
+  "summary": "50字中文摘要",
+  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "importance": 1-10,
+  "one_liner": "一句话结论：这条信息对读者意味着什么",
+  "key_points": [
+    {{"type": "数字/时间/实体/事实", "value": "关键值", "impact": "影响说明"}}
+  ],
+  "impact_assessment": {{
+    "short_term": "短期影响",
+    "long_term": "长期影响",
+    "certainty": "certain/uncertain"
+  }},
+  "actionable_items": [
+    {{"type": "跟进/验证/决策/触发器", "description": "具体行动", "priority": "高/中/低"}}
+  ]
+}}
+
+评分标准：9-10重大突破/行业变革，7-8重要更新/值得关注，5-6一般信息，1-4低价值/噪音
+key_points：提取最多3个关键点（数字/时间/实体/事实）
+actionable_items：仅当importance>=7时提取行动项，否则为空数组
 
 标题：{title}
 正文：{content}"""  # noqa: E501
     # fmt: on
 
-    # Batch processing prompt for multiple items
-    BATCH_PROMPT = """批量处理以下{count}条内容，每条返回一行JSON（不要其他内容）：
-{{"id":序号,"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
+    # Simple prompt for low-value or pre-filtered content (uses less tokens)
+    SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
 评分：9-10重大突破，7-8重要更新，5-6一般，1-4低价值
+
+标题：{title}
+正文：{content}"""
+
+    # Batch processing prompt for multiple items
+    BATCH_PROMPT = """批量处理以下{count}条内容，每条返回一行JSON（仅JSON，无其他文字）：
+{{
+  "id": 序号,
+  "summary": "50字中文摘要",
+  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "importance": 1-10,
+  "one_liner": "一句话结论",
+  "key_points": [{{"type": "类型", "value": "值", "impact": "影响"}}],
+  "impact_assessment": {{"short_term": "短期", "long_term": "长期", "certainty": "certain/uncertain"}},
+  "actionable_items": [{{"type": "类型", "description": "描述", "priority": "高/中/低"}}]
+}}
+
+评分：9-10重大突破，7-8重要，5-6一般，1-4低价值
+key_points最多3个，actionable_items仅importance>=7时提取
 
 {items}"""
 
@@ -185,30 +256,74 @@ class BaseAIProcessor(ABC):
                 response = response[json_start:json_end]
 
             data = json.loads(response)
-
-            summary = data.get("summary", "")
-            category = data.get("category", "其他")
-            importance = data.get("importance", 5)
-
-            # Validate importance score
-            if not isinstance(importance, int):
-                try:
-                    importance = int(importance)
-                except (ValueError, TypeError):
-                    importance = 5
-            importance = max(1, min(10, importance))
-
-            return ProcessingResult(
-                summary=summary,
-                category=category,
-                importance_score=importance,
-                success=True,
-                raw_response=response,
-            )
+            return self._extract_processing_result(data, response)
 
         except json.JSONDecodeError:
             # Fallback: try regex extraction for malformed JSON (e.g., unescaped quotes)
             return self._parse_with_regex(original_response)
+
+    def _extract_processing_result(self, data: dict, raw_response: str) -> ProcessingResult:
+        """Extract ProcessingResult from parsed JSON dict with enhanced fields."""
+        summary = data.get("summary", "")
+        category = data.get("category", "其他")
+        importance = data.get("importance", 5)
+
+        # Validate importance score
+        if not isinstance(importance, int):
+            try:
+                importance = int(importance)
+            except (ValueError, TypeError):
+                importance = 5
+        importance = max(1, min(10, importance))
+
+        # Extract enhanced fields
+        one_liner = data.get("one_liner", "")
+
+        # Parse key_points
+        key_points = []
+        raw_key_points = data.get("key_points", [])
+        if isinstance(raw_key_points, list):
+            for kp in raw_key_points:
+                if isinstance(kp, dict):
+                    key_points.append(KeyPointResult(
+                        type=kp.get("type", "事实"),
+                        value=kp.get("value", ""),
+                        impact=kp.get("impact", ""),
+                    ))
+
+        # Parse impact_assessment
+        impact_assessment = None
+        raw_impact = data.get("impact_assessment")
+        if isinstance(raw_impact, dict):
+            impact_assessment = ImpactResult(
+                short_term=raw_impact.get("short_term", ""),
+                long_term=raw_impact.get("long_term", ""),
+                certainty=raw_impact.get("certainty", "uncertain"),
+            )
+
+        # Parse actionable_items
+        actionable_items = []
+        raw_actions = data.get("actionable_items", [])
+        if isinstance(raw_actions, list):
+            for action in raw_actions:
+                if isinstance(action, dict):
+                    actionable_items.append(ActionResult(
+                        type=action.get("type", "跟进"),
+                        description=action.get("description", ""),
+                        priority=action.get("priority", "中"),
+                    ))
+
+        return ProcessingResult(
+            summary=summary,
+            category=category,
+            importance_score=importance,
+            success=True,
+            raw_response=raw_response,
+            one_liner=one_liner,
+            key_points=key_points,
+            impact_assessment=impact_assessment,
+            actionable_items=actionable_items,
+        )
 
     def _parse_with_regex(self, response: str) -> ProcessingResult:
         """Fallback parser using regex for malformed JSON."""
@@ -279,6 +394,16 @@ class MockAIProcessor(BaseAIProcessor):
             category=category,
             importance_score=importance,
             success=True,
+            one_liner=f"关注：{title[:30]}的最新动态",
+            key_points=[
+                KeyPointResult(type="事实", value=title[:20], impact="值得了解"),
+            ],
+            impact_assessment=ImpactResult(
+                short_term="短期内可能产生一定影响",
+                long_term="长期影响待观察",
+                certainty="uncertain",
+            ),
+            actionable_items=[],
         )
 
     def is_available(self) -> bool:

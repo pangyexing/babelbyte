@@ -117,6 +117,80 @@
             margin-bottom: 10px;
             line-height: 1.5;
         }
+        .one-liner {
+            background-color: #e8f4fd;
+            color: #1a5490;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 10px;
+            border-left: 3px solid #4a90d9;
+        }
+        .key-points {
+            margin: 10px 0;
+        }
+        .key-point {
+            display: inline-block;
+            background-color: #f0f0f0;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin: 2px 4px 2px 0;
+        }
+        .key-point .type {
+            color: #666;
+            font-weight: bold;
+        }
+        .key-point .value {
+            color: #333;
+        }
+        .impact-section {
+            background-color: #fff9e6;
+            border: 1px solid #ffeeba;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+        .impact-section .label {
+            font-weight: bold;
+            color: #856404;
+        }
+        .action-items {
+            margin: 10px 0;
+        }
+        .action-item {
+            background-color: #f8f9fa;
+            border-left: 3px solid #28a745;
+            padding: 6px 10px;
+            margin: 4px 0;
+            font-size: 13px;
+        }
+        .action-item.high-priority {
+            border-left-color: #dc3545;
+        }
+        .action-item.medium-priority {
+            border-left-color: #ffc107;
+        }
+        .action-item .priority-badge {
+            display: inline-block;
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 3px;
+            margin-left: 6px;
+        }
+        .priority-high {
+            background-color: #dc3545;
+            color: white;
+        }
+        .priority-medium {
+            background-color: #ffc107;
+            color: #333;
+        }
+        .priority-low {
+            background-color: #6c757d;
+            color: white;
+        }
         .item-meta {
             font-size: 12px;
             color: #888;
@@ -161,12 +235,20 @@
             padding: 40px;
             color: #666;
         }
+        .expand-section {
+            margin-top: 8px;
+        }
+        .detail-toggle {
+            color: #4a90d9;
+            font-size: 12px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🌐 BabelByte 每日摘要</h1>
+            <h1>BabelByte 每日摘要</h1>
             <div class="date">{{ date }}</div>
         </div>
 
@@ -179,7 +261,7 @@
             {% for category, category_items in items_by_category.items() %}
             <div class="category-section">
                 <div class="category-header">
-                    📁 {{ category }} ({{ category_items|length }}条)
+                    {{ category }} ({{ category_items|length }}条)
                 </div>
                 <div class="category-content">
                     {% for item in category_items %}
@@ -189,18 +271,65 @@
                                 {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
                             </a>
                             <span class="importance {% if item.importance_score >= 8 %}high{% elif item.importance_score >= 5 %}medium{% else %}low{% endif %}">
-                                ⭐ {{ item.importance_score }}/10
+                                {{ item.importance_score }}/10
                             </span>
                         </div>
+
+                        {# One-liner conclusion (Phase 1) #}
+                        {% if item.content_item.one_liner %}
+                        <div class="one-liner">
+                            {{ item.content_item.one_liner }}
+                        </div>
+                        {% endif %}
+
                         <div class="item-summary">
                             {{ item.summary }}
                         </div>
+
+                        {# Key points (Phase 1) #}
+                        {% if item.enhanced_data and item.enhanced_data.key_points %}
+                        <div class="key-points">
+                            {% for kp in item.enhanced_data.key_points %}
+                            <span class="key-point">
+                                <span class="type">{{ kp.type }}:</span>
+                                <span class="value">{{ kp.value }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        {# Impact assessment (Phase 1) - only for high importance items #}
+                        {% if item.importance_score >= 7 and item.enhanced_data and item.enhanced_data.impact_assessment %}
+                        <div class="impact-section">
+                            {% if item.enhanced_data.impact_assessment.short_term %}
+                            <div><span class="label">短期影响:</span> {{ item.enhanced_data.impact_assessment.short_term }}</div>
+                            {% endif %}
+                            {% if item.enhanced_data.impact_assessment.long_term %}
+                            <div><span class="label">长期影响:</span> {{ item.enhanced_data.impact_assessment.long_term }}</div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {# Actionable items (Phase 1) #}
+                        {% if item.enhanced_data and item.enhanced_data.actionable_items %}
+                        <div class="action-items">
+                            {% for action in item.enhanced_data.actionable_items %}
+                            <div class="action-item {% if action.priority == '高' %}high-priority{% elif action.priority == '中' %}medium-priority{% endif %}">
+                                <strong>{{ action.type }}:</strong> {{ action.description }}
+                                <span class="priority-badge priority-{% if action.priority == '高' %}high{% elif action.priority == '中' %}medium{% else %}low{% endif %}">
+                                    {{ action.priority }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
                         <div class="item-meta">
                             <span class="source-badge source-{{ item.content_item.source_type.value }}">
                                 {{ item.source_display }}
                             </span>
                             作者: {{ item.content_item.author }} |
-                            <a href="{{ item.content_item.url }}" target="_blank">查看原文 →</a>
+                            <a href="{{ item.content_item.url }}" target="_blank">查看原文</a>
                         </div>
                     </div>
                     {% endfor %}
@@ -209,7 +338,7 @@
             {% endfor %}
         {% else %}
             <div class="no-content">
-                <p>📭 今日暂无新内容</p>
+                <p>今日暂无新内容</p>
                 <p>请检查您的订阅设置或稍后再试</p>
             </div>
         {% endif %}

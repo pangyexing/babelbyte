@@ -169,7 +169,7 @@ class ClaudeCLI(BaseAIProcessor):
         return final_results
 
     def _extract_result_from_dict(self, data: dict) -> Optional[ProcessingResult]:
-        """Extract ProcessingResult from a parsed JSON dict."""
+        """Extract ProcessingResult from a parsed JSON dict with enhanced fields."""
         if not isinstance(data, dict):
             return None
 
@@ -188,13 +188,8 @@ class ClaudeCLI(BaseAIProcessor):
                 importance = 5
         importance = max(1, min(10, importance))
 
-        return ProcessingResult(
-            summary=summary,
-            category=category,
-            importance_score=importance,
-            success=True,
-            raw_response=json.dumps(data, ensure_ascii=False),
-        )
+        # Use parent class method to extract enhanced fields
+        return self._extract_processing_result(data, json.dumps(data, ensure_ascii=False))
 
     def _find_json_objects(self, text: str) -> list[str]:
         """Find JSON objects in text by matching balanced braces."""

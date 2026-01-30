@@ -21,6 +21,53 @@ class SubscriptionType(Enum):
     TWITTER_USER = "twitter_user"
 
 
+class ItemState(Enum):
+    """Content item state for knowledge base."""
+
+    UNREAD = "unread"
+    READ = "read"
+    SAVED = "saved"
+    ARCHIVED = "archived"
+    FLAGGED = "flagged"
+
+
+@dataclass
+class KeyPoint:
+    """A key point extracted from content."""
+
+    type: str  # 数字/时间/实体/事实
+    value: str
+    impact: str = ""
+
+
+@dataclass
+class ImpactAssessment:
+    """Impact assessment for a content item."""
+
+    short_term: str = ""
+    long_term: str = ""
+    certainty: str = "uncertain"  # certain/uncertain
+
+
+@dataclass
+class ActionableItem:
+    """An actionable item extracted from content."""
+
+    type: str  # 跟进/验证/决策/触发器
+    description: str
+    priority: str = "中"  # 高/中/低
+
+
+@dataclass
+class EnhancedProcessingData:
+    """Enhanced AI processing data for Phase 1."""
+
+    one_liner: str = ""
+    key_points: list[KeyPoint] = field(default_factory=list)
+    impact_assessment: Optional[ImpactAssessment] = None
+    actionable_items: list[ActionableItem] = field(default_factory=list)
+
+
 @dataclass
 class Subscription:
     """A subscription to a content source."""
@@ -70,15 +117,52 @@ class ContentItem:
     published_at: datetime = field(default_factory=datetime.now)
     fetched_at: datetime = field(default_factory=datetime.now)
 
-    # AI-processed fields
+    # AI-processed fields (basic)
     summary: Optional[str] = None
     category: Optional[str] = None
     importance_score: Optional[int] = None  # 1-10
     processed_at: Optional[datetime] = None
 
+    # AI-processed fields (enhanced - Phase 1)
+    one_liner: Optional[str] = None  # One sentence conclusion
+    key_points: Optional[str] = None  # JSON: list of KeyPoint
+    impact_assessment: Optional[str] = None  # JSON: ImpactAssessment
+    actionable_items: Optional[str] = None  # JSON: list of ActionableItem
+
+    # State management (Phase 4)
+    state: ItemState = ItemState.UNREAD
+
     # Delivery tracking
     delivered: bool = False
     delivered_at: Optional[datetime] = None
+
+    def get_enhanced_data(self) -> Optional[EnhancedProcessingData]:
+        """Parse enhanced processing data from JSON fields."""
+        import json
+
+        try:
+            key_points = []
+            if self.key_points:
+                for kp in json.loads(self.key_points):
+                    key_points.append(KeyPoint(**kp))
+
+            impact = None
+            if self.impact_assessment:
+                impact = ImpactAssessment(**json.loads(self.impact_assessment))
+
+            actionables = []
+            if self.actionable_items:
+                for ai in json.loads(self.actionable_items):
+                    actionables.append(ActionableItem(**ai))
+
+            return EnhancedProcessingData(
+                one_liner=self.one_liner or "",
+                key_points=key_points,
+                impact_assessment=impact,
+                actionable_items=actionables,
+            )
+        except (json.JSONDecodeError, TypeError):
+            return None
 
 
 @dataclass
@@ -110,3 +194,133 @@ class DigestItem:
         if self.content_item.source_type == SourceType.REDDIT:
             return "Reddit"
         return "Twitter"
+
+    @property
+    def enhanced_data(self) -> Optional[EnhancedProcessingData]:
+        """Get enhanced processing data."""
+        return self.content_item.get_enhanced_data()
+
+
+# ============================================
+# Phase 2: Event Stream Models
+# ============================================
+
+
+@dataclass
+class EventCluster:
+    """A cluster of related content items about the same event."""
+
+    id: Optional[int] = None
+    event_title: str = ""
+    category: str = ""
+    first_seen_at: datetime = field(default_factory=datetime.now)
+    last_updated_at: datetime = field(default_factory=datetime.now)
+    article_count: int = 0
+
+
+@dataclass
+class EventMember:
+    """Association between an event cluster and a content item."""
+
+    event_cluster_id: int = 0
+    content_item_id: int = 0
+    similarity_score: float = 0.0
+    detection_method: str = "rule"  # 'rule' or 'ai'
+
+
+@dataclass
+class EventTimeline:
+    """Timeline entry for an event cluster."""
+
+    event_cluster_id: int = 0
+    entry_date: str = ""  # YYYY-MM-DD
+    summary: str = ""
+    consensus_level: str = "high"  # 'high' or 'conflicted'
+
+
+# ============================================
+# Phase 3: Topic Radar Models
+# ============================================
+
+
+@dataclass
+class Topic:
+    """A topic for content categorization."""
+
+    id: Optional[int] = None
+    name: str = ""
+    description: str = ""
+    keywords: Optional[str] = None  # JSON: list of keywords
+    created_at: datetime = field(default_factory=datetime.now)
+
+    def get_keywords(self) -> list[str]:
+        """Parse keywords from JSON."""
+        import json
+
+        if self.keywords:
+            try:
+                return json.loads(self.keywords)
+            except json.JSONDecodeError:
+                return []
+        return []
+
+
+@dataclass
+class ContentTopic:
+    """Association between content and topic."""
+
+    content_id: int = 0
+    topic_id: int = 0
+    relevance: float = 0.0  # 0-1
+
+
+@dataclass
+class TopicSnapshot:
+    """Snapshot of a topic at a point in time."""
+
+    id: Optional[int] = None
+    topic_id: int = 0
+    snapshot_date: str = ""  # YYYY-MM-DD
+    summary: str = ""
+    key_entities: Optional[str] = None  # JSON
+    metrics: Optional[str] = None  # JSON
+    trend: str = "stable"  # 'up' / 'down' / 'stable'
+
+
+# ============================================
+# Phase 5: Action List Models
+# ============================================
+
+
+class ActionStatus(Enum):
+    """Status of an action item."""
+
+    PENDING = "pending"
+    DONE = "done"
+    DISMISSED = "dismissed"
+
+
+@dataclass
+class ActionItem:
+    """An action item extracted from content."""
+
+    id: Optional[int] = None
+    content_item_id: int = 0
+    type: str = ""  # 跟进/验证/决策/触发器
+    description: str = ""
+    priority: str = "中"  # 高/中/低
+    status: ActionStatus = ActionStatus.PENDING
+    due_date: Optional[str] = None  # YYYY-MM-DD
+    created_at: datetime = field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+
+
+@dataclass
+class Trigger:
+    """User-defined trigger for automatic actions."""
+
+    id: Optional[int] = None
+    name: str = ""
+    condition: str = ""  # e.g., "公司名=OpenAI AND 事件类型=融资"
+    action: str = "notify"  # 'notify' / 'add_action'
+    enabled: bool = True
