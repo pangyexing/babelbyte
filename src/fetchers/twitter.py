@@ -1,9 +1,10 @@
-"""Twitter content fetcher using Twitter API v2."""
+"""Twitter content fetcher using Twitter API v2 or TwitterAPI.io."""
 
 import logging
 from datetime import datetime
 from typing import Optional, Tuple
 
+import httpx
 import tweepy
 
 from config.settings import get_settings
@@ -196,6 +197,172 @@ class TwitterFetcher(BaseFetcher):
             published_at = tweet.created_at if tweet.created_at else datetime.now()
             if isinstance(published_at, str):
                 published_at = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+
+            return self.create_content_item(
+                subscription=subscription,
+                external_id=external_id,
+                title=title,
+                content=text,
+                url=url,
+                author=f"@{username}",
+                published_at=published_at,
+            )
+
+        except Exception:
+            return None
+
+
+class TwitterAPIioFetcher(BaseFetcher):
+    """Fetcher for Twitter content using TwitterAPI.io (third-party, cheaper)."""
+
+    source_type = SourceType.TWITTER
+
+    BASE_URL = "https://api.twitterapi.io/twitter/user/last_tweets"
+    DEFAULT_MAX_RESULTS = 20
+
+    def __init__(self, api_key: Optional[str] = None, max_results: int = DEFAULT_MAX_RESULTS):
+        self.api_key = api_key or get_settings().twitter.twitterapi_io_key
+        self.max_results = max_results
+        self.timeout = 30.0
+
+    async def fetch(self, subscription: Subscription) -> FetchResult:
+        """Fetch tweets from a Twitter user using TwitterAPI.io."""
+        if subscription.subscription_type != SubscriptionType.TWITTER_USER:
+            return FetchResult(
+                subscription=subscription,
+                success=False,
+                error_message=f"Invalid subscription type: {subscription.subscription_type}",
+            )
+
+        if not self.api_key:
+            return FetchResult(
+                subscription=subscription,
+                success=False,
+                error_message="TwitterAPI.io API key not configured. Set TWITTERAPI_IO_KEY in .env",
+            )
+
+        try:
+            username = subscription.name.lstrip("@")
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    self.BASE_URL,
+                    params={
+                        "userName": username,
+                        "includeReplies": "false",
+                    },
+                    headers={"X-API-Key": self.api_key},
+                )
+
+                if response.status_code == 401:
+                    return FetchResult(
+                        subscription=subscription,
+                        success=False,
+                        error_message="TwitterAPI.io authentication failed. Check your API key.",
+                    )
+                elif response.status_code == 402:
+                    return FetchResult(
+                        subscription=subscription,
+                        success=False,
+                        error_message="TwitterAPI.io credits exhausted. Please add credits.",
+                    )
+                elif response.status_code == 404:
+                    return FetchResult(
+                        subscription=subscription,
+                        success=False,
+                        error_message=f"Twitter user @{username} not found.",
+                    )
+
+                response.raise_for_status()
+                data = response.json()
+
+            if data.get("status") != "success":
+                return FetchResult(
+                    subscription=subscription,
+                    success=False,
+                    error_message=data.get("message", "Unknown error from TwitterAPI.io"),
+                )
+
+            items = []
+            tweets = data.get("tweets", [])
+
+            for tweet in tweets[: self.max_results]:
+                item = self._parse_tweet(subscription, tweet)
+                if item:
+                    items.append(item)
+
+            logger.info(f"Fetched {len(items)} tweets from @{username} via TwitterAPI.io")
+
+            return FetchResult(
+                subscription=subscription,
+                items=items,
+                success=True,
+            )
+
+        except httpx.HTTPStatusError as e:
+            return FetchResult(
+                subscription=subscription,
+                success=False,
+                error_message=f"HTTP error {e.response.status_code}: {e.response.text[:200]}",
+            )
+        except httpx.RequestError as e:
+            return FetchResult(
+                subscription=subscription,
+                success=False,
+                error_message=f"Request error: {str(e)}",
+            )
+        except Exception as e:
+            return FetchResult(
+                subscription=subscription,
+                success=False,
+                error_message=f"Unexpected error: {str(e)}",
+            )
+
+    async def validate_subscription(self, subscription: Subscription) -> bool:
+        """Validate that a Twitter user exists."""
+        if not self.api_key:
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    self.BASE_URL,
+                    params={"userName": subscription.name.lstrip("@")},
+                    headers={"X-API-Key": self.api_key},
+                )
+                data = response.json()
+                return data.get("status") == "success"
+        except Exception:
+            return False
+
+    def _parse_tweet(self, subscription: Subscription, tweet: dict) -> Optional[ContentItem]:
+        """Parse a tweet from TwitterAPI.io response into a ContentItem."""
+        try:
+            external_id = tweet.get("id", "")
+            if not external_id:
+                return None
+
+            text = tweet.get("text", "")
+            author_info = tweet.get("author", {})
+            username = author_info.get("userName", subscription.name)
+
+            # Use first line or truncated text as title
+            title = text.split("\n")[0][:100]
+            if len(text) > 100:
+                title = title[:97] + "..."
+
+            # Build tweet URL
+            url = tweet.get("url", f"https://twitter.com/{username}/status/{external_id}")
+
+            # Parse created_at (format: "Fri Jan 24 18:30:00 +0000 2025")
+            created_at_str = tweet.get("createdAt", "")
+            published_at = datetime.now()
+            if created_at_str:
+                try:
+                    published_at = datetime.strptime(created_at_str, "%a %b %d %H:%M:%S %z %Y")
+                    published_at = published_at.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    pass
 
             return self.create_content_item(
                 subscription=subscription,

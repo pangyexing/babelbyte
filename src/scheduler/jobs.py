@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -12,7 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
 from src.fetchers.reddit import RedditFetcher
-from src.fetchers.twitter import TwitterFetcher, MockTwitterFetcher
+from src.fetchers.twitter import TwitterFetcher, TwitterAPIioFetcher, MockTwitterFetcher
 from src.processors.digest_processor import DigestGenerator
 from src.storage.database import Database, SyncDatabase
 from src.storage.models import SourceType
@@ -59,12 +60,21 @@ class JobRunner:
         reddit_fetcher = RedditFetcher()
         settings = get_settings()
 
-        if self.use_mock or not settings.twitter.is_configured:
+        use_twitterapi_io = False
+        if self.use_mock:
             twitter_fetcher = MockTwitterFetcher()
-        else:
+        elif settings.twitter.use_twitterapi_io:
+            # Prefer TwitterAPI.io (cheaper, no read restrictions)
+            twitter_fetcher = TwitterAPIioFetcher()
+            use_twitterapi_io = True
+            logger.info("Using TwitterAPI.io for Twitter data")
+        elif settings.twitter.bearer_token:
             twitter_fetcher = TwitterFetcher()
+        else:
+            twitter_fetcher = MockTwitterFetcher()
 
         stats = {"total": len(subscriptions), "fetched": 0, "errors": 0, "new_items": 0}
+        last_twitter_fetch = 0.0
 
         for sub in subscriptions:
             try:
@@ -73,6 +83,14 @@ class JobRunner:
                     fetcher = reddit_fetcher
                 else:
                     fetcher = twitter_fetcher
+                    # Rate limit for TwitterAPI.io free tier (1 request per 5 seconds)
+                    if use_twitterapi_io:
+                        elapsed = time.time() - last_twitter_fetch
+                        if elapsed < 5.5:
+                            sleep_time = 5.5 - elapsed
+                            logger.debug(f"Rate limiting: sleeping {sleep_time:.1f}s")
+                            time.sleep(sleep_time)
+                        last_twitter_fetch = time.time()
 
                 # Run async fetch in sync context
                 result = asyncio.get_event_loop().run_until_complete(fetcher.fetch(sub))
