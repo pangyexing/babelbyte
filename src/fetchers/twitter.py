@@ -1,7 +1,8 @@
 """Twitter content fetcher using Twitter API v2."""
 
+import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 import tweepy
 
@@ -9,14 +10,23 @@ from config.settings import get_settings
 from src.fetchers.base import BaseFetcher, FetchResult
 from src.storage.models import ContentItem, SourceType, Subscription, SubscriptionType
 
+logger = logging.getLogger(__name__)
+
 
 class TwitterFetcher(BaseFetcher):
-    """Fetcher for Twitter content using Twitter API v2."""
+    """Fetcher for Twitter content using Twitter API v2.
+
+    Optimized for Twitter's free tier limit of 1,500 tweets/month:
+    - Caches user_id to avoid repeated get_user() calls
+    - Uses since_id to only fetch new tweets
+    - Returns updated subscription with cached values
+    """
 
     source_type = SourceType.TWITTER
 
     # Free tier limit: 1,500 tweets/month
-    DEFAULT_MAX_RESULTS = 10  # Conservative default
+    # With since_id, we typically get fewer results, so we can afford a higher max
+    DEFAULT_MAX_RESULTS = 20
 
     def __init__(self, bearer_token: Optional[str] = None, max_results: int = DEFAULT_MAX_RESULTS):
         self.bearer_token = bearer_token or get_settings().twitter.bearer_token
@@ -35,8 +45,33 @@ class TwitterFetcher(BaseFetcher):
             self._client = tweepy.Client(bearer_token=self.bearer_token)
         return self._client
 
+    async def _get_user_id(self, subscription: Subscription) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Get Twitter user_id, using cache if available.
+
+        Returns:
+            Tuple of (user_id, username, error_message)
+        """
+        # Use cached user_id if available (saves 1 API call per fetch)
+        if subscription.twitter_user_id:
+            logger.debug(f"Using cached user_id for @{subscription.name}")
+            return subscription.twitter_user_id, subscription.name, None
+
+        # Need to fetch user_id (costs 1 API call)
+        logger.info(f"Fetching user_id for @{subscription.name} (will be cached)")
+        user = self.client.get_user(username=subscription.name)
+        if not user.data:
+            return None, None, f"Twitter user @{subscription.name} not found"
+
+        return str(user.data.id), user.data.username, None
+
     async def fetch(self, subscription: Subscription) -> FetchResult:
-        """Fetch tweets from a Twitter user."""
+        """Fetch tweets from a Twitter user.
+
+        Optimizations:
+        - Uses cached twitter_user_id to skip get_user() API call
+        - Uses since_id to only fetch tweets newer than last fetch
+        - Updates subscription with new cache values for caller to persist
+        """
         if subscription.subscription_type != SubscriptionType.TWITTER_USER:
             return FetchResult(
                 subscription=subscription,
@@ -45,32 +80,53 @@ class TwitterFetcher(BaseFetcher):
             )
 
         try:
-            # First, get the user ID from username
-            user = self.client.get_user(username=subscription.name)
-            if not user.data:
+            # Get user_id (from cache or API)
+            user_id, username, error = await self._get_user_id(subscription)
+            if error:
                 return FetchResult(
                     subscription=subscription,
                     success=False,
-                    error_message=f"Twitter user @{subscription.name} not found",
+                    error_message=error,
                 )
 
-            user_id = user.data.id
-            username = user.data.username
+            # Update subscription cache if we fetched a new user_id
+            if not subscription.twitter_user_id:
+                subscription.twitter_user_id = user_id
 
-            # Fetch recent tweets
-            tweets = self.client.get_users_tweets(
-                id=user_id,
-                max_results=min(self.max_results, 100),  # API max is 100
-                tweet_fields=["created_at", "text", "author_id", "public_metrics"],
-                exclude=["retweets", "replies"],  # Only original tweets
-            )
+            # Build API parameters
+            api_params = {
+                "id": user_id,
+                "max_results": min(self.max_results, 100),
+                "tweet_fields": ["created_at", "text", "author_id", "public_metrics"],
+                "exclude": ["retweets", "replies"],
+            }
+
+            # Use since_id to only fetch new tweets (huge API savings)
+            if subscription.last_tweet_id:
+                api_params["since_id"] = subscription.last_tweet_id
+                logger.debug(f"Fetching tweets since_id={subscription.last_tweet_id}")
+
+            # Fetch tweets
+            tweets = self.client.get_users_tweets(**api_params)
 
             items = []
+            newest_tweet_id = subscription.last_tweet_id
+
             if tweets.data:
                 for tweet in tweets.data:
                     item = self._parse_tweet(subscription, tweet, username)
                     if item:
                         items.append(item)
+                    # Track the newest tweet_id for next fetch
+                    if newest_tweet_id is None or int(tweet.id) > int(newest_tweet_id):
+                        newest_tweet_id = str(tweet.id)
+
+                logger.info(f"Fetched {len(items)} new tweets from @{username}")
+            else:
+                logger.debug(f"No new tweets from @{username}")
+
+            # Update subscription with newest tweet_id for next fetch
+            subscription.last_tweet_id = newest_tweet_id
 
             return FetchResult(
                 subscription=subscription,

@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     enabled INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     last_fetched_at TEXT,
+    twitter_user_id TEXT,
+    last_tweet_id TEXT,
     UNIQUE(source_type, subscription_type, name)
 )
 """
@@ -94,6 +96,24 @@ class Database:
             await cursor.execute(CREATE_CONTENT_ITEMS_TABLE)
             await cursor.execute(CREATE_USER_PROFILES_TABLE)
             await self._connection.commit()
+        await self._migrate_tables()
+
+    async def _migrate_tables(self) -> None:
+        """Run database migrations for schema updates."""
+        async with self._connection.cursor() as cursor:
+            # Check if twitter_user_id column exists in subscriptions
+            await cursor.execute("PRAGMA table_info(subscriptions)")
+            columns = {row[1] for row in await cursor.fetchall()}
+
+            if "twitter_user_id" not in columns:
+                await cursor.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN twitter_user_id TEXT"
+                )
+            if "last_tweet_id" not in columns:
+                await cursor.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN last_tweet_id TEXT"
+                )
+            await self._connection.commit()
 
     # Subscription operations
 
@@ -159,12 +179,14 @@ class Database:
             await cursor.execute(
                 """
                 UPDATE subscriptions
-                SET enabled = ?, last_fetched_at = ?
+                SET enabled = ?, last_fetched_at = ?, twitter_user_id = ?, last_tweet_id = ?
                 WHERE id = ?
                 """,
                 (
                     1 if subscription.enabled else 0,
                     subscription.last_fetched_at.isoformat() if subscription.last_fetched_at else None,
+                    subscription.twitter_user_id,
+                    subscription.last_tweet_id,
                     subscription.id,
                 ),
             )
@@ -190,6 +212,8 @@ class Database:
                 if row["last_fetched_at"]
                 else None
             ),
+            twitter_user_id=row["twitter_user_id"] if "twitter_user_id" in row.keys() else None,
+            last_tweet_id=row["last_tweet_id"] if "last_tweet_id" in row.keys() else None,
         )
 
     # Content item operations

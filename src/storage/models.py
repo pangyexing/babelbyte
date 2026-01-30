@@ -32,6 +32,9 @@ class Subscription:
     enabled: bool = True
     created_at: datetime = field(default_factory=datetime.now)
     last_fetched_at: Optional[datetime] = None
+    # Twitter-specific: cache user_id and last_tweet_id to reduce API calls
+    twitter_user_id: Optional[str] = None
+    last_tweet_id: Optional[str] = None
 
     @property
     def display_name(self) -> str:
