@@ -5,11 +5,49 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from src.processors.claude_cli import ClaudeCLI, MockClaudeCLI, ProcessingResult
-from src.storage.database import Database, SyncDatabase
+from config.settings import get_settings
+from src.processors.base import BaseAIProcessor, MockAIProcessor, ProcessingResult
+from src.storage.database import SyncDatabase
 from src.storage.models import ContentItem, DigestItem
 
 logger = logging.getLogger(__name__)
+
+
+def get_ai_processor(provider: Optional[str] = None, use_mock: bool = False) -> BaseAIProcessor:
+    """
+    Get the appropriate AI processor based on configuration.
+
+    Args:
+        provider: Override provider ("claude", "openai", or "auto")
+        use_mock: Use mock processor for testing
+
+    Returns:
+        An AI processor instance
+    """
+    if use_mock:
+        return MockAIProcessor()
+
+    settings = get_settings()
+    provider = provider or settings.ai.get_provider()
+
+    if provider == "openai":
+        from src.processors.openai_cli import OpenAICLI
+
+        if not settings.openai.is_configured:
+            logger.warning("OpenAI not configured, falling back to Claude")
+            provider = "claude"
+        else:
+            return OpenAICLI()
+
+    if provider == "claude" or provider == "auto":
+        from src.processors.claude_cli import ClaudeCLI
+
+        return ClaudeCLI()
+
+    # Default fallback
+    from src.processors.claude_cli import ClaudeCLI
+
+    return ClaudeCLI()
 
 
 @dataclass
@@ -38,13 +76,11 @@ class DigestProcessor:
 
     def __init__(
         self,
-        claude_cli: Optional[ClaudeCLI] = None,
+        ai_processor: Optional[BaseAIProcessor] = None,
+        provider: Optional[str] = None,
         use_mock: bool = False,
     ):
-        if use_mock:
-            self.claude = MockClaudeCLI()
-        else:
-            self.claude = claude_cli or ClaudeCLI()
+        self.ai = ai_processor or get_ai_processor(provider=provider, use_mock=use_mock)
 
     def process_item(self, item: ContentItem) -> ProcessingResult:
         """
@@ -56,7 +92,7 @@ class DigestProcessor:
         Returns:
             ProcessingResult with summary, category, and importance score.
         """
-        return self.claude.process_content(item.title, item.content)
+        return self.ai.process_content(item.title, item.content)
 
     def process_items(self, items: list[ContentItem]) -> list[tuple[ContentItem, ProcessingResult]]:
         """
@@ -86,10 +122,11 @@ class DigestGenerator:
         self,
         db: Optional[SyncDatabase] = None,
         processor: Optional[DigestProcessor] = None,
+        provider: Optional[str] = None,
         use_mock: bool = False,
     ):
         self.db = db
-        self.processor = processor or DigestProcessor(use_mock=use_mock)
+        self.processor = processor or DigestProcessor(provider=provider, use_mock=use_mock)
 
     def process_unprocessed_items(self, limit: int = 50) -> int:
         """

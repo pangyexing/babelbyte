@@ -92,6 +92,38 @@ class ClaudeConfig:
 
     cli_path: str = field(default_factory=lambda: os.getenv("CLAUDE_CLI_PATH", "claude"))
 
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.cli_path)
+
+
+@dataclass
+class OpenAIConfig:
+    """OpenAI API configuration."""
+
+    api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+
+@dataclass
+class AIConfig:
+    """AI provider configuration."""
+
+    # Provider: "claude", "openai", or "auto"
+    provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
+
+    def get_provider(self) -> str:
+        """Get the actual provider to use."""
+        if self.provider == "auto":
+            # Auto-detect: prefer Claude if available, fallback to OpenAI
+            return "claude"
+        return self.provider
+
 
 @dataclass
 class Settings:
@@ -103,6 +135,8 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    openai: OpenAIConfig = field(default_factory=OpenAIConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
 
 
 # Global settings instance

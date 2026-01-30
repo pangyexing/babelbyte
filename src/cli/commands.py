@@ -205,14 +205,15 @@ def fetch(ctx):
 @click.option("--dry-run", is_flag=True, help="Preview digest without sending")
 @click.option("--min-importance", "-m", default=5, help="Minimum importance score (1-10)")
 @click.option("--max-items", "-n", default=30, help="Maximum items in digest")
+@click.option("--provider", "-p", type=click.Choice(["claude", "openai", "auto"]), default=None, help="AI provider to use")
 @click.pass_context
-def digest(ctx, dry_run, min_importance, max_items):
+def digest(ctx, dry_run, min_importance, max_items, provider):
     """Generate and send the daily digest."""
     mock = ctx.obj.get("mock", False)
 
     db = get_db()
     try:
-        generator = DigestGenerator(db=db, use_mock=mock)
+        generator = DigestGenerator(db=db, provider=provider, use_mock=mock)
 
         # First process unprocessed items
         console.print("[bold]Processing content with AI...[/bold]")
@@ -291,9 +292,23 @@ def config(ctx):
     console.print(f"  Fetch interval: every {settings.scheduler.fetch_interval_hours} hours")
     console.print(f"  Digest time: {settings.scheduler.digest_send_time}")
 
+    # AI Provider
+    console.print(f"\n[bold]AI Provider:[/bold]")
+    console.print(f"  Current: {settings.ai.provider}")
+
     # Claude CLI
     console.print(f"\n[bold]Claude CLI:[/bold]")
     console.print(f"  Path: {settings.claude.cli_path}")
+
+    # OpenAI
+    console.print(f"\n[bold]OpenAI:[/bold]")
+    if settings.openai.is_configured:
+        console.print("  [green]✓ Configured[/green]")
+        console.print(f"  Model: {settings.openai.model}")
+        if settings.openai.base_url:
+            console.print(f"  Base URL: {settings.openai.base_url}")
+    else:
+        console.print("  [red]✗ Not configured (set OPENAI_API_KEY)[/red]")
 
 
 @cli.command("test-email")
