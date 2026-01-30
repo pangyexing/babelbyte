@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BabelByte 每日摘要</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #4a90d9;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #4a90d9;
+            margin: 0;
+            font-size: 28px;
+        }
+        .header .date {
+            color: #666;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+        .summary-stats {
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        .summary-stats span {
+            display: inline-block;
+            margin: 0 15px;
+            color: #666;
+        }
+        .summary-stats strong {
+            color: #4a90d9;
+            font-size: 18px;
+        }
+        .category-section {
+            margin-bottom: 30px;
+        }
+        .category-header {
+            background-color: #4a90d9;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 6px 6px 0 0;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .category-content {
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+        }
+        .item {
+            padding: 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .item:last-child {
+            border-bottom: none;
+        }
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .item-title {
+            font-weight: bold;
+            color: #333;
+            font-size: 15px;
+            text-decoration: none;
+        }
+        .item-title:hover {
+            color: #4a90d9;
+        }
+        .importance {
+            background-color: #ffeaa7;
+            color: #856404;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        .importance.high {
+            background-color: #ff7675;
+            color: white;
+        }
+        .importance.medium {
+            background-color: #fdcb6e;
+            color: #856404;
+        }
+        .importance.low {
+            background-color: #dfe6e9;
+            color: #636e72;
+        }
+        .item-summary {
+            color: #555;
+            font-size: 14px;
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+        .item-meta {
+            font-size: 12px;
+            color: #888;
+        }
+        .item-meta a {
+            color: #4a90d9;
+            text-decoration: none;
+        }
+        .item-meta a:hover {
+            text-decoration: underline;
+        }
+        .source-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        .source-reddit {
+            background-color: #ff4500;
+            color: white;
+        }
+        .source-twitter {
+            background-color: #1da1f2;
+            color: white;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            color: #888;
+            font-size: 12px;
+        }
+        .footer a {
+            color: #4a90d9;
+            text-decoration: none;
+        }
+        .no-content {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌐 BabelByte 每日摘要</h1>
+            <div class="date">{{ date }}</div>
+        </div>
+
+        <div class="summary-stats">
+            <span>共 <strong>{{ total_items }}</strong> 条内容</span>
+            <span>涵盖 <strong>{{ category_count }}</strong> 个分类</span>
+        </div>
+
+        {% if items %}
+            {% for category, category_items in items_by_category.items() %}
+            <div class="category-section">
+                <div class="category-header">
+                    📁 {{ category }} ({{ category_items|length }}条)
+                </div>
+                <div class="category-content">
+                    {% for item in category_items %}
+                    <div class="item">
+                        <div class="item-header">
+                            <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
+                                {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
+                            </a>
+                            <span class="importance {% if item.importance_score >= 8 %}high{% elif item.importance_score >= 5 %}medium{% else %}low{% endif %}">
+                                ⭐ {{ item.importance_score }}/10
+                            </span>
+                        </div>
+                        <div class="item-summary">
+                            {{ item.summary }}
+                        </div>
+                        <div class="item-meta">
+                            <span class="source-badge source-{{ item.content_item.source_type.value }}">
+                                {{ item.source_display }}
+                            </span>
+                            作者: {{ item.content_item.author }} |
+                            <a href="{{ item.content_item.url }}" target="_blank">查看原文 →</a>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="no-content">
+                <p>📭 今日暂无新内容</p>
+                <p>请检查您的订阅设置或稍后再试</p>
+            </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>由 BabelByte 自动生成 | Powered by Claude AI</p>
+            <p>如需管理订阅，请使用命令行工具</p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+# BabelByte Subscriptions Configuration
+# This file is auto-managed by the CLI, but can be edited manually
+
+subscriptions:
+  # Reddit subscriptions (RSS-based, no API key needed)
+  reddit:
+    # Subreddits
+    # - type: subreddit
+    #   name: MachineLearning
+    #   enabled: true
+    # - type: subreddit
+    #   name: Python
+    #   enabled: true
+
+    # Reddit users
+    # - type: user
+    #   name: spez
+    #   enabled: true
+
+  # Twitter subscriptions (requires API v2 bearer token)
+  twitter:
+    # Twitter users (without @)
+    # - username: elikiLai
+    #   enabled: true
+    # - username: OpenAI
+    #   enabled: true
+
+# User preferences
+preferences:
+  # Maximum items to fetch per source per run
+  max_items_per_source: 50
+
+  # Only fetch items from the last N hours
+  fetch_hours_lookback: 24
+
+  # Categories of interest (used for filtering/prioritization)
+  categories:
+    - AI
+    - 编程
+    - 产品
+    - 技术
+    - 创业
