@@ -69,6 +69,24 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 )
 """
 
+# Performance indexes for common queries
+CREATE_INDEXES = """
+-- Index for fetching unprocessed items (processed_at IS NULL)
+CREATE INDEX IF NOT EXISTS idx_content_unprocessed
+    ON content_items(processed_at) WHERE processed_at IS NULL;
+
+-- Index for fetching undelivered items with importance filtering
+CREATE INDEX IF NOT EXISTS idx_content_undelivered
+    ON content_items(delivered, importance_score) WHERE delivered = 0;
+
+-- Index for URL deduplication lookups
+CREATE INDEX IF NOT EXISTS idx_content_url ON content_items(url);
+
+-- Index for source/external_id uniqueness checks
+CREATE INDEX IF NOT EXISTS idx_content_source_external
+    ON content_items(source_type, external_id);
+"""
+
 
 class Database:
     """Async SQLite database manager."""
@@ -95,6 +113,11 @@ class Database:
             await cursor.execute(CREATE_SUBSCRIPTIONS_TABLE)
             await cursor.execute(CREATE_CONTENT_ITEMS_TABLE)
             await cursor.execute(CREATE_USER_PROFILES_TABLE)
+            # Create performance indexes
+            for statement in CREATE_INDEXES.strip().split(";"):
+                statement = statement.strip()
+                if statement and not statement.startswith("--"):
+                    await cursor.execute(statement)
             await self._connection.commit()
         await self._migrate_tables()
 
