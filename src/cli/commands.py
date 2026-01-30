@@ -53,11 +53,11 @@ def subscribe(ctx, source, name, user):
         if user:
             sub_type = SubscriptionType.REDDIT_USER
             # Clean up name (remove u/ prefix if present)
-            name = name.lstrip("u/").lstrip("/u/")
+            name = name.removeprefix("u/").removeprefix("/u/")
         else:
             sub_type = SubscriptionType.SUBREDDIT
             # Clean up name (remove r/ prefix if present)
-            name = name.lstrip("r/").lstrip("/r/")
+            name = name.removeprefix("r/").removeprefix("/r/")
     else:
         source_type = SourceType.TWITTER
         sub_type = SubscriptionType.TWITTER_USER
@@ -110,7 +110,7 @@ def unsubscribe(ctx, source, name, user, delete):
     if source == "reddit":
         source_type = SourceType.REDDIT
         sub_type = SubscriptionType.REDDIT_USER if user else SubscriptionType.SUBREDDIT
-        name = name.lstrip("r/").lstrip("/r/").lstrip("u/").lstrip("/u/")
+        name = name.removeprefix("r/").removeprefix("/r/").removeprefix("u/").removeprefix("/u/")
     else:
         source_type = SourceType.TWITTER
         sub_type = SubscriptionType.TWITTER_USER
