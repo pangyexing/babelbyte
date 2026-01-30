@@ -122,6 +122,22 @@ class AIConfig:
     # Provider: "claude", "codex", or "auto"
     provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
 
+    # Content length limits for token optimization
+    max_content_length: int = field(
+        default_factory=lambda: int(os.getenv("AI_MAX_CONTENT_LENGTH", "1500"))
+    )
+    max_title_length: int = field(
+        default_factory=lambda: int(os.getenv("AI_MAX_TITLE_LENGTH", "200"))
+    )
+
+    # Batch processing sizes
+    batch_size_short: int = field(
+        default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_SHORT", "12"))
+    )
+    batch_size_long: int = field(
+        default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_LONG", "6"))
+    )
+
     def get_provider(self) -> str:
         """Get the actual provider to use."""
         if self.provider == "auto":

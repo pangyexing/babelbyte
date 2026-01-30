@@ -1,7 +1,6 @@
 """Claude Code CLI wrapper for AI processing."""
 
 import json
-import re
 import subprocess
 from typing import Optional
 
@@ -89,12 +88,15 @@ class ClaudeCLI(BaseAIProcessor):
 
         prompt = self._build_batch_prompt(items)
 
+        # Dynamic timeout: base + 15s per item (larger batches need more time)
+        batch_timeout = self.timeout + (len(items) * 15)
+
         try:
             result = subprocess.run(
                 [self.cli_path, "-p", prompt, "--output-format", "text"],
                 capture_output=True,
                 text=True,
-                timeout=self.timeout * 2,  # More time for batch
+                timeout=batch_timeout,
             )
 
             if result.returncode != 0:

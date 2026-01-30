@@ -40,27 +40,42 @@ class RuleClassifier:
         "dev.to": ("编程", 5),
         "hackernews.com": ("技术", 6),
         "news.ycombinator.com": ("技术", 7),
+        "medium.com": ("技术", 5),
+        "substack.com": ("技术", 5),
+        "hashnode.dev": ("编程", 5),
+        "codepen.io": ("编程", 5),
+        "replit.com": ("编程", 5),
+        "codesandbox.io": ("编程", 5),
         # Science
         "arxiv.org": ("科学", 7),
         "nature.com": ("科学", 8),
         "science.org": ("科学", 8),
         "sciencedirect.com": ("科学", 7),
         "pubmed.ncbi.nlm.nih.gov": ("科学", 7),
+        "biorxiv.org": ("科学", 7),
+        "medrxiv.org": ("科学", 7),
         # AI
         "openai.com": ("AI", 8),
         "anthropic.com": ("AI", 8),
         "deepmind.com": ("AI", 8),
         "huggingface.co": ("AI", 7),
+        "replicate.com": ("AI", 6),
+        "stability.ai": ("AI", 7),
+        "midjourney.com": ("AI", 6),
         # Tech news
         "techcrunch.com": ("技术", 6),
         "theverge.com": ("技术", 5),
         "wired.com": ("技术", 5),
         "arstechnica.com": ("技术", 6),
         "engadget.com": ("技术", 5),
+        "thenextweb.com": ("技术", 5),
+        "zdnet.com": ("技术", 5),
+        "cnet.com": ("技术", 5),
         # Product
         "producthunt.com": ("产品", 6),
         "indiegogo.com": ("产品", 5),
         "kickstarter.com": ("产品", 5),
+        "betalist.com": ("产品", 5),
         # Business/Startup
         "crunchbase.com": ("创业", 6),
         "ycombinator.com": ("创业", 7),
@@ -68,6 +83,8 @@ class RuleClassifier:
         "bloomberg.com": ("商业", 6),
         "wsj.com": ("商业", 6),
         "ft.com": ("商业", 6),
+        "techcrunch.com/tag/funding": ("创业", 7),
+        "venturebeat.com": ("创业", 6),
     }
 
     # Title keyword patterns -> (category, importance_boost)
@@ -76,14 +93,27 @@ class RuleClassifier:
         (re.compile(r"\b(GPT-?[45]|Claude|Gemini|LLM|ChatGPT)\b", re.I), "AI", 2),
         (re.compile(r"\b(machine learning|deep learning|neural network)\b", re.I), "AI", 1),
         (re.compile(r"\b(transformer|diffusion|RLHF)\b", re.I), "AI", 1),
+        (re.compile(r"\b(AI|artificial intelligence|ML model)\b", re.I), "AI", 1),
+        (re.compile(r"\b(RAG|fine-?tun|embeddings?|vector)\b", re.I), "AI", 1),
         # Programming keywords
         (re.compile(r"\b(Python|Rust|Go|JavaScript|TypeScript)\b"), "编程", 0),
         (re.compile(r"\b(API|SDK|framework|library)\b", re.I), "编程", 0),
+        (re.compile(r"\b(React|Vue|Angular|Node\.?js|Django|Flask)\b", re.I), "编程", 0),
+        (re.compile(r"\b(database|SQL|PostgreSQL|MongoDB|Redis)\b", re.I), "编程", 0),
+        (re.compile(r"\b(Docker|Kubernetes|K8s|DevOps|CI/CD)\b", re.I), "编程", 1),
         # Product launches
         (re.compile(r"\b(launch|announce|release|introducing)\b", re.I), "产品", 1),
+        (re.compile(r"\b(new feature|update|v\d+\.\d+)\b", re.I), "产品", 0),
         # Funding/business
         (re.compile(r"\$\d+[MBK]|\d+ million|\d+ billion", re.I), "商业", 1),
         (re.compile(r"\b(Series [A-Z]|seed round|IPO|acquisition)\b", re.I), "创业", 2),
+        (re.compile(r"\b(startup|founder|YC|Y Combinator)\b", re.I), "创业", 1),
+        # Question posts (common on Reddit)
+        (re.compile(r"^(How|What|Why|When|Where|Who|Which|Can|Should|Is|Are|Does|Do)\b", re.I), "其他", 0),  # noqa: E501
+        (re.compile(r"\?$"), "其他", 0),
+        # Science
+        (re.compile(r"\b(research|study|paper|published)\b", re.I), "科学", 0),
+        (re.compile(r"\b(breakthrough|discovery|experiment)\b", re.I), "科学", 1),
     ]
 
     def classify(self, item: ContentItem) -> Optional[RuleClassificationResult]:
@@ -101,13 +131,17 @@ class RuleClassifier:
         if result:
             # Adjust importance based on title keywords
             result = self._adjust_by_keywords(item, result)
-            logger.debug(f"Rule classified: {item.title[:40]}... -> {result.category} ({result.reason})")
+            logger.debug(
+                f"Rule classified: {item.title[:40]}... -> {result.category} ({result.reason})"
+            )
             return result
 
         # Try keyword-only classification for strong signals
         result = self._classify_by_keywords_only(item)
         if result:
-            logger.debug(f"Keyword classified: {item.title[:40]}... -> {result.category} ({result.reason})")
+            logger.debug(
+                f"Keyword classified: {item.title[:40]}... -> {result.category} ({result.reason})"
+            )
             return result
 
         return None
@@ -182,10 +216,10 @@ class RuleClassifier:
                     category_scores[category] = 0
                 category_scores[category] += 1 + boost
 
-        # Only classify if we have strong signals (2+ matches for same category)
+        # Classify if we have moderate signals (2+ score for same category)
         if category_scores:
             best_category = max(category_scores, key=category_scores.get)
-            if category_scores[best_category] >= 3:  # Strong signal threshold
+            if category_scores[best_category] >= 2:  # Lowered threshold for better coverage
                 return RuleClassificationResult(
                     category=best_category,
                     importance_score=6,  # Default medium importance

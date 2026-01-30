@@ -9,8 +9,8 @@ from config.settings import get_settings
 from src.processors.base import BaseAIProcessor, MockAIProcessor, ProcessingResult
 from src.processors.rule_classifier import (
     RuleClassifier,
-    should_skip_ai_processing,
     create_skip_result,
+    should_skip_ai_processing,
 )
 from src.storage.database import SyncDatabase
 from src.storage.models import ContentItem, DigestItem
@@ -248,17 +248,23 @@ class DigestGenerator:
         """
         Process items with AI using dynamic batch sizing.
 
-        Short content (<500 chars) uses larger batches (8 items).
-        Long content uses smaller batches (base_batch_size, default 3).
+        Short content (<500 chars) uses larger batches (configurable, default 12).
+        Long content uses smaller batches (configurable, default 6).
 
         Args:
             items: Items to process with AI.
-            base_batch_size: Batch size for long content.
+            base_batch_size: Legacy parameter, overridden by config.
             progress_callback: Optional callback for progress updates.
 
         Returns:
             Number of items successfully processed.
         """
+        settings = get_settings()
+
+        # Get batch sizes from config
+        short_batch_size = settings.ai.batch_size_short  # Default 12
+        long_batch_size = settings.ai.batch_size_long    # Default 6
+
         # Separate items by content length
         short_items = [i for i in items if len(i.content or "") < 500]
         long_items = [i for i in items if len(i.content or "") >= 500]
@@ -269,17 +275,16 @@ class DigestGenerator:
 
         # Process short items with larger batches
         if short_items:
-            short_batch_size = 8  # Larger batch for short content
             short_processed, short_done = self._process_batch_group(
                 short_items, short_batch_size, "short", progress_callback, items_done, total_items
             )
             processed_count += short_processed
             items_done += short_done
 
-        # Process long items with smaller batches
+        # Process long items with configured batch size
         if long_items:
             long_processed, _ = self._process_batch_group(
-                long_items, base_batch_size, "long", progress_callback, items_done, total_items
+                long_items, long_batch_size, "long", progress_callback, items_done, total_items
             )
             processed_count += long_processed
 

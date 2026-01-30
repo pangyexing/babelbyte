@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
+from config.settings import get_settings
+
 
 @dataclass
 class ProcessingResult:
@@ -23,11 +25,13 @@ class BaseAIProcessor(ABC):
     """Abstract base class for AI processors."""
 
     # Shared prompt template for content processing (Chinese output)
+    # fmt: off
     PROCESS_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
 评分：9-10重大突破，7-8重要更新，5-6一般，1-4低价值
 
 标题：{title}
-正文：{content}"""
+正文：{content}"""  # noqa: E501
+    # fmt: on
 
     # Batch processing prompt for multiple items
     BATCH_PROMPT = """批量处理以下{count}条内容，每条返回一行JSON（不要其他内容）：
@@ -46,19 +50,100 @@ class BaseAIProcessor(ABC):
         """Check if the AI processor is available."""
         pass
 
-    def _build_prompt(self, title: str, content: str, max_length: int = 0) -> str:
-        """Build the prompt with optional content truncation."""
+    def _smart_truncate(self, text: str, max_length: int) -> str:
+        """
+        Truncate text at sentence boundary when possible.
+
+        Args:
+            text: Text to truncate.
+            max_length: Maximum length.
+
+        Returns:
+            Truncated text, preferring sentence boundaries.
+        """
+        if len(text) <= max_length:
+            return text
+
+        # Try to find a sentence boundary within the limit
+        truncated = text[:max_length]
+
+        # Look for sentence endings (。！？.!?) in the last 20% of allowed text
+        search_start = int(max_length * 0.8)
+        sentence_endings = ["。", "！", "？", ".", "!", "?", "\n\n"]
+
+        best_pos = -1
+        for ending in sentence_endings:
+            pos = truncated.rfind(ending, search_start)
+            if pos > best_pos:
+                best_pos = pos
+
+        if best_pos > search_start:
+            return truncated[: best_pos + 1] + "..."
+
+        # Fall back to word boundary (space or Chinese punctuation)
+        word_boundaries = [" ", "，", ",", "；", ";", "：", ":"]
+        for boundary in word_boundaries:
+            pos = truncated.rfind(boundary, search_start)
+            if pos > search_start:
+                return truncated[:pos] + "..."
+
+        # Last resort: hard cut
+        return truncated + "..."
+
+    def _build_prompt(self, title: str, content: str, max_length: int = -1) -> str:
+        """
+        Build the prompt with content truncation.
+
+        Args:
+            title: Content title.
+            content: Content body.
+            max_length: Max content length. -1 uses config default, 0 disables truncation.
+
+        Returns:
+            Formatted prompt string.
+        """
+        settings = get_settings()
+
+        # Apply title truncation
+        max_title = settings.ai.max_title_length
+        if max_title > 0 and len(title) > max_title:
+            title = self._smart_truncate(title, max_title)
+
+        # Apply content truncation
+        if max_length == -1:
+            max_length = settings.ai.max_content_length
         if max_length > 0 and len(content) > max_length:
-            content = content[:max_length] + "..."
+            content = self._smart_truncate(content, max_length)
+
         return self.PROCESS_PROMPT.format(title=title, content=content)
 
-    def _build_batch_prompt(self, items: list[tuple[int, str, str]], max_length: int = 0) -> str:
-        """Build batch prompt for multiple items (no truncation by default)."""
+    def _build_batch_prompt(self, items: list[tuple[int, str, str]], max_length: int = -1) -> str:
+        """
+        Build batch prompt for multiple items with truncation.
+
+        Args:
+            items: List of (id, title, content) tuples.
+            max_length: Max content length per item. -1 uses config default, 0 disables.
+
+        Returns:
+            Formatted batch prompt string.
+        """
+        settings = get_settings()
+        max_title = settings.ai.max_title_length
+
+        if max_length == -1:
+            max_length = settings.ai.max_content_length
+
         item_texts = []
         for idx, title, content in items:
+            # Truncate title
+            if max_title > 0 and len(title) > max_title:
+                title = self._smart_truncate(title, max_title)
+            # Truncate content
             if max_length > 0 and len(content) > max_length:
-                content = content[:max_length] + "..."
+                content = self._smart_truncate(content, max_length)
             item_texts.append(f"[{idx}] 标题：{title}\n正文：{content}")
+
         return self.BATCH_PROMPT.format(count=len(items), items="\n\n".join(item_texts))
 
     def process_batch(self, items: list[tuple[int, str, str]]) -> list[ProcessingResult]:
