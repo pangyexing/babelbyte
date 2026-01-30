@@ -98,29 +98,27 @@ class ClaudeConfig:
 
 
 @dataclass
-class OpenAIConfig:
-    """OpenAI API configuration."""
+class CodexConfig:
+    """Codex CLI configuration (OpenAI subscription mode)."""
 
-    api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
-    base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
+    cli_path: str = field(default_factory=lambda: os.getenv("CODEX_CLI_PATH", "codex"))
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.cli_path)
 
 
 @dataclass
 class AIConfig:
     """AI provider configuration."""
 
-    # Provider: "claude", "openai", or "auto"
+    # Provider: "claude", "codex", or "auto"
     provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
 
     def get_provider(self) -> str:
         """Get the actual provider to use."""
         if self.provider == "auto":
-            # Auto-detect: prefer Claude if available, fallback to OpenAI
+            # Auto-detect: prefer Claude if available, fallback to Codex
             return "claude"
         return self.provider
 
@@ -135,7 +133,7 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
-    openai: OpenAIConfig = field(default_factory=OpenAIConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
     ai: AIConfig = field(default_factory=AIConfig)
 
 

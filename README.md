@@ -43,7 +43,7 @@ cp .env.example .env
 ### 2. 编辑 `.env` 文件
 
 ```bash
-# AI 提供商配置 (claude / openai / auto)
+# AI 提供商配置 (claude / codex / auto)
 AI_PROVIDER=auto
 
 # Twitter API v2 (可选，免费版 1,500条/月)
@@ -65,7 +65,7 @@ FETCH_INTERVAL_HOURS=6
 
 ### 3. AI 提供商配置
 
-支持两种 AI 提供商，可通过 `AI_PROVIDER` 环境变量切换：
+支持两种 AI 提供商，均为订阅模式（无需 API Key），可通过 `AI_PROVIDER` 环境变量切换：
 
 #### Claude Code CLI (默认)
 
@@ -76,18 +76,16 @@ FETCH_INTERVAL_HOURS=6
 claude --version
 ```
 
-#### OpenAI API
+#### Codex CLI (OpenAI)
 
-如果使用 OpenAI，需要安装额外依赖并配置 API Key:
+确保已安装 Codex CLI 并完成登录:
 
 ```bash
-# 安装 OpenAI 支持
-pip install -e ".[openai]"
+# 验证安装
+codex --version
 
 # 在 .env 中配置
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o-mini  # 或 gpt-4o, gpt-3.5-turbo 等
-AI_PROVIDER=openai
+AI_PROVIDER=codex
 ```
 
 ## 使用方法

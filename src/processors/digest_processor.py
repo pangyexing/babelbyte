@@ -18,7 +18,7 @@ def get_ai_processor(provider: Optional[str] = None, use_mock: bool = False) -> 
     Get the appropriate AI processor based on configuration.
 
     Args:
-        provider: Override provider ("claude", "openai", or "auto")
+        provider: Override provider ("claude", "codex", or "auto")
         use_mock: Use mock processor for testing
 
     Returns:
@@ -30,14 +30,10 @@ def get_ai_processor(provider: Optional[str] = None, use_mock: bool = False) -> 
     settings = get_settings()
     provider = provider or settings.ai.get_provider()
 
-    if provider == "openai":
-        from src.processors.openai_cli import OpenAICLI
+    if provider == "codex":
+        from src.processors.openai_cli import CodexCLI
 
-        if not settings.openai.is_configured:
-            logger.warning("OpenAI not configured, falling back to Claude")
-            provider = "claude"
-        else:
-            return OpenAICLI()
+        return CodexCLI()
 
     if provider == "claude" or provider == "auto":
         from src.processors.claude_cli import ClaudeCLI
