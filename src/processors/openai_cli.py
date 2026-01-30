@@ -28,8 +28,11 @@ class CodexCLI(BaseAIProcessor):
         prompt = self._build_prompt(title, content)
 
         try:
+            # Use 'codex exec' for non-interactive mode
+            # Pass prompt via stdin to avoid shell escaping issues
             result = subprocess.run(
-                [self.cli_path, "-p", prompt],
+                [self.cli_path, "exec", "-"],
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
