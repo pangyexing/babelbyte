@@ -1,6 +1,7 @@
 """Reddit content fetcher using RSS feeds."""
 
 import html
+import logging
 import re
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -10,7 +11,10 @@ import feedparser
 import httpx
 
 from src.fetchers.base import BaseFetcher, FetchResult
+from src.fetchers.link_extractor import LinkExtractor
 from src.storage.models import ContentItem, SourceType, Subscription, SubscriptionType
+
+logger = logging.getLogger(__name__)
 
 
 class RedditFetcher(BaseFetcher):
@@ -25,8 +29,13 @@ class RedditFetcher(BaseFetcher):
     # Custom User-Agent to avoid being blocked
     USER_AGENT = "BabelByte/1.0 (Content Aggregator)"
 
-    def __init__(self, timeout: float = 30.0):
+    # Pattern to detect link-post (no real content)
+    LINK_POST_PATTERN = re.compile(r"^\s*submitted by\s+/u/\S+\s*\[link\]\s*\[comments\]\s*$", re.I)
+
+    def __init__(self, timeout: float = 30.0, fetch_link_content: bool = True):
         self.timeout = timeout
+        self.fetch_link_content = fetch_link_content
+        self.link_extractor = LinkExtractor(timeout=15.0)
 
     def _get_feed_url(self, subscription: Subscription) -> str:
         """Get the RSS feed URL for a subscription."""
@@ -61,7 +70,13 @@ class RedditFetcher(BaseFetcher):
             for entry in feed.entries:
                 item = self._parse_entry(subscription, entry)
                 if item:
-                    items.append(item)
+                    items.append((item, entry))
+
+            # Enhance link-posts with external content
+            if self.fetch_link_content:
+                items = await self._enhance_link_posts(items)
+            else:
+                items = [item for item, _ in items]
 
             return FetchResult(
                 subscription=subscription,
@@ -102,6 +117,79 @@ class RedditFetcher(BaseFetcher):
                 return response.status_code == 200
         except Exception:
             return False
+
+    async def _enhance_link_posts(
+        self, items: list[tuple[ContentItem, dict]]
+    ) -> list[ContentItem]:
+        """
+        Enhance link-posts by fetching external link content.
+
+        Args:
+            items: List of (ContentItem, RSS entry) tuples.
+
+        Returns:
+            List of enhanced ContentItems.
+        """
+        enhanced_items = []
+
+        for item, entry in items:
+            # Check if this is a link-post (minimal content)
+            if self._is_link_post(item.content):
+                external_url = self._extract_external_url(entry)
+
+                if external_url:
+                    logger.debug(f"Fetching external link: {external_url}")
+                    result = await self.link_extractor.extract(external_url)
+
+                    if result.success and result.content:
+                        # Prepend original title context, append external content
+                        item.content = f"[外部链接] {external_url}\n\n{result.content}"
+                        logger.info(f"Enhanced link-post: {item.title[:50]}... (+{len(result.content)} chars)")
+                    else:
+                        # Keep original content, note the external link
+                        item.content = f"[外部链接] {external_url}\n\n(无法获取内容: {result.error_message})"
+                        logger.debug(f"Failed to fetch: {external_url} - {result.error_message}")
+
+            enhanced_items.append(item)
+
+        return enhanced_items
+
+    def _is_link_post(self, content: str) -> bool:
+        """Check if content indicates a link-post (no real content)."""
+        if not content:
+            return True
+
+        content = content.strip()
+
+        # Check for typical link-post pattern
+        if self.LINK_POST_PATTERN.match(content):
+            return True
+
+        # Very short content is likely a link-post
+        if len(content) < 100:
+            return True
+
+        return False
+
+    def _extract_external_url(self, entry: dict) -> Optional[str]:
+        """Extract external URL from RSS entry."""
+        # Check for link in content HTML
+        content_html = ""
+        if "content" in entry and entry["content"]:
+            content_html = entry["content"][0].get("value", "")
+        elif "summary" in entry:
+            content_html = entry.get("summary", "")
+
+        # Look for external link in the HTML
+        # Reddit RSS typically has: <a href="[external_url]">[link]</a>
+        link_match = re.search(r'<a\s+href="([^"]+)"[^>]*>\s*\[link\]\s*</a>', content_html, re.I)
+        if link_match:
+            url = link_match.group(1)
+            # Skip reddit internal links
+            if "reddit.com" not in url and "redd.it" not in url:
+                return url
+
+        return None
 
     def _parse_entry(self, subscription: Subscription, entry: dict) -> Optional[ContentItem]:
         """Parse a single RSS entry into a ContentItem."""

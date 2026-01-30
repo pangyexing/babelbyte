@@ -43,6 +43,9 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+extract = [
+    "trafilatura>=1.6.0",  # Better content extraction from web pages
+]
 
 [project.scripts]
 babelbyte = "src.cli.commands:cli"
