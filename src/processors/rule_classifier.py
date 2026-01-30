@@ -1,0 +1,236 @@
+"""Rule-based classifier for content pre-classification to save AI tokens."""
+
+import logging
+import re
+from dataclasses import dataclass
+from typing import Optional
+from urllib.parse import urlparse
+
+from src.storage.models import ContentItem
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RuleClassificationResult:
+    """Result of rule-based classification."""
+
+    category: str
+    importance_score: int
+    summary: Optional[str] = None  # Optional pre-generated summary
+    reason: str = ""  # Why this rule matched
+
+
+class RuleClassifier:
+    """
+    Rule-based content classifier to reduce AI token usage.
+
+    Classifies content based on:
+    - Domain patterns in URLs
+    - Title keywords
+    - Content patterns
+    """
+
+    # Domain -> (category, base_importance)
+    DOMAIN_CATEGORIES: dict[str, tuple[str, int]] = {
+        # Programming
+        "github.com": ("编程", 6),
+        "gitlab.com": ("编程", 6),
+        "stackoverflow.com": ("编程", 5),
+        "dev.to": ("编程", 5),
+        "hackernews.com": ("技术", 6),
+        "news.ycombinator.com": ("技术", 7),
+        # Science
+        "arxiv.org": ("科学", 7),
+        "nature.com": ("科学", 8),
+        "science.org": ("科学", 8),
+        "sciencedirect.com": ("科学", 7),
+        "pubmed.ncbi.nlm.nih.gov": ("科学", 7),
+        # AI
+        "openai.com": ("AI", 8),
+        "anthropic.com": ("AI", 8),
+        "deepmind.com": ("AI", 8),
+        "huggingface.co": ("AI", 7),
+        # Tech news
+        "techcrunch.com": ("技术", 6),
+        "theverge.com": ("技术", 5),
+        "wired.com": ("技术", 5),
+        "arstechnica.com": ("技术", 6),
+        "engadget.com": ("技术", 5),
+        # Product
+        "producthunt.com": ("产品", 6),
+        "indiegogo.com": ("产品", 5),
+        "kickstarter.com": ("产品", 5),
+        # Business/Startup
+        "crunchbase.com": ("创业", 6),
+        "ycombinator.com": ("创业", 7),
+        "techstars.com": ("创业", 6),
+        "bloomberg.com": ("商业", 6),
+        "wsj.com": ("商业", 6),
+        "ft.com": ("商业", 6),
+    }
+
+    # Title keyword patterns -> (category, importance_boost)
+    TITLE_KEYWORDS: list[tuple[re.Pattern, str, int]] = [
+        # AI keywords
+        (re.compile(r"\b(GPT-?[45]|Claude|Gemini|LLM|ChatGPT)\b", re.I), "AI", 2),
+        (re.compile(r"\b(machine learning|deep learning|neural network)\b", re.I), "AI", 1),
+        (re.compile(r"\b(transformer|diffusion|RLHF)\b", re.I), "AI", 1),
+        # Programming keywords
+        (re.compile(r"\b(Python|Rust|Go|JavaScript|TypeScript)\b"), "编程", 0),
+        (re.compile(r"\b(API|SDK|framework|library)\b", re.I), "编程", 0),
+        # Product launches
+        (re.compile(r"\b(launch|announce|release|introducing)\b", re.I), "产品", 1),
+        # Funding/business
+        (re.compile(r"\$\d+[MBK]|\d+ million|\d+ billion", re.I), "商业", 1),
+        (re.compile(r"\b(Series [A-Z]|seed round|IPO|acquisition)\b", re.I), "创业", 2),
+    ]
+
+    def classify(self, item: ContentItem) -> Optional[RuleClassificationResult]:
+        """
+        Attempt to classify content using rules.
+
+        Args:
+            item: The content item to classify.
+
+        Returns:
+            RuleClassificationResult if rules matched, None if AI processing needed.
+        """
+        # Try domain-based classification first
+        result = self._classify_by_domain(item)
+        if result:
+            # Adjust importance based on title keywords
+            result = self._adjust_by_keywords(item, result)
+            logger.debug(f"Rule classified: {item.title[:40]}... -> {result.category} ({result.reason})")
+            return result
+
+        # Try keyword-only classification for strong signals
+        result = self._classify_by_keywords_only(item)
+        if result:
+            logger.debug(f"Keyword classified: {item.title[:40]}... -> {result.category} ({result.reason})")
+            return result
+
+        return None
+
+    def _classify_by_domain(self, item: ContentItem) -> Optional[RuleClassificationResult]:
+        """Classify based on URL domain."""
+        if not item.url:
+            return None
+
+        try:
+            parsed = urlparse(item.url)
+            domain = parsed.netloc.lower()
+
+            # Remove www. prefix
+            if domain.startswith("www."):
+                domain = domain[4:]
+
+            # Check exact match first
+            if domain in self.DOMAIN_CATEGORIES:
+                category, importance = self.DOMAIN_CATEGORIES[domain]
+                return RuleClassificationResult(
+                    category=category,
+                    importance_score=importance,
+                    reason=f"domain:{domain}",
+                )
+
+            # Check subdomain matches (e.g., blog.github.com)
+            for known_domain, (category, importance) in self.DOMAIN_CATEGORIES.items():
+                if domain.endswith("." + known_domain) or domain == known_domain:
+                    return RuleClassificationResult(
+                        category=category,
+                        importance_score=importance,
+                        reason=f"domain:{known_domain}",
+                    )
+
+        except Exception:
+            pass
+
+        return None
+
+    def _adjust_by_keywords(
+        self, item: ContentItem, result: RuleClassificationResult
+    ) -> RuleClassificationResult:
+        """Adjust classification based on title keywords."""
+        text = f"{item.title} {item.content[:500]}"
+
+        importance_boost = 0
+        matched_keywords = []
+
+        for pattern, _, boost in self.TITLE_KEYWORDS:
+            if pattern.search(text):
+                importance_boost = max(importance_boost, boost)
+                matched_keywords.append(pattern.pattern[:20])
+
+        if importance_boost > 0:
+            result.importance_score = min(10, result.importance_score + importance_boost)
+            if matched_keywords:
+                result.reason += f"+keywords:{','.join(matched_keywords[:2])}"
+
+        return result
+
+    def _classify_by_keywords_only(self, item: ContentItem) -> Optional[RuleClassificationResult]:
+        """Classify based on strong keyword signals only (no domain match)."""
+        text = f"{item.title} {item.content[:500]}"
+
+        # Count category signals
+        category_scores: dict[str, int] = {}
+
+        for pattern, category, boost in self.TITLE_KEYWORDS:
+            if pattern.search(text):
+                if category not in category_scores:
+                    category_scores[category] = 0
+                category_scores[category] += 1 + boost
+
+        # Only classify if we have strong signals (2+ matches for same category)
+        if category_scores:
+            best_category = max(category_scores, key=category_scores.get)
+            if category_scores[best_category] >= 3:  # Strong signal threshold
+                return RuleClassificationResult(
+                    category=best_category,
+                    importance_score=6,  # Default medium importance
+                    reason=f"keywords:{best_category}",
+                )
+
+        return None
+
+
+def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
+    """
+    Check if content should skip AI processing entirely.
+
+    Returns:
+        (should_skip, reason) tuple
+    """
+    content = item.content or ""
+    title = item.title or ""
+
+    # Reddit link-posts with no real content
+    if len(content) < 100 and "[link]" in content.lower():
+        return True, "Reddit link-post with no content"
+
+    # Very short content (likely just a link or single sentence)
+    if len(content) < 50 and len(title) < 30:
+        return True, "Content too short (<50 chars)"
+
+    # Content is just "submitted by" boilerplate
+    if content.strip().startswith("submitted by") and len(content) < 150:
+        return True, "Reddit submission boilerplate only"
+
+    # Empty or whitespace-only content
+    if not content.strip():
+        return True, "Empty content"
+
+    return False, ""
+
+
+def create_skip_result(item: ContentItem, reason: str) -> tuple[str, str, int]:
+    """
+    Create default values for skipped items.
+
+    Returns:
+        (summary, category, importance_score) tuple
+    """
+    # Use title as summary for skipped items
+    summary = f"[跳过] {item.title[:40]}..." if len(item.title) > 40 else f"[跳过] {item.title}"
+    return summary, "其他", 1  # Low importance for skipped items
