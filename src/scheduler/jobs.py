@@ -24,6 +24,12 @@ from src.storage.models import SourceType, Subscription
 logger = logging.getLogger(__name__)
 
 
+# Default limits for automated jobs
+DEFAULT_EMBEDDING_LIMIT = 200
+DEFAULT_TOPIC_DISCOVER_DAYS = 14
+DEFAULT_TOPIC_MIN_FREQUENCY = 3
+
+
 class JobRunner:
     """Runner for scheduled jobs."""
 
@@ -310,12 +316,131 @@ class JobRunner:
         logger.info(f"Processing job completed: {processed} items processed")
         return processed
 
-    def send_digest(self, dry_run: bool = False) -> dict:
+    def compute_embeddings(self, limit: int = DEFAULT_EMBEDDING_LIMIT) -> dict:
+        """
+        Compute embeddings for content items without embeddings.
+
+        Uses local sentence-transformers by default (no LLM token cost).
+
+        Args:
+            limit: Maximum items to process.
+
+        Returns:
+            Dict with computation statistics.
+        """
+        logger.info("Starting embeddings computation job...")
+
+        from config.settings import get_settings
+
+        settings = get_settings()
+        stats = {"computed": 0, "skipped": False, "error": None}
+
+        if not settings.embedding.enabled:
+            logger.info("Embeddings are disabled, skipping")
+            stats["skipped"] = True
+            return stats
+
+        try:
+            from src.processors.embeddings import EmbeddingManager, embedding_to_bytes
+        except ImportError as e:
+            logger.warning(f"Embeddings not available: {e}")
+            stats["error"] = str(e)
+            return stats
+
+        db = self.get_db()
+        try:
+            manager = EmbeddingManager.get_instance()
+
+            # Get items without embeddings
+            item_ids = db.get_content_ids_without_embeddings(limit=limit)
+            items = [db.get_content_item(item_id) for item_id in item_ids]
+            items = [item for item in items if item is not None]
+
+            if not items:
+                logger.info("No items need embedding computation")
+                return stats
+
+            for item in items:
+                try:
+                    text = f"{item.title} {item.summary or ''}"[:500]
+                    embedding = manager.get_embedding(text)
+                    embedding_bytes = embedding_to_bytes(embedding)
+
+                    db.save_content_embedding(
+                        content_id=item.id,
+                        embedding=embedding_bytes,
+                        model=settings.embedding.sentence_transformers_model
+                        if settings.embedding.provider == "sentence-transformers"
+                        else settings.embedding.openai_model,
+                        dimension=manager.dimension,
+                    )
+                    stats["computed"] += 1
+                except (ValueError, TypeError, OSError) as e:
+                    logger.warning(f"Failed to compute embedding for item {item.id}: {e}")
+
+            logger.info(f"Embeddings job completed: {stats['computed']} computed")
+
+        except (ImportError, RuntimeError) as e:
+            logger.error(f"Embeddings computation failed: {e}")
+            stats["error"] = str(e)
+
+        return stats
+
+    def discover_topics(
+        self, days: int = DEFAULT_TOPIC_DISCOVER_DAYS, min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY
+    ) -> dict:
+        """
+        Discover topics from recent content using frequency analysis.
+
+        Uses pure regex and statistics (no LLM token cost).
+
+        Args:
+            days: Number of days to analyze.
+            min_frequency: Minimum frequency threshold.
+
+        Returns:
+            Dict with discovery statistics.
+        """
+        logger.info(f"Starting topic discovery job (last {days} days)...")
+
+        stats = {"discovered": 0, "saved": 0, "error": None}
+
+        try:
+            from src.analytics.topic_discovery import TopicDiscovery
+
+            db = self.get_db()
+            discovery = TopicDiscovery(db)
+            suggestions = discovery.discover_topics(days=days, min_frequency=min_frequency)
+
+            stats["discovered"] = len(suggestions)
+
+            # Save suggestions for later review
+            if suggestions:
+                saved = 0
+                for s in suggestions:
+                    try:
+                        db.save_topic_suggestion(s)
+                        saved += 1
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Could not save suggestion {s.name}: {e}")
+
+                stats["saved"] = saved
+
+            logger.info(f"Topic discovery completed: {stats['discovered']} discovered, {stats['saved']} saved")
+
+        except (ImportError, RuntimeError) as e:
+            logger.error(f"Topic discovery failed: {e}")
+            stats["error"] = str(e)
+
+        return stats
+
+    def send_digest(self, dry_run: bool = False, run_preprocessing: bool = True) -> dict:
         """
         Generate and send the daily digest.
 
         Args:
             dry_run: If True, don't actually send or mark as delivered.
+            run_preprocessing: If True, run embeddings and topic discovery before digest.
 
         Returns:
             Dict with digest statistics.
@@ -327,6 +452,12 @@ class JobRunner:
 
         # First, process any unprocessed items
         self.process_content()
+
+        # Run preprocessing tasks (embeddings + topic discovery)
+        if run_preprocessing:
+            logger.info("Running preprocessing tasks...")
+            self.compute_embeddings()
+            self.discover_topics()
 
         # Generate digest
         digest = generator.generate_digest()
@@ -421,9 +552,19 @@ class BabelByteScheduler:
         """Run fetch job immediately."""
         return self.runner.fetch_all_content()
 
-    def run_digest_now(self, dry_run: bool = False) -> dict:
+    def run_digest_now(self, dry_run: bool = False, run_preprocessing: bool = True) -> dict:
         """Run digest job immediately."""
-        return self.runner.send_digest(dry_run=dry_run)
+        return self.runner.send_digest(dry_run=dry_run, run_preprocessing=run_preprocessing)
+
+    def run_embeddings_now(self, limit: int = DEFAULT_EMBEDDING_LIMIT) -> dict:
+        """Run embeddings computation immediately."""
+        return self.runner.compute_embeddings(limit=limit)
+
+    def run_topic_discovery_now(
+        self, days: int = DEFAULT_TOPIC_DISCOVER_DAYS, min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY
+    ) -> dict:
+        """Run topic discovery immediately."""
+        return self.runner.discover_topics(days=days, min_frequency=min_frequency)
 
     def get_jobs(self) -> list:
         """Get list of scheduled jobs."""

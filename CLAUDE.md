@@ -24,9 +24,9 @@ bb subscribe hackernews <name> --type front  # Subscribe to HN (front/new/best/a
 bb subscribe rss <name> --url <feed-url>     # Subscribe to RSS/Atom feed
 bb list                             # Show subscriptions
 bb fetch                            # Fetch content from all sources
-bb digest --dry-run                 # Preview digest without sending
+bb digest --dry-run                 # Preview digest (includes embeddings + topic discovery)
 bb digest                           # Generate and send email digest
-bb run                              # Start scheduler daemon
+bb run                              # Start scheduler daemon (fully automated)
 bb --mock <command>                 # Test mode with mock data
 ```
 
@@ -159,6 +159,45 @@ Fetchers      Event Stream    Topic Radar
 6. Generate HTML → Send email digest
 7. Periodic reports → Weekly/monthly summaries
 
+## Scheduler Automation
+
+The `bb run` command starts a fully automated daemon. No manual intervention required for daily use.
+
+**Scheduled Jobs:**
+| Job | Trigger | Description |
+|-----|---------|-------------|
+| `fetch_content` | Every N hours | Fetch from all subscriptions |
+| `send_digest` | Daily at configured time | Full pipeline (see below) |
+
+**Digest Pipeline (automatic):**
+```
+send_digest
+  ├── process_content      # AI processing (consumes LLM tokens)
+  ├── compute_embeddings   # Local sentence-transformers (FREE)
+  ├── discover_topics      # Regex + statistics (FREE)
+  └── send email
+```
+
+**Quick Start (recommended for daily use):**
+```bash
+# 1. Configure .env
+FETCH_INTERVAL_HOURS=4
+DIGEST_SEND_TIME=07:00
+
+# 2. Start daemon
+bb run
+
+# That's it! Email arrives automatically every morning.
+```
+
+**Token Cost Summary:**
+| Task | LLM Token Cost |
+|------|----------------|
+| `process_content` | Yes (required) |
+| `compute_embeddings` | No (local model) |
+| `discover_topics` | No (pure statistics) |
+| `cluster` | Yes (optional, not in auto pipeline) |
+
 ## Data Validation Checks
 
 The `bb validate` command runs 12 integrity checks:
@@ -265,6 +304,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Hybrid similarity:** 40% rule-based + 60% semantic (embedding cosine similarity) for event clustering
 - **Embedding providers:** Pluggable providers (sentence-transformers local, OpenAI API) with lazy loading
 - **Topic discovery:** Entity frequency analysis, keyword bigram clustering, trend spike detection (3x week-over-week)
+- **Automated preprocessing:** Digest job automatically runs embeddings + topic discovery before sending (zero extra LLM cost)
 
 ## Data Models
 
