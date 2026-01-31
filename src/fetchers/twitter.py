@@ -213,7 +213,12 @@ class TwitterFetcher(BaseFetcher):
 
 
 class TwitterAPIioFetcher(BaseFetcher):
-    """Fetcher for Twitter content using TwitterAPI.io (third-party, cheaper)."""
+    """Fetcher for Twitter content using TwitterAPI.io (third-party, cheaper).
+
+    Optimizations:
+    - Reuses HTTP client via connection pooling for faster requests
+    - Supports shared client for parallel fetching across subscriptions
+    """
 
     source_type = SourceType.TWITTER
 
@@ -223,10 +228,19 @@ class TwitterAPIioFetcher(BaseFetcher):
     def __init__(self, api_key: Optional[str] = None, max_results: int = DEFAULT_MAX_RESULTS):
         self.api_key = api_key or get_settings().twitter.twitterapi_io_key
         self.max_results = max_results
-        self.timeout = 30.0
+        self.timeout = 15.0  # Reduced from 30s for faster failure detection
+        self._shared_client: Optional[httpx.AsyncClient] = None
 
-    async def fetch(self, subscription: Subscription) -> FetchResult:
+    def set_shared_client(self, client: httpx.AsyncClient) -> None:
+        """Set a shared HTTP client for connection pooling across multiple fetches."""
+        self._shared_client = client
+
+    async def fetch(self, subscription: Subscription, client: Optional[httpx.AsyncClient] = None) -> FetchResult:
         """Fetch tweets from a Twitter user using TwitterAPI.io.
+
+        Args:
+            subscription: The subscription to fetch tweets for.
+            client: Optional shared HTTP client for connection pooling.
 
         Uses last_tweet_id for incremental fetching to avoid re-fetching old tweets.
         """
@@ -247,8 +261,15 @@ class TwitterAPIioFetcher(BaseFetcher):
         try:
             username = subscription.name.lstrip("@")
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(
+            # Use provided client, shared client, or create new one
+            http_client = client or self._shared_client
+            should_close = http_client is None
+
+            if http_client is None:
+                http_client = httpx.AsyncClient(timeout=self.timeout)
+
+            try:
+                response = await http_client.get(
                     self.BASE_URL,
                     params={
                         "userName": username,
@@ -278,6 +299,9 @@ class TwitterAPIioFetcher(BaseFetcher):
 
                 response.raise_for_status()
                 data = response.json()
+            finally:
+                if should_close:
+                    await http_client.aclose()
 
             if data.get("status") != "success":
                 return FetchResult(

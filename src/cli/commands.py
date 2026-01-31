@@ -191,11 +191,23 @@ def fetch(ctx):
     """Fetch content from all enabled subscriptions."""
     mock = ctx.obj.get("mock", False)
 
-    console.print("[bold]Fetching content...[/bold]")
-
     runner = JobRunner(use_mock=mock)
     try:
-        stats = runner.fetch_all_content()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[green]{task.fields[new_items]} new[/green]"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[bold]Fetching...[/bold]", total=None, new_items=0)
+
+            def on_progress(name, current, total, new_items):
+                progress.update(task, total=total, completed=current, new_items=new_items)
+                progress.update(task, description=f"[bold]{name}[/bold]")
+
+            stats = runner.fetch_all_content(progress_callback=on_progress)
 
         console.print(
             Panel(

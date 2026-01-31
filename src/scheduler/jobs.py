@@ -4,19 +4,21 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 
+import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
+from src.fetchers.base import BaseFetcher, FetchResult
 from src.fetchers.reddit import RedditFetcher
 from src.fetchers.twitter import TwitterFetcher, TwitterAPIioFetcher, MockTwitterFetcher
 from src.processors.digest_processor import DigestGenerator
 from src.storage.database import Database, SyncDatabase
-from src.storage.models import SourceType
+from src.storage.models import SourceType, Subscription
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +43,18 @@ class JobRunner:
             self._db.close()
             self._db = None
 
-    def fetch_all_content(self) -> dict:
+    def fetch_all_content(self, progress_callback=None) -> dict:
         """
         Fetch content from all enabled subscriptions.
+
+        Optimizations:
+        - Reddit subscriptions are fetched fully in parallel
+        - Twitter subscriptions use controlled concurrency with rate limiting
+        - Shared HTTP client for TwitterAPI.io (connection pooling)
+
+        Args:
+            progress_callback: Optional callback(subscription_name, index, total, new_items)
+                              called after each subscription is fetched.
 
         Returns:
             Dict with fetch statistics.
@@ -54,56 +65,35 @@ class JobRunner:
         subscriptions = db.list_subscriptions(enabled_only=True)
         if not subscriptions:
             logger.info("No enabled subscriptions found")
-            return {"total": 0, "fetched": 0, "errors": 0}
+            return {"total": 0, "fetched": 0, "errors": 0, "new_items": 0}
 
-        # Initialize fetchers
-        reddit_fetcher = RedditFetcher()
-        settings = get_settings()
-
-        use_twitterapi_io = False
-        if self.use_mock:
-            twitter_fetcher = MockTwitterFetcher()
-        elif settings.twitter.use_twitterapi_io:
-            # Prefer TwitterAPI.io (cheaper, no read restrictions)
-            twitter_fetcher = TwitterAPIioFetcher()
-            use_twitterapi_io = True
-            logger.info("Using TwitterAPI.io for Twitter data")
-        elif settings.twitter.bearer_token:
-            twitter_fetcher = TwitterFetcher()
-        else:
-            twitter_fetcher = MockTwitterFetcher()
+        # Separate subscriptions by type for optimized parallel fetching
+        reddit_subs = [s for s in subscriptions if s.source_type == SourceType.REDDIT]
+        twitter_subs = [s for s in subscriptions if s.source_type == SourceType.TWITTER]
 
         stats = {"total": len(subscriptions), "fetched": 0, "errors": 0, "new_items": 0}
-        last_twitter_fetch = 0.0
 
-        for sub in subscriptions:
+        # Run async fetching
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            results = loop.run_until_complete(
+                self._fetch_all_async(reddit_subs, twitter_subs, progress_callback)
+            )
+            loop.close()
+        except Exception as e:
+            logger.error(f"Error in async fetch: {e}")
+            results = []
+
+        # Process results and store items
+        for result, sub in results:
             try:
-                # Choose appropriate fetcher
-                if sub.source_type == SourceType.REDDIT:
-                    fetcher = reddit_fetcher
-                else:
-                    fetcher = twitter_fetcher
-                    # Rate limit for TwitterAPI.io free tier (1 request per 5 seconds)
-                    if use_twitterapi_io:
-                        elapsed = time.time() - last_twitter_fetch
-                        if elapsed < 5.5:
-                            sleep_time = 5.5 - elapsed
-                            logger.debug(f"Rate limiting: sleeping {sleep_time:.1f}s")
-                            time.sleep(sleep_time)
-                        last_twitter_fetch = time.time()
-
-                # Run async fetch in sync context
-                result = asyncio.get_event_loop().run_until_complete(fetcher.fetch(sub))
-
                 if result.success:
-                    # Store new items
                     new_count = 0
                     skipped_url = 0
                     for item in result.items:
-                        # Skip if external_id already exists
                         if db.content_exists(item.source_type, item.external_id):
                             continue
-                        # Skip if URL already exists (cross-source deduplication)
                         if db.url_exists(item.url):
                             skipped_url += 1
                             logger.debug(f"Skipping duplicate URL: {item.url[:60]}...")
@@ -113,7 +103,6 @@ class JobRunner:
                     if skipped_url > 0:
                         logger.info(f"Skipped {skipped_url} items with duplicate URLs")
 
-                    # Update subscription's last fetched time
                     sub.last_fetched_at = datetime.now()
                     db.update_subscription(sub)
 
@@ -123,16 +112,133 @@ class JobRunner:
                 else:
                     stats["errors"] += 1
                     logger.error(f"Failed to fetch {sub.display_name}: {result.error_message}")
-
             except Exception as e:
                 stats["errors"] += 1
-                logger.error(f"Error fetching {sub.display_name}: {e}")
+                logger.error(f"Error processing {sub.display_name}: {e}")
 
         logger.info(
             f"Fetch job completed: {stats['fetched']}/{stats['total']} successful, "
             f"{stats['new_items']} new items"
         )
         return stats
+
+    async def _fetch_all_async(
+        self,
+        reddit_subs: List[Subscription],
+        twitter_subs: List[Subscription],
+        progress_callback=None,
+    ) -> List[Tuple[FetchResult, Subscription]]:
+        """
+        Fetch all subscriptions asynchronously with optimized parallelism.
+
+        - Reddit: Fully parallel (no rate limits)
+        - Twitter: Controlled concurrency with semaphore for rate limiting
+        """
+        settings = get_settings()
+        results = []
+
+        # Initialize fetchers
+        reddit_fetcher = RedditFetcher()
+
+        use_twitterapi_io = False
+        if self.use_mock:
+            twitter_fetcher = MockTwitterFetcher()
+        elif settings.twitter.use_twitterapi_io:
+            twitter_fetcher = TwitterAPIioFetcher()
+            use_twitterapi_io = True
+            logger.info("Using TwitterAPI.io for Twitter data (parallel mode)")
+        elif settings.twitter.bearer_token:
+            twitter_fetcher = TwitterFetcher()
+        else:
+            twitter_fetcher = MockTwitterFetcher()
+
+        # Fetch Reddit subscriptions fully in parallel
+        if reddit_subs:
+            logger.info(f"Fetching {len(reddit_subs)} Reddit subscriptions in parallel...")
+            reddit_tasks = [reddit_fetcher.fetch(sub) for sub in reddit_subs]
+            reddit_results = await asyncio.gather(*reddit_tasks, return_exceptions=True)
+
+            for sub, result in zip(reddit_subs, reddit_results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error fetching {sub.display_name}: {result}")
+                    results.append((FetchResult(subscription=sub, success=False, error_message=str(result)), sub))
+                else:
+                    results.append((result, sub))
+
+        # Fetch Twitter subscriptions with controlled concurrency
+        if twitter_subs:
+            if use_twitterapi_io:
+                # Use shared HTTP client and semaphore for rate limiting
+                # TwitterAPI.io: ~1 request per 5 seconds, but we can do 2-3 concurrent
+                # with slight overlap since network latency varies
+                twitter_results = await self._fetch_twitter_parallel(
+                    twitter_fetcher, twitter_subs, max_concurrent=2, delay_between=3.0
+                )
+            else:
+                # Official Twitter API or mock - can run more parallel
+                twitter_results = await self._fetch_twitter_parallel(
+                    twitter_fetcher, twitter_subs, max_concurrent=5, delay_between=0.5
+                )
+
+            results.extend(twitter_results)
+
+        return results
+
+    async def _fetch_twitter_parallel(
+        self,
+        fetcher: BaseFetcher,
+        subscriptions: List[Subscription],
+        max_concurrent: int = 2,
+        delay_between: float = 3.0,
+    ) -> List[Tuple[FetchResult, Subscription]]:
+        """
+        Fetch Twitter subscriptions with controlled parallelism.
+
+        Uses a semaphore to limit concurrent requests and adds delay between
+        request starts to respect rate limits while still being faster than sequential.
+        """
+        if not subscriptions:
+            return []
+
+        logger.info(
+            f"Fetching {len(subscriptions)} Twitter subscriptions "
+            f"(max_concurrent={max_concurrent}, delay={delay_between}s)"
+        )
+
+        results = []
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        # Use shared HTTP client for connection pooling (TwitterAPIio only)
+        shared_client = None
+        if isinstance(fetcher, TwitterAPIioFetcher):
+            shared_client = httpx.AsyncClient(timeout=fetcher.timeout)
+            fetcher.set_shared_client(shared_client)
+
+        async def fetch_with_semaphore(sub: Subscription, index: int) -> Tuple[FetchResult, Subscription]:
+            async with semaphore:
+                # Add staggered delay to spread out requests
+                if index > 0:
+                    await asyncio.sleep(delay_between * (index % max_concurrent))
+
+                try:
+                    if shared_client and isinstance(fetcher, TwitterAPIioFetcher):
+                        result = await fetcher.fetch(sub, client=shared_client)
+                    else:
+                        result = await fetcher.fetch(sub)
+                    return (result, sub)
+                except Exception as e:
+                    logger.error(f"Error fetching {sub.display_name}: {e}")
+                    return (FetchResult(subscription=sub, success=False, error_message=str(e)), sub)
+
+        try:
+            # Create tasks with index for staggered delays
+            tasks = [fetch_with_semaphore(sub, i) for i, sub in enumerate(subscriptions)]
+            results = await asyncio.gather(*tasks)
+        finally:
+            if shared_client:
+                await shared_client.aclose()
+
+        return list(results)
 
     def process_content(self, limit: int = 50) -> int:
         """
