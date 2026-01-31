@@ -2,10 +2,13 @@
 
 import json
 import logging
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Optional
 
 from config.settings import get_settings
@@ -25,6 +28,39 @@ class ClusterCandidate:
     method: str  # 'keyword' or 'entity'
 
 
+# Common entity patterns for extraction (module-level for caching)
+_ENTITY_PATTERNS = [
+    # Company names (English)
+    r"\b(OpenAI|Google|Microsoft|Meta|Apple|Amazon|Tesla|Anthropic|Nvidia|AMD|Intel)\b",
+    # Chinese company names
+    r"(阿里巴巴|腾讯|百度|字节跳动|华为|小米|京东|美团|拼多多)",
+    # Tech terms
+    r"\b(GPT-\d+|Claude|Gemini|Llama|ChatGPT|Copilot|DALL-E|Midjourney|Stable\s*Diffusion)\b",
+    # Common event markers
+    r"(发布|上线|宣布|收购|融资|IPO|裁员|合并|开源)",
+]
+
+
+@lru_cache(maxsize=1024)
+def _extract_entities_cached(text: str) -> frozenset[str]:
+    """Extract named entities from text (cached)."""
+    entities = set()
+    for pattern in _ENTITY_PATTERNS:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        entities.update(m.lower() if isinstance(m, str) else m[0].lower() for m in matches)
+    return frozenset(entities)
+
+
+@lru_cache(maxsize=1024)
+def _extract_keywords_cached(text: str) -> frozenset[str]:
+    """Extract key words from title (cached)."""
+    # Remove punctuation and split
+    words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
+    # Filter short words and stopwords
+    stopwords = {"的", "是", "在", "了", "和", "与", "a", "the", "is", "are", "to", "of", "in"}
+    return frozenset(w for w in words if len(w) > 1 and w not in stopwords)
+
+
 class EventStreamProcessor:
     """
     Processes content items to identify and cluster related events.
@@ -33,24 +69,50 @@ class EventStreamProcessor:
     1. Rule-based pre-filtering (keywords, time window, entities)
     2. AI confirmation for borderline cases
     3. Event timeline generation
+
+    Caching:
+    - Entity/keyword extraction: LRU cache (module-level)
+    - Recent clusters query: TTL cache (class-level, 60s)
+    - AI confirmation: Per-session cache (instance-level)
     """
+
+    # Class-level TTL cache for recent clusters: {cache_key: (timestamp, clusters)}
+    _clusters_cache: dict[str, tuple[float, list]] = {}
+    _clusters_cache_ttl: float = float(os.environ.get("CLUSTER_CACHE_TTL", 60.0))
 
     def __init__(self, db: SyncDatabase, use_mock: bool = False):
         self.db = db
         self.use_mock = use_mock
         self.settings = get_settings()
+        # Instance-level cache for AI confirmation: {(item_id, cluster_ids_tuple): result}
+        self._ai_confirm_cache: dict[tuple, Optional[ClusterCandidate]] = {}
 
-        # Common entity patterns for extraction
-        self.entity_patterns = [
-            # Company names (English)
-            r"\b(OpenAI|Google|Microsoft|Meta|Apple|Amazon|Tesla|Anthropic|Nvidia|AMD|Intel)\b",
-            # Chinese company names
-            r"(阿里巴巴|腾讯|百度|字节跳动|华为|小米|京东|美团|拼多多)",
-            # Tech terms
-            r"\b(GPT-\d+|Claude|Gemini|Llama|ChatGPT|Copilot|DALL-E|Midjourney|Stable\s*Diffusion)\b",
-            # Common event markers
-            r"(发布|上线|宣布|收购|融资|IPO|裁员|合并|开源)",
-        ]
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear the clusters cache (useful for testing)."""
+        cls._clusters_cache.clear()
+        _extract_entities_cached.cache_clear()
+        _extract_keywords_cached.cache_clear()
+
+    def _get_recent_clusters_cached(
+        self, time_window_days: int, category: Optional[str]
+    ) -> list[EventCluster]:
+        """Get recent clusters with TTL caching."""
+        cache_key = f"{time_window_days}:{category or ''}"
+        now = time.time()
+
+        if cache_key in self._clusters_cache:
+            cached_time, cached_clusters = self._clusters_cache[cache_key]
+            if now - cached_time < self._clusters_cache_ttl:
+                logger.debug(f"Using cached clusters for key={cache_key}")
+                return cached_clusters
+
+        # Query database and cache result
+        clusters = self.db.get_recent_event_clusters(
+            days=time_window_days, category=category, limit=50
+        )
+        self._clusters_cache[cache_key] = (now, clusters)
+        return clusters
 
     def find_cluster_candidates(
         self, item: ContentItem, time_window_days: int = 3
@@ -67,31 +129,29 @@ class EventStreamProcessor:
         """
         candidates = []
 
-        # Get recent clusters
-        recent_clusters = self.db.get_recent_event_clusters(
-            days=time_window_days, category=item.category, limit=50
-        )
+        # Get recent clusters (cached)
+        recent_clusters = self._get_recent_clusters_cached(time_window_days, item.category)
 
         if not recent_clusters:
             return candidates
 
-        # Extract key entities from the item
-        item_entities = self._extract_entities(item.title + " " + (item.content or ""))
-        item_keywords = self._extract_keywords(item.title)
+        # Extract key entities from the item (uses LRU cached functions)
+        item_entities = _extract_entities_cached(item.title + " " + (item.content or ""))
+        item_keywords = _extract_keywords_cached(item.title)
 
         for cluster in recent_clusters:
             score = 0.0
             method = "keyword"
 
-            # Check entity overlap
-            cluster_entities = self._extract_entities(cluster.event_title)
+            # Check entity overlap (uses LRU cached functions)
+            cluster_entities = _extract_entities_cached(cluster.event_title)
             entity_overlap = item_entities & cluster_entities
             if entity_overlap:
                 score += 0.4 * min(len(entity_overlap), 3) / 3  # Max 0.4 for entities
                 method = "entity"
 
-            # Check keyword overlap in title
-            cluster_keywords = self._extract_keywords(cluster.event_title)
+            # Check keyword overlap in title (uses LRU cached functions)
+            cluster_keywords = _extract_keywords_cached(cluster.event_title)
             keyword_overlap = item_keywords & cluster_keywords
             if keyword_overlap:
                 score += 0.3 * min(len(keyword_overlap), 5) / 5  # Max 0.3 for keywords
@@ -126,6 +186,7 @@ class EventStreamProcessor:
         Use AI to confirm if the item belongs to any candidate cluster.
 
         Uses light model for this simple yes/no classification task.
+        Results are cached per (item_id, cluster_ids) to avoid redundant AI calls.
 
         Args:
             item: Content item to classify
@@ -137,9 +198,17 @@ class EventStreamProcessor:
         if not candidates:
             return None
 
+        # Check cache first
+        cache_key = (item.id, tuple(c.cluster_id for c in candidates))
+        if cache_key in self._ai_confirm_cache:
+            logger.debug(f"Using cached AI confirmation for item {item.id}")
+            return self._ai_confirm_cache[cache_key]
+
         if self.use_mock:
             # In mock mode, accept the top candidate if score > 0.5
-            return candidates[0] if candidates[0].score > 0.5 else None
+            result = candidates[0] if candidates[0].score > 0.5 else None
+            self._ai_confirm_cache[cache_key] = result
+            return result
 
         # Build prompt for AI confirmation
         candidate_list = "\n".join(
@@ -185,15 +254,20 @@ class EventStreamProcessor:
                 if match:
                     idx = int(match.group())
                     if 1 <= idx <= len(candidates):
-                        return candidates[idx - 1]
+                        confirmed = candidates[idx - 1]
+                        self._ai_confirm_cache[cache_key] = confirmed
+                        return confirmed
 
         except Exception as e:
             logger.warning(f"AI confirmation failed: {e}")
 
         # Fallback: accept high-confidence matches
         if candidates[0].score >= 0.7:
-            return candidates[0]
+            result = candidates[0]
+            self._ai_confirm_cache[cache_key] = result
+            return result
 
+        self._ai_confirm_cache[cache_key] = None
         return None
 
     def process_item_for_clustering(self, item: ContentItem) -> Optional[EventCluster]:
@@ -297,22 +371,6 @@ class EventStreamProcessor:
         self.db.add_event_timeline(timeline)
 
         return timeline
-
-    def _extract_entities(self, text: str) -> set[str]:
-        """Extract named entities from text."""
-        entities = set()
-        for pattern in self.entity_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            entities.update(m.lower() if isinstance(m, str) else m[0].lower() for m in matches)
-        return entities
-
-    def _extract_keywords(self, text: str) -> set[str]:
-        """Extract key words from title."""
-        # Remove punctuation and split
-        words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
-        # Filter short words and stopwords
-        stopwords = {"的", "是", "在", "了", "和", "与", "a", "the", "is", "are", "to", "of", "in"}
-        return {w for w in words if len(w) > 1 and w not in stopwords}
 
     def _generate_event_title(self, item: ContentItem) -> str:
         """Generate a concise event title from content item using light model."""
