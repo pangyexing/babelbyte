@@ -21,6 +21,7 @@ from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
     should_skip_ai_processing,
+    try_rule_only_processing,
 )
 from src.storage.database import SyncDatabase
 from src.storage.models import ActionItem, ActionStatus, ContentItem, DigestItem, EventDigestItem
@@ -240,10 +241,34 @@ class DigestGenerator:
                 logger.debug(f"Skipped: {item.title[:40]}... ({skip_reason})")
                 continue
 
-            # Try rule-based classification
+            # Try rule-only processing (full result without AI)
+            rule_only_result = try_rule_only_processing(item)
+            if rule_only_result:
+                # Full processing result from rules - includes summary, key_points, etc.
+                item.summary = rule_only_result.summary
+                item.category = rule_only_result.category
+                item.importance_score = rule_only_result.importance_score
+                item.one_liner = rule_only_result.one_liner
+                if rule_only_result.key_points:
+                    import json
+                    item.key_points = json.dumps(
+                        [{"type": kp.type, "value": kp.value, "impact": kp.impact}
+                         for kp in rule_only_result.key_points],
+                        ensure_ascii=False
+                    )
+                item.processed_at = datetime.now()
+                self.db.update_content_item(item)
+                rule_classified_count += 1
+                processed_count += 1
+                logger.debug(
+                    f"Rule-only processed: {item.title[:40]}... -> {rule_only_result.category}"
+                )
+                continue
+
+            # Fallback: Try basic rule classification (category/importance only)
             rule_result = self.processor.rule_classifier.classify(item)
             if rule_result:
-                # Generate a simple summary for rule-classified items
+                # Basic classification - just category and importance
                 item.summary = f"{item.title[:50]}" if len(item.title) > 50 else item.title
                 item.category = rule_result.category
                 item.importance_score = rule_result.importance_score
