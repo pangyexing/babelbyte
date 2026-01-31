@@ -3,10 +3,13 @@
 import json
 import logging
 import subprocess
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from config.settings import get_settings
 from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
+
+if TYPE_CHECKING:
+    from src.storage.database import SyncDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +17,15 @@ logger = logging.getLogger(__name__)
 class ClaudeCLI(BaseAIProcessor):
     """Wrapper for Claude Code CLI."""
 
-    def __init__(self, cli_path: Optional[str] = None, timeout: int = 60):
+    def __init__(
+        self,
+        cli_path: Optional[str] = None,
+        timeout: int = 60,
+        db: Optional["SyncDatabase"] = None,
+    ):
         self.cli_path = cli_path or get_settings().claude.cli_path
         self.timeout = timeout
+        self.db = db
         self._settings = None
 
     @property
@@ -104,6 +113,15 @@ class ClaudeCLI(BaseAIProcessor):
         if task_type is None:
             task_type = TaskType.CONTENT_HIGH
 
+        # Check cache if enabled
+        content_hash = None
+        if self.settings.ai.cache_enabled and self.db:
+            content_hash = self._get_content_hash(title, content)
+            cached_json = self.db.get_ai_cache(content_hash)
+            if cached_json:
+                logger.debug(f"Cache hit: {title[:30]}...")
+                return self._deserialize_result(cached_json)
+
         # Use light prompt for low importance content
         if task_type == TaskType.CONTENT_LOW:
             prompt = self._build_light_prompt(title, content)
@@ -123,7 +141,20 @@ class ClaudeCLI(BaseAIProcessor):
                     raw_response=result.stdout,
                 )
 
-            return self._parse_json_response(result.stdout)
+            processing_result = self._parse_json_response(result.stdout)
+
+            # Store in cache if successful
+            if processing_result.success and self.settings.ai.cache_enabled and self.db:
+                if content_hash is None:
+                    content_hash = self._get_content_hash(title, content)
+                self.db.set_ai_cache(
+                    content_hash,
+                    self._serialize_result(processing_result),
+                    self.settings.ai.cache_ttl,
+                )
+                logger.debug(f"Cache stored: {title[:30]}...")
+
+            return processing_result
 
         except subprocess.TimeoutExpired:
             return ProcessingResult(
@@ -154,7 +185,7 @@ class ClaudeCLI(BaseAIProcessor):
         self, items: list[tuple[int, str, str]], task_type: Optional[TaskType] = None
     ) -> list[ProcessingResult]:
         """
-        Process multiple items in a single API call.
+        Process multiple items in a single API call with cache support.
 
         Args:
             items: List of (id, title, content) tuples
@@ -169,25 +200,74 @@ class ClaudeCLI(BaseAIProcessor):
         if task_type is None:
             task_type = TaskType.CONTENT_HIGH
 
-        prompt = self._build_batch_prompt(items)
+        results: list[Optional[ProcessingResult]] = [None] * len(items)
+        # (result_idx, orig_id, title, content)
+        items_to_process: list[tuple[int, int, str, str]] = []
+        cache_hashes: dict[int, str] = {}  # result_idx -> content_hash
+
+        # 1. Check cache for each item
+        if self.settings.ai.cache_enabled and self.db:
+            for i, (orig_id, title, content) in enumerate(items):
+                content_hash = self._get_content_hash(title, content)
+                cached_json = self.db.get_ai_cache(content_hash)
+                if cached_json:
+                    results[i] = self._deserialize_result(cached_json)
+                    logger.debug(f"Batch cache hit: {title[:30]}...")
+                else:
+                    items_to_process.append((i, orig_id, title, content))
+                    cache_hashes[i] = content_hash
+        else:
+            items_to_process = [
+                (i, orig_id, title, content) for i, (orig_id, title, content) in enumerate(items)
+            ]
+
+        # All items were cached
+        if not items_to_process:
+            logger.info(f"Batch: all {len(items)} items from cache")
+            return results
+
+        cache_hits = len(items) - len(items_to_process)
+        if cache_hits > 0:
+            logger.info(f"Batch: {cache_hits} cache hits, {len(items_to_process)} to process")
+
+        # 2. Process uncached items in batch
+        batch_input = [(orig_id, title, content) for _, orig_id, title, content in items_to_process]
+        prompt = self._build_batch_prompt(batch_input)
 
         # Dynamic timeout: base + 15s per item (larger batches need more time)
-        batch_timeout = self.timeout + (len(items) * 15)
+        batch_timeout = self.timeout + (len(batch_input) * 15)
 
         try:
-            result = self._run_cli(prompt, task_type, batch_timeout)
+            cli_result = self._run_cli(prompt, task_type, batch_timeout)
 
-            if result.returncode != 0:
-                # Fall back to individual processing
-                return [
-                    self.process_content(title, content, task_type) for _, title, content in items
-                ]
+            if cli_result.returncode != 0:
+                # Fall back to individual processing (which uses cache internally)
+                for result_idx, orig_id, title, content in items_to_process:
+                    results[result_idx] = self.process_content(title, content, task_type)
+                return results
 
-            return self._parse_batch_response(result.stdout, len(items))
+            batch_results = self._parse_batch_response(cli_result.stdout, len(batch_input))
+
+            # 3. Fill results and store in cache
+            for (result_idx, _, title, _), proc_result in zip(items_to_process, batch_results):
+                results[result_idx] = proc_result
+                if proc_result.success and self.settings.ai.cache_enabled and self.db:
+                    content_hash = cache_hashes.get(result_idx)
+                    if content_hash:
+                        self.db.set_ai_cache(
+                            content_hash,
+                            self._serialize_result(proc_result),
+                            self.settings.ai.cache_ttl,
+                        )
+                        logger.debug(f"Batch cache stored: {title[:30]}...")
+
+            return results
 
         except Exception:
-            # Fall back to individual processing
-            return [self.process_content(title, content, task_type) for _, title, content in items]
+            # Fall back to individual processing (which uses cache internally)
+            for result_idx, orig_id, title, content in items_to_process:
+                results[result_idx] = self.process_content(title, content, task_type)
+            return results
 
     def _parse_batch_response(self, response: str, expected_count: int) -> list[ProcessingResult]:
         """Parse batch response containing multiple JSON objects."""
