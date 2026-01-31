@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ImportanceEstimate:
+    """Result of importance estimation before AI processing."""
+
+    score: int  # Estimated score 1-10
+    confidence: float  # Confidence level 0-1
+    reason: str  # Why this estimate was made
+
+
+@dataclass
 class RuleClassificationResult:
     """Result of rule-based classification."""
 
@@ -109,7 +118,11 @@ class RuleClassifier:
         (re.compile(r"\b(Series [A-Z]|seed round|IPO|acquisition)\b", re.I), "创业", 2),
         (re.compile(r"\b(startup|founder|YC|Y Combinator)\b", re.I), "创业", 1),
         # Question posts (common on Reddit)
-        (re.compile(r"^(How|What|Why|When|Where|Who|Which|Can|Should|Is|Are|Does|Do)\b", re.I), "其他", 0),  # noqa: E501
+        (
+            re.compile(r"^(How|What|Why|When|Where|Who|Which|Can|Should|Is|Are|Does|Do)\b", re.I),
+            "其他",
+            0,
+        ),  # noqa: E501
         (re.compile(r"\?$"), "其他", 0),
         # Science
         (re.compile(r"\b(research|study|paper|published)\b", re.I), "科学", 0),
@@ -227,6 +240,108 @@ class RuleClassifier:
                 )
 
         return None
+
+    def _classify_by_domain_with_url(self, url: str) -> Optional[RuleClassificationResult]:
+        """Classify based on URL domain only (used by estimate_importance)."""
+        if not url:
+            return None
+
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+
+            # Remove www. prefix
+            if domain.startswith("www."):
+                domain = domain[4:]
+
+            # Check exact match first
+            if domain in self.DOMAIN_CATEGORIES:
+                category, importance = self.DOMAIN_CATEGORIES[domain]
+                return RuleClassificationResult(
+                    category=category,
+                    importance_score=importance,
+                    reason=f"domain:{domain}",
+                )
+
+            # Check subdomain matches
+            for known_domain, (category, importance) in self.DOMAIN_CATEGORIES.items():
+                if domain.endswith("." + known_domain) or domain == known_domain:
+                    return RuleClassificationResult(
+                        category=category,
+                        importance_score=importance,
+                        reason=f"domain:{known_domain}",
+                    )
+
+        except Exception:
+            pass
+
+        return None
+
+
+def estimate_importance(item: ContentItem) -> ImportanceEstimate:
+    """
+    Estimate importance score before AI processing for model tier selection.
+
+    Returns score with confidence level to guide heavy/light model decision.
+
+    Args:
+        item: Content item to estimate.
+
+    Returns:
+        ImportanceEstimate with score, confidence, and reason.
+    """
+    score = 5
+    confidence = 0.3  # Default low confidence
+    reason = "default"
+
+    classifier = RuleClassifier()
+
+    # 1. Domain matching - high confidence
+    domain_result = classifier._classify_by_domain_with_url(item.url)
+    if domain_result:
+        score = domain_result.importance_score
+        confidence = 0.85
+        domain_name = domain_result.reason.split(":")[1] if ":" in domain_result.reason else ""
+        reason = f"domain:{domain_name}" if domain_name else domain_result.reason
+        return ImportanceEstimate(score, confidence, reason)
+
+    # 2. Strong keyword patterns - medium-high confidence
+    text = f"{item.title} {item.content[:500] if item.content else ''}"
+
+    high_value_patterns = [
+        (r"(OpenAI|Anthropic|Google|Meta)\s+(announces?|launches?|releases?)", 3, 0.8),
+        (r"\$\d+[BM]\b", 2, 0.75),
+        (r"(breakthrough|major|significant)\s+(discovery|advancement|update)", 2, 0.7),
+        (r"(Series [C-Z]|IPO|acqui)", 2, 0.7),
+        (r"(GPT-?5|Claude\s+\d|Gemini\s+\d)", 2, 0.75),
+    ]
+
+    for pattern, boost, conf in high_value_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            score = min(10, score + boost)
+            confidence = conf
+            reason = f"strong_keyword:{pattern[:25]}"
+            return ImportanceEstimate(score, confidence, reason)
+
+    # 3. Weak keyword patterns - medium confidence
+    weak_patterns = [
+        (r"\b(GPT|Claude|Gemini|LLM|ChatGPT)\b", 1, 0.55),
+        (r"\b(AI|ML|机器学习|深度学习)\b", 1, 0.5),
+        (r"\b(launch|announce|release|发布|上线)\b", 1, 0.45),
+    ]
+
+    for pattern, boost, conf in weak_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            score = min(10, score + boost)
+            if conf > confidence:
+                confidence = conf
+                reason = f"weak_keyword:{pattern[:20]}"
+
+    # 4. Unknown domain + no keyword matches - low confidence
+    if confidence < 0.4:
+        reason = "unknown"
+
+    return ImportanceEstimate(score, confidence, reason)
 
 
 def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:

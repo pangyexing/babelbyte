@@ -4,9 +4,22 @@ import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Optional
 
 from config.settings import get_settings
+
+
+class TaskType(Enum):
+    """Task types for model tier selection."""
+
+    CONTENT_HIGH = auto()  # High importance content - full analysis
+    CONTENT_LOW = auto()  # Low importance content - light analysis
+    CONTENT_UNCERTAIN = auto()  # Low confidence content - use heavy model
+    EVENT_CONFIRM = auto()  # Event clustering confirmation
+    EVENT_TITLE = auto()  # Event title generation
+    TIMELINE = auto()  # Timeline summary
+    REPORT = auto()  # Report generation
 
 
 @dataclass
@@ -87,13 +100,32 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
     # fmt: on
 
     # Simple prompt for low-value or pre-filtered content (uses less tokens)
+    # fmt: off
     SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
 评分：9-10重大突破，7-8重要更新，5-6一般，1-4低价值
 
 标题：{title}
+正文：{content}"""  # noqa: E501
+    # fmt: on
+
+    # Light prompt - retains key_points but skips impact and actions (for light model)
+    # fmt: off
+    LIGHT_PROMPT = """返回JSON：{{
+  "summary": "50字中文摘要",
+  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "importance": 1-10,
+  "one_liner": "一句话结论",
+  "key_points": [{{"type": "数字/时间/实体/事实", "value": "关键值", "impact": "影响"}}]
+}}
+评分：9-10重大，7-8重要，5-6一般，1-4低价值
+key_points：最多3个关键点
+
+标题：{title}
 正文：{content}"""
+    # fmt: on
 
     # Batch processing prompt for multiple items
+    # fmt: off
     BATCH_PROMPT = """批量处理以下{count}条内容，每条返回一行JSON（仅JSON，无其他文字）：
 {{
   "id": 序号,
@@ -109,7 +141,8 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
 评分：9-10重大突破，7-8重要，5-6一般，1-4低价值
 key_points最多3个，actionable_items仅importance>=7时提取
 
-{items}"""
+{items}"""  # noqa: E501
+    # fmt: on
 
     @abstractmethod
     def process_content(self, title: str, content: str) -> ProcessingResult:
@@ -188,6 +221,33 @@ key_points最多3个，actionable_items仅importance>=7时提取
 
         return self.PROCESS_PROMPT.format(title=title, content=content)
 
+    def _build_light_prompt(self, title: str, content: str, max_length: int = -1) -> str:
+        """
+        Build a lightweight prompt for light model processing.
+
+        Args:
+            title: Content title.
+            content: Content body.
+            max_length: Max content length. -1 uses config default, 0 disables truncation.
+
+        Returns:
+            Formatted light prompt string.
+        """
+        settings = get_settings()
+
+        # Apply title truncation
+        max_title = settings.ai.max_title_length
+        if max_title > 0 and len(title) > max_title:
+            title = self._smart_truncate(title, max_title)
+
+        # Apply content truncation
+        if max_length == -1:
+            max_length = settings.ai.max_content_length
+        if max_length > 0 and len(content) > max_length:
+            content = self._smart_truncate(content, max_length)
+
+        return self.LIGHT_PROMPT.format(title=title, content=content)
+
     def _build_batch_prompt(self, items: list[tuple[int, str, str]], max_length: int = -1) -> str:
         """
         Build batch prompt for multiple items with truncation.
@@ -217,12 +277,15 @@ key_points最多3个，actionable_items仅importance>=7时提取
 
         return self.BATCH_PROMPT.format(count=len(items), items="\n\n".join(item_texts))
 
-    def process_batch(self, items: list[tuple[int, str, str]]) -> list[ProcessingResult]:
+    def process_batch(
+        self, items: list[tuple[int, str, str]], task_type: Optional["TaskType"] = None
+    ) -> list[ProcessingResult]:
         """
         Process multiple items in a single API call (override in subclass).
 
         Args:
             items: List of (id, title, content) tuples
+            task_type: Optional task type for model selection
 
         Returns:
             List of ProcessingResult, one per item
@@ -285,11 +348,13 @@ key_points最多3个，actionable_items仅importance>=7时提取
         if isinstance(raw_key_points, list):
             for kp in raw_key_points:
                 if isinstance(kp, dict):
-                    key_points.append(KeyPointResult(
-                        type=kp.get("type", "事实"),
-                        value=kp.get("value", ""),
-                        impact=kp.get("impact", ""),
-                    ))
+                    key_points.append(
+                        KeyPointResult(
+                            type=kp.get("type", "事实"),
+                            value=kp.get("value", ""),
+                            impact=kp.get("impact", ""),
+                        )
+                    )
 
         # Parse impact_assessment
         impact_assessment = None
@@ -307,11 +372,13 @@ key_points最多3个，actionable_items仅importance>=7时提取
         if isinstance(raw_actions, list):
             for action in raw_actions:
                 if isinstance(action, dict):
-                    actionable_items.append(ActionResult(
-                        type=action.get("type", "跟进"),
-                        description=action.get("description", ""),
-                        priority=action.get("priority", "中"),
-                    ))
+                    actionable_items.append(
+                        ActionResult(
+                            type=action.get("type", "跟进"),
+                            description=action.get("description", ""),
+                            priority=action.get("priority", "中"),
+                        )
+                    )
 
         return ProcessingResult(
             summary=summary,
@@ -330,20 +397,12 @@ key_points最多3个，actionable_items仅importance>=7时提取
         try:
             # Extract summary - match content between "summary": " and ", "category"
             summary_match = re.search(
-                r'"summary"\s*:\s*"(.+?)"\s*,\s*"category"',
-                response,
-                re.DOTALL
+                r'"summary"\s*:\s*"(.+?)"\s*,\s*"category"', response, re.DOTALL
             )
             # Extract category
-            category_match = re.search(
-                r'"category"\s*:\s*"([^"]+)"',
-                response
-            )
+            category_match = re.search(r'"category"\s*:\s*"([^"]+)"', response)
             # Extract importance
-            importance_match = re.search(
-                r'"importance"\s*:\s*(\d+)',
-                response
-            )
+            importance_match = re.search(r'"importance"\s*:\s*(\d+)', response)
 
             if summary_match and category_match and importance_match:
                 summary = summary_match.group(1).strip()

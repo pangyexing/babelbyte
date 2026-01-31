@@ -5,7 +5,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from config.settings import get_settings
@@ -106,12 +106,14 @@ class EventStreamProcessor:
                 score += 0.1
 
             if score >= 0.3:  # Minimum threshold
-                candidates.append(ClusterCandidate(
-                    cluster_id=cluster.id,
-                    cluster_title=cluster.event_title,
-                    score=score,
-                    method=method,
-                ))
+                candidates.append(
+                    ClusterCandidate(
+                        cluster_id=cluster.id,
+                        cluster_title=cluster.event_title,
+                        score=score,
+                        method=method,
+                    )
+                )
 
         # Sort by score descending
         candidates.sort(key=lambda x: x.score, reverse=True)
@@ -122,6 +124,8 @@ class EventStreamProcessor:
     ) -> Optional[ClusterCandidate]:
         """
         Use AI to confirm if the item belongs to any candidate cluster.
+
+        Uses light model for this simple yes/no classification task.
 
         Args:
             item: Content item to classify
@@ -138,10 +142,12 @@ class EventStreamProcessor:
             return candidates[0] if candidates[0].score > 0.5 else None
 
         # Build prompt for AI confirmation
-        candidate_list = "\n".join([
-            f"{i+1}. [{c.cluster_title}] (匹配度: {c.score:.2f})"
-            for i, c in enumerate(candidates)
-        ])
+        candidate_list = "\n".join(
+            [
+                f"{i+1}. [{c.cluster_title}] (匹配度: {c.score:.2f})"
+                for i, c in enumerate(candidates)
+            ]
+        )
 
         prompt = f"""判断这篇文章是否属于以下某个事件：
 
@@ -155,8 +161,18 @@ class EventStreamProcessor:
 
         try:
             cli_path = self.settings.claude.cli_path
+            config = self.settings.ai.model_tiers
+
+            # Build command with light model for simple confirmation task
+            cmd = [cli_path, "-p", prompt, "--output-format", "text"]
+            if config.enabled:
+                model = config.task_overrides.get("event_confirm", config.claude_light)
+                if model:
+                    cmd.extend(["--model", model])
+                    logger.debug(f"Event confirm using model: {model}")
+
             result = subprocess.run(
-                [cli_path, "-p", prompt, "--output-format", "text"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -299,14 +315,24 @@ class EventStreamProcessor:
         return {w for w in words if len(w) > 1 and w not in stopwords}
 
     def _generate_event_title(self, item: ContentItem) -> str:
-        """Generate a concise event title from content item."""
+        """Generate a concise event title from content item using light model."""
         # Use AI to generate a concise title if available
         if not self.use_mock:
             try:
                 prompt = f"用10个字以内概括这个事件的主题：{item.title}"
                 cli_path = self.settings.claude.cli_path
+                config = self.settings.ai.model_tiers
+
+                # Build command with light model for simple title generation
+                cmd = [cli_path, "-p", prompt, "--output-format", "text"]
+                if config.enabled:
+                    model = config.task_overrides.get("event_title", config.claude_light)
+                    if model:
+                        cmd.extend(["--model", model])
+                        logger.debug(f"Event title using model: {model}")
+
                 result = subprocess.run(
-                    [cli_path, "-p", prompt, "--output-format", "text"],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -325,7 +351,7 @@ class EventStreamProcessor:
     def _generate_timeline_summary(
         self, cluster: EventCluster, today_items: list[ContentItem], recent_items: list[ContentItem]
     ) -> tuple[str, str]:
-        """Generate a timeline summary comparing today vs recent developments."""
+        """Generate a timeline summary comparing today vs recent developments using light model."""
         try:
             # Build context from items
             today_summaries = "\n".join([f"- {i.summary or i.title}" for i in today_items[:3]])
@@ -345,8 +371,18 @@ class EventStreamProcessor:
 high表示各来源一致，conflicted表示有分歧"""
 
             cli_path = self.settings.claude.cli_path
+            config = self.settings.ai.model_tiers
+
+            # Build command with light model for timeline summary
+            cmd = [cli_path, "-p", prompt, "--output-format", "text"]
+            if config.enabled:
+                model = config.task_overrides.get("timeline", config.claude_light)
+                if model:
+                    cmd.extend(["--model", model])
+                    logger.debug(f"Timeline summary using model: {model}")
+
             result = subprocess.run(
-                [cli_path, "-p", prompt, "--output-format", "text"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,

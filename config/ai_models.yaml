@@ -1,0 +1,30 @@
+# AI Model Tier Configuration
+# Controls model selection based on content importance and task type
+
+model_tiers:
+  enabled: true
+  heavy_threshold: 7           # importance >= 7 uses heavy model
+  low_confidence_threshold: 5  # threshold lowered when confidence is low
+  confidence_cutoff: 0.5       # confidence < 0.5 uses heavy model
+
+  claude:
+    heavy: sonnet
+    light: haiku
+
+  codex:
+    heavy: gpt-5.1-codex
+    light: gpt-5.1-codex-mini
+
+# Quality Protection Strategy
+quality_guard:
+  unknown_domain_use_heavy: true       # Use heavy model for unknown domains
+  reprocess_high_score_from_light: true  # Reprocess if light model returns high score
+  reprocess_threshold: 7               # Reprocess threshold
+  retain_key_points_for_light: true    # Light model also extracts key_points
+
+# Task-level model overrides (optional)
+# Uncomment to override model for specific task types
+task_overrides:
+  # event_confirm: haiku
+  # event_title: haiku
+  # report: opus

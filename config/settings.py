@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import yaml
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -116,6 +117,77 @@ class CodexConfig:
 
 
 @dataclass
+class QualityGuardConfig:
+    """Quality protection configuration for model tier selection."""
+
+    unknown_domain_use_heavy: bool = True
+    reprocess_high_score_from_light: bool = True
+    reprocess_threshold: int = 7
+    retain_key_points_for_light: bool = True
+
+
+@dataclass
+class ModelTierConfig:
+    """Model tier configuration for AI cost optimization."""
+
+    enabled: bool = True
+    heavy_threshold: int = 7
+    low_confidence_threshold: int = 5
+    confidence_cutoff: float = 0.5
+
+    # Claude models
+    claude_heavy: str = "sonnet"
+    claude_light: str = "haiku"
+
+    # Codex models
+    codex_heavy: str = "gpt-5.1-codex"
+    codex_light: str = "gpt-5.1-codex-mini"
+
+    # Quality protection
+    quality_guard: QualityGuardConfig = field(default_factory=QualityGuardConfig)
+
+    # Task-level overrides
+    task_overrides: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "ModelTierConfig":
+        """Load configuration from YAML file."""
+        if not path.exists():
+            return cls()
+
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        tier_data = data.get("model_tiers", {})
+        guard_data = data.get("quality_guard", {})
+        task_overrides = data.get("task_overrides") or {}
+
+        # Extract claude/codex nested config
+        claude_config = tier_data.pop("claude", {}) if tier_data else {}
+        codex_config = tier_data.pop("codex", {}) if tier_data else {}
+
+        # Build config with defaults
+        low_conf_threshold = tier_data.get("low_confidence_threshold", 5) if tier_data else 5
+        codex_heavy_model = codex_config.get("heavy", "gpt-5.1-codex") or "gpt-5.1-codex"
+        codex_light_model = codex_config.get("light", "gpt-5.1-codex-mini") or "gpt-5.1-codex-mini"
+        quality = QualityGuardConfig(**guard_data) if guard_data else QualityGuardConfig()
+        overrides = {k: v for k, v in task_overrides.items() if v is not None}
+
+        return cls(
+            enabled=tier_data.get("enabled", True) if tier_data else True,
+            heavy_threshold=tier_data.get("heavy_threshold", 7) if tier_data else 7,
+            low_confidence_threshold=low_conf_threshold,
+            confidence_cutoff=tier_data.get("confidence_cutoff", 0.5) if tier_data else 0.5,
+            claude_heavy=claude_config.get("heavy", "sonnet") or "sonnet",
+            claude_light=claude_config.get("light", "haiku") or "haiku",
+            codex_heavy=codex_heavy_model,
+            codex_light=codex_light_model,
+            quality_guard=quality,
+            task_overrides=overrides,
+        )
+
+
+@dataclass
 class AIConfig:
     """AI provider configuration."""
 
@@ -134,9 +206,18 @@ class AIConfig:
     batch_size_short: int = field(
         default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_SHORT", "12"))
     )
-    batch_size_long: int = field(
-        default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_LONG", "6"))
-    )
+    batch_size_long: int = field(default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_LONG", "6")))
+
+    # Model tier configuration
+    model_tiers: ModelTierConfig = field(default_factory=ModelTierConfig)
+
+    def __post_init__(self):
+        """Load model tier config from YAML if not already set."""
+        if isinstance(self.model_tiers, ModelTierConfig) and self.model_tiers.enabled:
+            # Try to load from YAML
+            yaml_path = PROJECT_ROOT / "config" / "ai_models.yaml"
+            if yaml_path.exists():
+                self.model_tiers = ModelTierConfig.from_yaml(yaml_path)
 
     def get_provider(self) -> str:
         """Get the actual provider to use."""

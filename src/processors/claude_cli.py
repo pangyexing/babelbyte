@@ -1,11 +1,14 @@
 """Claude Code CLI wrapper for AI processing."""
 
 import json
+import logging
 import subprocess
 from typing import Optional
 
 from config.settings import get_settings
-from src.processors.base import BaseAIProcessor, ProcessingResult
+from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeCLI(BaseAIProcessor):
@@ -14,27 +17,101 @@ class ClaudeCLI(BaseAIProcessor):
     def __init__(self, cli_path: Optional[str] = None, timeout: int = 60):
         self.cli_path = cli_path or get_settings().claude.cli_path
         self.timeout = timeout
+        self._settings = None
 
-    def process_content(self, title: str, content: str) -> ProcessingResult:
+    @property
+    def settings(self):
+        """Lazy load settings."""
+        if self._settings is None:
+            self._settings = get_settings()
+        return self._settings
+
+    def get_model_for_task(self, task_type: TaskType) -> str:
+        """
+        Select model based on task type.
+
+        Args:
+            task_type: Type of task being performed.
+
+        Returns:
+            Model name to use, or empty string to use default.
+        """
+        config = self.settings.ai.model_tiers
+        if not config.enabled:
+            return ""
+
+        # Check task-level override
+        task_name = task_type.name.lower()
+        if task_name in config.task_overrides:
+            return config.task_overrides[task_name]
+
+        # Heavy tasks use heavy model
+        heavy_tasks = {
+            TaskType.CONTENT_HIGH,
+            TaskType.CONTENT_UNCERTAIN,
+            TaskType.REPORT,
+        }
+        if task_type in heavy_tasks:
+            return config.claude_heavy
+
+        # Light tasks use light model
+        return config.claude_light
+
+    def _run_cli(
+        self, prompt: str, task_type: Optional[TaskType] = None, timeout: Optional[int] = None
+    ) -> subprocess.CompletedProcess:
+        """
+        Run Claude CLI with optional model selection.
+
+        Args:
+            prompt: The prompt to send.
+            task_type: Task type for model selection.
+            timeout: Optional timeout override.
+
+        Returns:
+            Completed subprocess result.
+        """
+        cmd = [self.cli_path, "-p", prompt, "--output-format", "text"]
+
+        if task_type:
+            model = self.get_model_for_task(task_type)
+            if model:
+                cmd.extend(["--model", model])
+                logger.debug(f"Using model {model} for task {task_type.name}")
+
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout or self.timeout,
+        )
+
+    def process_content(
+        self, title: str, content: str, task_type: Optional[TaskType] = None
+    ) -> ProcessingResult:
         """
         Process content using Claude Code CLI.
 
         Args:
             title: The title of the content.
             content: The main content text.
+            task_type: Task type for model selection. Defaults to CONTENT_HIGH.
 
         Returns:
             ProcessingResult with summary, category, and importance score.
         """
-        prompt = self._build_prompt(title, content)
+        # Default to high importance processing if not specified
+        if task_type is None:
+            task_type = TaskType.CONTENT_HIGH
+
+        # Use light prompt for low importance content
+        if task_type == TaskType.CONTENT_LOW:
+            prompt = self._build_light_prompt(title, content)
+        else:
+            prompt = self._build_prompt(title, content)
 
         try:
-            result = subprocess.run(
-                [self.cli_path, "-p", prompt, "--output-format", "text"],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-            )
+            result = self._run_cli(prompt, task_type)
 
             if result.returncode != 0:
                 return ProcessingResult(
@@ -73,12 +150,15 @@ class ClaudeCLI(BaseAIProcessor):
                 error_message=f"Unexpected error: {str(e)}",
             )
 
-    def process_batch(self, items: list[tuple[int, str, str]]) -> list[ProcessingResult]:
+    def process_batch(
+        self, items: list[tuple[int, str, str]], task_type: Optional[TaskType] = None
+    ) -> list[ProcessingResult]:
         """
         Process multiple items in a single API call.
 
         Args:
             items: List of (id, title, content) tuples
+            task_type: Task type for model selection. Defaults to CONTENT_HIGH.
 
         Returns:
             List of ProcessingResult, one per item
@@ -86,32 +166,33 @@ class ClaudeCLI(BaseAIProcessor):
         if not items:
             return []
 
+        if task_type is None:
+            task_type = TaskType.CONTENT_HIGH
+
         prompt = self._build_batch_prompt(items)
 
         # Dynamic timeout: base + 15s per item (larger batches need more time)
         batch_timeout = self.timeout + (len(items) * 15)
 
         try:
-            result = subprocess.run(
-                [self.cli_path, "-p", prompt, "--output-format", "text"],
-                capture_output=True,
-                text=True,
-                timeout=batch_timeout,
-            )
+            result = self._run_cli(prompt, task_type, batch_timeout)
 
             if result.returncode != 0:
                 # Fall back to individual processing
-                return [self.process_content(title, content) for _, title, content in items]
+                return [
+                    self.process_content(title, content, task_type) for _, title, content in items
+                ]
 
             return self._parse_batch_response(result.stdout, len(items))
 
         except Exception:
             # Fall back to individual processing
-            return [self.process_content(title, content) for _, title, content in items]
+            return [self.process_content(title, content, task_type) for _, title, content in items]
 
     def _parse_batch_response(self, response: str, expected_count: int) -> list[ProcessingResult]:
         """Parse batch response containing multiple JSON objects."""
         import logging
+
         logger = logging.getLogger(__name__)
 
         # Strategy 1: Try parsing line by line (most common format)
@@ -158,13 +239,15 @@ class ClaudeCLI(BaseAIProcessor):
                 final_results.append(results_in_order[i])
             else:
                 logger.debug(f"Batch parse: missing item {i}, response preview: {response[:200]}")
-                final_results.append(ProcessingResult(
-                    summary="",
-                    category="其他",
-                    importance_score=5,
-                    success=False,
-                    error_message=f"Missing result for item {i}",
-                ))
+                final_results.append(
+                    ProcessingResult(
+                        summary="",
+                        category="其他",
+                        importance_score=5,
+                        success=False,
+                        error_message=f"Missing result for item {i}",
+                    )
+                )
 
         return final_results
 
@@ -174,7 +257,6 @@ class ClaudeCLI(BaseAIProcessor):
             return None
 
         summary = data.get("summary", "")
-        category = data.get("category", "其他")
         importance = data.get("importance", 5)
 
         # Skip if no summary (likely not a valid result)
@@ -186,7 +268,7 @@ class ClaudeCLI(BaseAIProcessor):
                 importance = int(importance)
             except (ValueError, TypeError):
                 importance = 5
-        importance = max(1, min(10, importance))
+        _ = max(1, min(10, importance))  # Validation only, actual used in parent method
 
         # Use parent class method to extract enhanced fields
         return self._extract_processing_result(data, json.dumps(data, ensure_ascii=False))

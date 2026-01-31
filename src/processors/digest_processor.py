@@ -13,10 +13,13 @@ from src.processors.base import (
     KeyPointResult,
     MockAIProcessor,
     ProcessingResult,
+    TaskType,
 )
 from src.processors.rule_classifier import (
+    ImportanceEstimate,
     RuleClassifier,
     create_skip_result,
+    estimate_importance,
     should_skip_ai_processing,
 )
 from src.storage.database import SyncDatabase
@@ -253,10 +256,12 @@ class DigestGenerator:
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> int:
         """
-        Process items with AI using dynamic batch sizing.
+        Process items with AI using model tier selection based on importance estimation.
 
-        Short content (<500 chars) uses larger batches (configurable, default 12).
-        Long content uses smaller batches (configurable, default 6).
+        Model selection logic:
+        1. High importance (>= threshold) or low confidence -> Heavy model
+        2. Low importance with high confidence -> Light model
+        3. Quality guard: reprocess if light model returns unexpectedly high score
 
         Args:
             items: Items to process with AI.
@@ -267,12 +272,93 @@ class DigestGenerator:
             Number of items successfully processed.
         """
         settings = get_settings()
+        config = settings.ai.model_tiers
+        guard = config.quality_guard
 
         # Get batch sizes from config
-        short_batch_size = settings.ai.batch_size_short  # Default 12
-        long_batch_size = settings.ai.batch_size_long    # Default 6
+        short_batch_size = settings.ai.batch_size_short
+        long_batch_size = settings.ai.batch_size_long
 
-        # Separate items by content length
+        # Categorize items by model tier if enabled
+        if config.enabled:
+            heavy_items: list[tuple[ContentItem, ImportanceEstimate]] = []
+            light_items: list[tuple[ContentItem, ImportanceEstimate]] = []
+
+            for item in items:
+                estimate = estimate_importance(item)
+
+                # Decision logic for model selection
+                use_heavy = False
+                if estimate.score >= config.heavy_threshold:
+                    use_heavy = True
+                elif estimate.confidence < config.confidence_cutoff:
+                    use_heavy = True  # Low confidence -> conservative (heavy)
+                elif guard.unknown_domain_use_heavy and estimate.reason == "unknown":
+                    use_heavy = True
+
+                if use_heavy:
+                    heavy_items.append((item, estimate))
+                else:
+                    light_items.append((item, estimate))
+
+            logger.info(f"Model tier selection: {len(heavy_items)} heavy, {len(light_items)} light")
+
+            processed_count = 0
+            total_items = len(items)
+            items_done = 0
+
+            # Process heavy items
+            if heavy_items:
+                heavy_content_items = [item for item, _ in heavy_items]
+                heavy_processed, heavy_done, _ = self._process_batch_group_tiered(
+                    heavy_content_items,
+                    short_batch_size,
+                    long_batch_size,
+                    TaskType.CONTENT_HIGH,
+                    "heavy",
+                    progress_callback,
+                    items_done,
+                    total_items,
+                )
+                processed_count += heavy_processed
+                items_done += heavy_done
+
+            # Process light items
+            if light_items:
+                light_content_items = [item for item, _ in light_items]
+                light_processed, light_done, reprocess_items = self._process_batch_group_tiered(
+                    light_content_items,
+                    short_batch_size,
+                    long_batch_size,
+                    TaskType.CONTENT_LOW,
+                    "light",
+                    progress_callback,
+                    items_done,
+                    total_items,
+                    check_reprocess=guard.reprocess_high_score_from_light,
+                    reprocess_threshold=guard.reprocess_threshold,
+                )
+                processed_count += light_processed
+                items_done += light_done
+
+                # Quality guard: reprocess items that got unexpectedly high scores
+                if reprocess_items:
+                    logger.info(
+                        f"Quality guard: reprocessing {len(reprocess_items)} items with heavy model"
+                    )
+                    for item in reprocess_items:
+                        result = self.processor.ai.process_content(
+                            item.title, item.content, TaskType.CONTENT_HIGH
+                        )
+                        if result.success:
+                            self._update_item_with_result(item, result)
+                            logger.debug(
+                                f"Reprocessed: {item.title[:40]}... -> {result.importance_score}"
+                            )
+
+            return processed_count
+
+        # Fallback: original logic without model tiers
         short_items = [i for i in items if len(i.content or "") < 500]
         long_items = [i for i in items if len(i.content or "") >= 500]
 
@@ -280,7 +366,6 @@ class DigestGenerator:
         total_items = len(items)
         items_done = 0
 
-        # Process short items with larger batches
         if short_items:
             short_processed, short_done = self._process_batch_group(
                 short_items, short_batch_size, "short", progress_callback, items_done, total_items
@@ -288,7 +373,6 @@ class DigestGenerator:
             processed_count += short_processed
             items_done += short_done
 
-        # Process long items with configured batch size
         if long_items:
             long_processed, _ = self._process_batch_group(
                 long_items, long_batch_size, "long", progress_callback, items_done, total_items
@@ -296,6 +380,140 @@ class DigestGenerator:
             processed_count += long_processed
 
         return processed_count
+
+    def _process_batch_group_tiered(
+        self,
+        items: list[ContentItem],
+        short_batch_size: int,
+        long_batch_size: int,
+        task_type: TaskType,
+        group_name: str,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        offset: int = 0,
+        total: int = 0,
+        check_reprocess: bool = False,
+        reprocess_threshold: int = 7,
+    ) -> tuple[int, int, list[ContentItem]]:
+        """
+        Process a group of items with specified task type (model tier).
+
+        Args:
+            items: Items to process.
+            short_batch_size: Batch size for short content.
+            long_batch_size: Batch size for long content.
+            task_type: Task type for model selection.
+            group_name: Name for logging.
+            progress_callback: Optional callback.
+            offset: Starting offset for progress.
+            total: Total items for progress.
+            check_reprocess: Whether to check for reprocessing.
+            reprocess_threshold: Score threshold for reprocessing.
+
+        Returns:
+            Tuple of (processed_count, items_done, reprocess_items).
+        """
+        import time
+
+        # Separate by content length
+        short_items = [i for i in items if len(i.content or "") < 500]
+        long_items = [i for i in items if len(i.content or "") >= 500]
+
+        processed_count = 0
+        items_done = 0
+        reprocess_items = []
+        actual_total = total if total > 0 else len(items)
+        group_start = time.time()
+
+        # Process short items
+        for batch_items in self._chunk_list(short_items, short_batch_size):
+            batch_start = time.time()
+            batch_data = [(idx, item.title, item.content) for idx, item in enumerate(batch_items)]
+
+            # Call process_batch with task_type
+            if hasattr(self.processor.ai, "process_batch"):
+                results = self.processor.ai.process_batch(batch_data, task_type)
+            else:
+                results = [
+                    self.processor.ai.process_content(item.title, item.content, task_type)
+                    for item in batch_items
+                ]
+
+            batch_elapsed = time.time() - batch_start
+
+            for item, result in zip(batch_items, results):
+                if result.success:
+                    self._update_item_with_result(item, result)
+                    processed_count += 1
+
+                    # Check for reprocessing
+                    if check_reprocess and result.importance_score >= reprocess_threshold:
+                        reprocess_items.append(item)
+
+            items_done += len(batch_items)
+            if progress_callback:
+                progress_callback("AI processing", offset + items_done, actual_total)
+
+            logger.debug(
+                f"[{group_name}] Batch done: {len(batch_items)} items in {batch_elapsed:.1f}s"
+            )
+
+        # Process long items
+        for batch_items in self._chunk_list(long_items, long_batch_size):
+            batch_start = time.time()
+            batch_data = [(idx, item.title, item.content) for idx, item in enumerate(batch_items)]
+
+            if hasattr(self.processor.ai, "process_batch"):
+                results = self.processor.ai.process_batch(batch_data, task_type)
+            else:
+                results = [
+                    self.processor.ai.process_content(item.title, item.content, task_type)
+                    for item in batch_items
+                ]
+
+            batch_elapsed = time.time() - batch_start
+
+            for item, result in zip(batch_items, results):
+                if result.success:
+                    self._update_item_with_result(item, result)
+                    processed_count += 1
+
+                    if check_reprocess and result.importance_score >= reprocess_threshold:
+                        reprocess_items.append(item)
+
+            items_done += len(batch_items)
+            if progress_callback:
+                progress_callback("AI processing", offset + items_done, actual_total)
+
+            logger.debug(
+                f"[{group_name}] Batch done: {len(batch_items)} items in {batch_elapsed:.1f}s"
+            )
+
+        total_elapsed = time.time() - group_start
+        logger.info(
+            f"Finished {group_name} tier: {processed_count}/{len(items)} items "
+            f"in {total_elapsed:.1f}s"
+        )
+
+        return processed_count, items_done, reprocess_items
+
+    def _chunk_list(self, lst: list, chunk_size: int) -> list[list]:
+        """Split list into chunks."""
+        return [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]
+
+    def _update_item_with_result(self, item: ContentItem, result: ProcessingResult) -> None:
+        """Update content item with processing result and save to database."""
+        item.summary = result.summary
+        item.category = result.category
+        item.importance_score = result.importance_score
+        item.processed_at = datetime.now()
+
+        # Save enhanced fields
+        item.one_liner = result.one_liner
+        item.key_points = self._serialize_key_points(result.key_points)
+        item.impact_assessment = self._serialize_impact(result.impact_assessment)
+        item.actionable_items = self._serialize_actions(result.actionable_items)
+
+        self.db.update_content_item(item)
 
     def _process_batch_group(
         self,
@@ -418,7 +636,10 @@ class DigestGenerator:
         if not actions:
             return None
         return json.dumps(
-            [{"type": a.type, "description": a.description, "priority": a.priority} for a in actions],
+            [
+                {"type": a.type, "description": a.description, "priority": a.priority}
+                for a in actions
+            ],
             ensure_ascii=False,
         )
 
@@ -519,7 +740,10 @@ class DigestGenerator:
                 )
                 self.db.create_action_item(action)
                 created += 1
-                logger.debug(f"Created action item: [{action.priority}] {action.type}: {action.description[:30]}...")
+                logger.debug(
+                    f"Created action item: [{action.priority}] {action.type}: "
+                    f"{action.description[:30]}..."
+                )
 
         if created:
             logger.info(f"Extracted {created} action items from digest")
