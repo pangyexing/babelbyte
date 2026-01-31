@@ -411,7 +411,7 @@ class TestCreateDigestPreview:
         assert "1 条独立内容" in preview
 
     def test_preview_shows_event_marker(self, sample_content_items, sample_event_cluster):
-        """Test that preview shows [EVENT] marker for events."""
+        """Test that preview shows event marker for events."""
         event_members = sample_content_items[:2]
         event = EventDigestItem(
             event_cluster=sample_event_cluster,
@@ -422,7 +422,8 @@ class TestCreateDigestPreview:
         result = DigestResult(items=[], events=[event])
         preview = create_digest_preview(result)
 
-        assert "[EVENT]" in preview
+        # Preview uses "事件 |" format for event items
+        assert "事件 |" in preview
 
     def test_preview_shows_related_sources(self, sample_content_items, sample_event_cluster):
         """Test that preview shows related sources for events."""

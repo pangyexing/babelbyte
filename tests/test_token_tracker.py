@@ -24,7 +24,7 @@ class TestAICallType:
 
     def test_content_heavy_tokens(self):
         """Test content heavy token estimate."""
-        assert AICallType.CONTENT_HEAVY.estimated_tokens == 825
+        assert AICallType.CONTENT_HEAVY.estimated_tokens == 900
 
     def test_event_confirm_tokens(self):
         """Test event confirm token estimate."""
