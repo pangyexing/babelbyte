@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EMBEDDING_LIMIT = 200
 DEFAULT_TOPIC_DISCOVER_DAYS = 14
 DEFAULT_TOPIC_MIN_FREQUENCY = 3
+DEFAULT_CLUSTER_LIMIT = 50
 
 
 class JobRunner:
@@ -434,6 +435,41 @@ class JobRunner:
 
         return stats
 
+    def run_clustering(self, limit: int = DEFAULT_CLUSTER_LIMIT) -> dict:
+        """
+        Run event clustering on processed but unclustered items.
+
+        Groups related content into events. Uses AI for confirmation (consumes tokens).
+
+        Args:
+            limit: Maximum items to process.
+
+        Returns:
+            Dict with clustering statistics.
+        """
+        logger.info(f"Starting event clustering job (limit={limit})...")
+
+        stats = {"clustered": 0, "total": 0, "error": None}
+
+        try:
+            from src.processors.event_stream import cluster_unprocessed_items
+
+            db = self.get_db()
+            clustered = cluster_unprocessed_items(
+                db=db,
+                use_mock=self.use_mock,
+                limit=limit,
+            )
+
+            stats["clustered"] = clustered
+            logger.info(f"Clustering job completed: {clustered} items clustered")
+
+        except (ImportError, RuntimeError) as e:
+            logger.error(f"Clustering failed: {e}")
+            stats["error"] = str(e)
+
+        return stats
+
     def send_digest(self, dry_run: bool = False, run_preprocessing: bool = True) -> dict:
         """
         Generate and send the daily digest.
@@ -453,11 +489,12 @@ class JobRunner:
         # First, process any unprocessed items
         self.process_content()
 
-        # Run preprocessing tasks (embeddings + topic discovery)
+        # Run preprocessing tasks (embeddings + topic discovery + clustering)
         if run_preprocessing:
             logger.info("Running preprocessing tasks...")
             self.compute_embeddings()
             self.discover_topics()
+            self.run_clustering()
 
         # Generate digest
         digest = generator.generate_digest()
@@ -565,6 +602,10 @@ class BabelByteScheduler:
     ) -> dict:
         """Run topic discovery immediately."""
         return self.runner.discover_topics(days=days, min_frequency=min_frequency)
+
+    def run_clustering_now(self, limit: int = DEFAULT_CLUSTER_LIMIT) -> dict:
+        """Run event clustering immediately."""
+        return self.runner.run_clustering(limit=limit)
 
     def get_jobs(self) -> list:
         """Get list of scheduled jobs."""

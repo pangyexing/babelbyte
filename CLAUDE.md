@@ -175,6 +175,7 @@ send_digest
   ├── process_content      # AI processing (consumes LLM tokens)
   ├── compute_embeddings   # Local sentence-transformers (FREE)
   ├── discover_topics      # Regex + statistics (FREE)
+  ├── run_clustering       # Event grouping (consumes LLM tokens)
   └── send email
 ```
 
@@ -196,7 +197,7 @@ bb run
 | `process_content` | Yes (required) |
 | `compute_embeddings` | No (local model) |
 | `discover_topics` | No (pure statistics) |
-| `cluster` | Yes (optional, not in auto pipeline) |
+| `run_clustering` | Yes (with caching optimization) |
 
 ## Data Validation Checks
 
