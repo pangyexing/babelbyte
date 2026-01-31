@@ -422,7 +422,7 @@ class JobRunner:
                 saved = 0
                 for s in suggestions:
                     try:
-                        db.save_topic_suggestion(s)
+                        db.create_topic_suggestion(s)
                         saved += 1
                     except (ValueError, TypeError) as e:
                         logger.debug(f"Could not save suggestion {s.name}: {e}")
