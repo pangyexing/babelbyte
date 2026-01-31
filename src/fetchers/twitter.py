@@ -226,7 +226,10 @@ class TwitterAPIioFetcher(BaseFetcher):
         self.timeout = 30.0
 
     async def fetch(self, subscription: Subscription) -> FetchResult:
-        """Fetch tweets from a Twitter user using TwitterAPI.io."""
+        """Fetch tweets from a Twitter user using TwitterAPI.io.
+
+        Uses last_tweet_id for incremental fetching to avoid re-fetching old tweets.
+        """
         if subscription.subscription_type != SubscriptionType.TWITTER_USER:
             return FetchResult(
                 subscription=subscription,
@@ -280,18 +283,48 @@ class TwitterAPIioFetcher(BaseFetcher):
                 return FetchResult(
                     subscription=subscription,
                     success=False,
-                    error_message=data.get("message", "Unknown error from TwitterAPI.io"),
+                    error_message=data.get("msg", data.get("message", "Unknown error from TwitterAPI.io")),
                 )
 
             items = []
-            tweets = data.get("tweets", [])
+            # Tweets are nested under data.data.tweets
+            tweets = data.get("data", {}).get("tweets", [])
+            newest_tweet_id = subscription.last_tweet_id
 
             for tweet in tweets[: self.max_results]:
+                tweet_id = tweet.get("id", "")
+                if not tweet_id:
+                    continue
+
+                # Skip tweets we've already seen (incremental fetch)
+                if subscription.last_tweet_id:
+                    try:
+                        if int(tweet_id) <= int(subscription.last_tweet_id):
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
                 item = self._parse_tweet(subscription, tweet)
                 if item:
                     items.append(item)
 
-            logger.info(f"Fetched {len(items)} tweets from @{username} via TwitterAPI.io")
+                # Track newest tweet_id for next fetch
+                if newest_tweet_id is None:
+                    newest_tweet_id = tweet_id
+                else:
+                    try:
+                        if int(tweet_id) > int(newest_tweet_id):
+                            newest_tweet_id = tweet_id
+                    except (ValueError, TypeError):
+                        pass
+
+            # Update subscription with newest tweet_id
+            subscription.last_tweet_id = newest_tweet_id
+
+            if items:
+                logger.info(f"Fetched {len(items)} new tweets from @{username} via TwitterAPI.io")
+            else:
+                logger.debug(f"No new tweets from @{username}")
 
             return FetchResult(
                 subscription=subscription,
