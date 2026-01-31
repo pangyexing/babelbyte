@@ -2,9 +2,8 @@
 
 import asyncio
 import logging
-import time
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15,9 +14,9 @@ from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
 from src.fetchers.base import BaseFetcher, FetchResult
 from src.fetchers.reddit import RedditFetcher
-from src.fetchers.twitter import TwitterFetcher, TwitterAPIioFetcher, MockTwitterFetcher
+from src.fetchers.twitter import MockTwitterFetcher, TwitterAPIioFetcher, TwitterFetcher
 from src.processors.digest_processor import DigestGenerator
-from src.storage.database import Database, SyncDatabase
+from src.storage.database import SyncDatabase
 from src.storage.models import SourceType, Subscription
 
 logger = logging.getLogger(__name__)
@@ -161,7 +160,10 @@ class JobRunner:
             for sub, result in zip(reddit_subs, reddit_results):
                 if isinstance(result, Exception):
                     logger.error(f"Error fetching {sub.display_name}: {result}")
-                    results.append((FetchResult(subscription=sub, success=False, error_message=str(result)), sub))
+                    error_result = FetchResult(
+                        subscription=sub, success=False, error_message=str(result)
+                    )
+                    results.append((error_result, sub))
                 else:
                     results.append((result, sub))
 
@@ -214,7 +216,9 @@ class JobRunner:
             shared_client = httpx.AsyncClient(timeout=fetcher.timeout)
             fetcher.set_shared_client(shared_client)
 
-        async def fetch_with_semaphore(sub: Subscription, index: int) -> Tuple[FetchResult, Subscription]:
+        async def fetch_with_semaphore(
+            sub: Subscription, index: int
+        ) -> Tuple[FetchResult, Subscription]:
             async with semaphore:
                 # Add staggered delay to spread out requests
                 if index > 0:

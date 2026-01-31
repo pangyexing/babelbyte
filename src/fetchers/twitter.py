@@ -46,7 +46,9 @@ class TwitterFetcher(BaseFetcher):
             self._client = tweepy.Client(bearer_token=self.bearer_token)
         return self._client
 
-    async def _get_user_id(self, subscription: Subscription) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    async def _get_user_id(
+        self, subscription: Subscription
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """Get Twitter user_id, using cache if available.
 
         Returns:
@@ -135,19 +137,19 @@ class TwitterFetcher(BaseFetcher):
                 success=True,
             )
 
-        except tweepy.TooManyRequests as e:
+        except tweepy.TooManyRequests:
             return FetchResult(
                 subscription=subscription,
                 success=False,
                 error_message="Twitter API rate limit exceeded. Please wait before trying again.",
             )
-        except tweepy.Unauthorized as e:
+        except tweepy.Unauthorized:
             return FetchResult(
                 subscription=subscription,
                 success=False,
                 error_message="Twitter API authentication failed. Please check your Bearer Token.",
             )
-        except tweepy.NotFound as e:
+        except tweepy.NotFound:
             return FetchResult(
                 subscription=subscription,
                 success=False,
@@ -235,7 +237,9 @@ class TwitterAPIioFetcher(BaseFetcher):
         """Set a shared HTTP client for connection pooling across multiple fetches."""
         self._shared_client = client
 
-    async def fetch(self, subscription: Subscription, client: Optional[httpx.AsyncClient] = None) -> FetchResult:
+    async def fetch(
+        self, subscription: Subscription, client: Optional[httpx.AsyncClient] = None
+    ) -> FetchResult:
         """Fetch tweets from a Twitter user using TwitterAPI.io.
 
         Args:
@@ -304,10 +308,11 @@ class TwitterAPIioFetcher(BaseFetcher):
                     await http_client.aclose()
 
             if data.get("status") != "success":
+                err_msg = data.get("msg") or data.get("message") or "Unknown TwitterAPI.io error"
                 return FetchResult(
                     subscription=subscription,
                     success=False,
-                    error_message=data.get("msg", data.get("message", "Unknown error from TwitterAPI.io")),
+                    error_message=err_msg,
                 )
 
             items = []
