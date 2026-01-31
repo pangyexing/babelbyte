@@ -272,7 +272,7 @@ class TopicRadar:
 
 要求：概括主要进展和变化"""
 
-            cli_path = self.settings.claude.cli_path
+            cli_path = self.settings.ai.get_cli_path()
             result = subprocess.run(
                 [cli_path, "-p", prompt, "--output-format", "text"],
                 capture_output=True,

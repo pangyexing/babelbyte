@@ -639,13 +639,13 @@ class EventStreamProcessor:
         start_time = time.time()
 
         try:
-            cli_path = self.settings.claude.cli_path
+            cli_path = self.settings.ai.get_cli_path()
             config = self.settings.ai.model_tiers
 
             # Build command with light model for simple confirmation task
             cmd = [cli_path, "-p", prompt, "--output-format", "text"]
             if config.enabled:
-                model = config.task_overrides.get("event_confirm", config.claude_light)
+                model = config.task_overrides.get("event_confirm", self.settings.ai.get_light_model())
                 if model:
                     cmd.extend(["--model", model])
                     logger.debug(f"Event confirm using model: {model}")
@@ -856,13 +856,13 @@ class EventStreamProcessor:
             start_time = time.time()
 
             try:
-                cli_path = self.settings.claude.cli_path
+                cli_path = self.settings.ai.get_cli_path()
                 config = self.settings.ai.model_tiers
 
                 # Build command with light model for simple title generation
                 cmd = [cli_path, "-p", prompt, "--output-format", "text"]
                 if config.enabled:
-                    model = config.task_overrides.get("event_title", config.claude_light)
+                    model = config.task_overrides.get("event_title", self.settings.ai.get_light_model())
                     if model:
                         cmd.extend(["--model", model])
                         logger.debug(f"Event title using model: {model}")
@@ -933,13 +933,13 @@ high表示各来源一致，conflicted表示有分歧"""
         start_time = time.time()
 
         try:
-            cli_path = self.settings.claude.cli_path
+            cli_path = self.settings.ai.get_cli_path()
             config = self.settings.ai.model_tiers
 
             # Build command with light model for timeline summary
             cmd = [cli_path, "-p", prompt, "--output-format", "text"]
             if config.enabled:
-                model = config.task_overrides.get("timeline", config.claude_light)
+                model = config.task_overrides.get("timeline", self.settings.ai.get_light_model())
                 if model:
                     cmd.extend(["--model", model])
                     logger.debug(f"Timeline summary using model: {model}")

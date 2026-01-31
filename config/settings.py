@@ -422,6 +422,22 @@ class AIConfig:
             return "claude"
         return self.provider
 
+    def get_cli_path(self) -> str:
+        """Get the CLI path based on AI provider setting."""
+        from config.settings import get_settings
+        settings = get_settings()
+        provider = self.get_provider()
+        if provider == "codex":
+            return settings.codex.cli_path
+        return settings.claude.cli_path
+
+    def get_light_model(self) -> str:
+        """Get the light model name based on AI provider setting."""
+        provider = self.get_provider()
+        if provider == "codex":
+            return self.model_tiers.codex_light
+        return self.model_tiers.claude_light
+
 
 @dataclass
 class Settings:

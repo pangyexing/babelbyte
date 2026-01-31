@@ -246,7 +246,7 @@ class ReportGenerator:
 报道：
 {summaries}"""
 
-            cli_path = self.settings.claude.cli_path
+            cli_path = self.settings.ai.get_cli_path()
             result = subprocess.run(
                 [cli_path, "-p", prompt, "--output-format", "text"],
                 capture_output=True,
