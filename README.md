@@ -85,134 +85,134 @@ FETCH_INTERVAL_HOURS=6
 
 ```bash
 # 订阅 Reddit 子版块
-babelbyte subscribe reddit MachineLearning
+bb subscribe reddit MachineLearning
 
 # 订阅 Twitter 用户
-babelbyte subscribe twitter elonmusk
+bb subscribe twitter elonmusk
 
 # 查看订阅列表
-babelbyte list
+bb list
 
 # 取消订阅
-babelbyte unsubscribe reddit MachineLearning
+bb unsubscribe reddit MachineLearning
 ```
 
 ### 内容抓取与处理
 
 ```bash
 # 手动抓取所有订阅源
-babelbyte fetch
+bb fetch
 
 # 预览摘要 (不发送邮件)
-babelbyte digest --dry-run
+bb digest --dry-run
 
 # 生成并发送摘要邮件
-babelbyte digest
+bb digest
 
 # 运行事件聚类
-babelbyte cluster
+bb cluster
 ```
 
 ### 知识库检索 (Phase 4)
 
 ```bash
 # 全文搜索
-babelbyte search "GPT"
-babelbyte search "AI融资" --category AI --from 2024-01-01 --min-importance 7
+bb search "GPT"
+bb search "AI融资" --category AI --from 2024-01-01 --min-importance 7
 
 # 按日期浏览
-babelbyte browse                      # 今天
-babelbyte browse --date yesterday     # 昨天
-babelbyte browse --date 2024-01-15 --category AI
+bb browse                      # 今天
+bb browse --date yesterday     # 昨天
+bb browse --date 2024-01-15 --category AI
 
 # 查看内容详情
-babelbyte item 123
-babelbyte item 123 --open   # 在浏览器打开原文
+bb item 123
+bb item 123 --open   # 在浏览器打开原文
 
 # 标记状态
-babelbyte mark 123 saved    # 收藏
-babelbyte mark 123 read     # 已读
-babelbyte mark 123 flagged  # 标记
+bb mark 123 saved    # 收藏
+bb mark 123 read     # 已读
+bb mark 123 flagged  # 标记
 
 # 统计信息
-babelbyte stats
+bb stats
 
 # 重建搜索索引
-babelbyte rebuild-index
+bb rebuild-index
 ```
 
 ### 事件追踪 (Phase 2)
 
 ```bash
 # 查看最近事件
-babelbyte events
-babelbyte events --days 3 --category AI
+bb events
+bb events --days 3 --category AI
 
 # 查看事件详情
-babelbyte event 123
+bb event 123
 
 # 运行事件聚类
-babelbyte cluster --limit 100
+bb cluster --limit 100
 ```
 
 ### 主题雷达 (Phase 3)
 
 ```bash
 # 列出所有主题
-babelbyte topics
+bb topics
 
 # 添加主题
-babelbyte topic add "AI应用" --keywords "GPT,ChatGPT,AI,人工智能"
-babelbyte topic add "OpenAI" --keywords "OpenAI,Sam Altman" --description "OpenAI 公司动态"
+bb topic add "AI应用" --keywords "GPT,ChatGPT,AI,人工智能"
+bb topic add "OpenAI" --keywords "OpenAI,Sam Altman" --description "OpenAI 公司动态"
 
 # 查看主题详情
-babelbyte topic show "AI应用"
+bb topic show "AI应用"
 
 # 删除主题
-babelbyte topic delete "AI应用" --yes
+bb topic delete "AI应用" --yes
 ```
 
 ### 行动清单 (Phase 5)
 
 ```bash
 # 查看待办行动
-babelbyte actions
-babelbyte actions --status pending --priority 高
+bb actions
+bb actions --status pending --priority 高
 
 # 完成行动
-babelbyte action 123 done
+bb action 123 done
 
 # 忽略行动
-babelbyte action 123 dismissed
+bb action 123 dismissed
 ```
 
 ### 周报/月报 (Phase 6)
 
 ```bash
 # 生成周报
-babelbyte report week
-babelbyte report week --weeks-ago 1   # 上周
+bb report week
+bb report week --weeks-ago 1   # 上周
 
 # 生成月报
-babelbyte report month
-babelbyte report month --months-ago 1 # 上月
+bb report month
+bb report month --months-ago 1 # 上月
 ```
 
 ### 其他命令
 
 ```bash
 # 查看当前配置
-babelbyte config
+bb config
 
 # 发送测试邮件
-babelbyte test-email
+bb test-email
 
 # 启动调度器 (后台服务)
-babelbyte run
+bb run
 
 # 测试模式 (无需 API)
-babelbyte --mock fetch
-babelbyte --mock digest --dry-run
+bb --mock fetch
+bb --mock digest --dry-run
 ```
 
 ## 架构

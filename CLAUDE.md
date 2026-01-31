@@ -14,56 +14,56 @@ pip install -e .              # Basic install
 pip install -e ".[dev]"       # With dev dependencies (pytest, black, ruff)
 ```
 
-**CLI entry point:** `babelbyte` or `python main.py`
+**CLI entry point:** `bb` or `python main.py`
 
 **Core commands:**
 ```bash
-babelbyte subscribe reddit <subreddit>     # Subscribe to subreddit
-babelbyte subscribe twitter <username>     # Subscribe to Twitter user
-babelbyte list                             # Show subscriptions
-babelbyte fetch                            # Fetch content from all sources
-babelbyte digest --dry-run                 # Preview digest without sending
-babelbyte digest                           # Generate and send email digest
-babelbyte run                              # Start scheduler daemon
-babelbyte --mock <command>                 # Test mode with mock data
+bb subscribe reddit <subreddit>     # Subscribe to subreddit
+bb subscribe twitter <username>     # Subscribe to Twitter user
+bb list                             # Show subscriptions
+bb fetch                            # Fetch content from all sources
+bb digest --dry-run                 # Preview digest without sending
+bb digest                           # Generate and send email digest
+bb run                              # Start scheduler daemon
+bb --mock <command>                 # Test mode with mock data
 ```
 
 **Knowledge Base (Phase 4):**
 ```bash
-babelbyte search "query"                   # Full-text search
-babelbyte search "AI" --category AI --from 2024-01-01
-babelbyte browse --date yesterday          # Browse by date
-babelbyte item 123 --open                  # View item details
-babelbyte mark 123 saved                   # Mark item state (unread/read/saved/archived/flagged)
-babelbyte stats                            # Category and state statistics
-babelbyte rebuild-index                    # Rebuild FTS index
+bb search "query"                   # Full-text search
+bb search "AI" --category AI --from 2024-01-01
+bb browse --date yesterday          # Browse by date
+bb item 123 --open                  # View item details
+bb mark 123 saved                   # Mark item state (unread/read/saved/archived/flagged)
+bb stats                            # Category and state statistics
+bb rebuild-index                    # Rebuild FTS index
 ```
 
 **Event Stream (Phase 2):**
 ```bash
-babelbyte events --days 7                  # List recent event clusters
-babelbyte event 123                        # View event details and members
-babelbyte cluster --limit 100              # Run event clustering
+bb events --days 7                  # List recent event clusters
+bb event 123                        # View event details and members
+bb cluster --limit 100              # Run event clustering
 ```
 
 **Topic Radar (Phase 3):**
 ```bash
-babelbyte topics                           # List all topics
-babelbyte topic add "AI" --keywords "GPT,ChatGPT,AI"
-babelbyte topic show "AI"                  # View topic details
-babelbyte topic delete "AI" --yes
+bb topics                           # List all topics
+bb topic add "AI" --keywords "GPT,ChatGPT,AI"
+bb topic show "AI"                  # View topic details
+bb topic delete "AI" --yes
 ```
 
 **Action List (Phase 5):**
 ```bash
-babelbyte actions --status pending         # List action items
-babelbyte action 123 done                  # Mark action as done/dismissed
+bb actions --status pending         # List action items
+bb action 123 done                  # Mark action as done/dismissed
 ```
 
 **Reports (Phase 6):**
 ```bash
-babelbyte report week                      # Generate weekly report
-babelbyte report month --months-ago 1      # Generate monthly report
+bb report week                      # Generate weekly report
+bb report month --months-ago 1      # Generate monthly report
 ```
 
 **Code quality:**
