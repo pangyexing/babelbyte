@@ -1,6 +1,8 @@
 """Twitter content fetcher using Twitter API v2 or TwitterAPI.io."""
 
 import logging
+import os
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -220,12 +222,18 @@ class TwitterAPIioFetcher(BaseFetcher):
     Optimizations:
     - Reuses HTTP client via connection pooling for faster requests
     - Supports shared client for parallel fetching across subscriptions
+    - TTL memory cache to avoid redundant API calls within short intervals
     """
 
     source_type = SourceType.TWITTER
 
     BASE_URL = "https://api.twitterapi.io/twitter/user/last_tweets"
     DEFAULT_MAX_RESULTS = 20
+    DEFAULT_CACHE_TTL = 300.0  # 5 minutes
+
+    # Class-level cache shared across instances: {username: (timestamp, FetchResult)}
+    _cache: dict[str, tuple[float, "FetchResult"]] = {}
+    _cache_ttl: float = float(os.environ.get("TWITTERAPI_CACHE_TTL", DEFAULT_CACHE_TTL))
 
     def __init__(self, api_key: Optional[str] = None, max_results: int = DEFAULT_MAX_RESULTS):
         self.api_key = api_key or get_settings().twitter.twitterapi_io_key
@@ -237,6 +245,29 @@ class TwitterAPIioFetcher(BaseFetcher):
         """Set a shared HTTP client for connection pooling across multiple fetches."""
         self._shared_client = client
 
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear the response cache (useful for testing)."""
+        cls._cache.clear()
+
+    @classmethod
+    def _get_cached_result(cls, username: str) -> Optional["FetchResult"]:
+        """Get cached result if still valid within TTL."""
+        cache_key = username.lower()
+        if cache_key in cls._cache:
+            cached_time, cached_result = cls._cache[cache_key]
+            if time.time() - cached_time < cls._cache_ttl:
+                return cached_result
+            # Expired, remove from cache
+            del cls._cache[cache_key]
+        return None
+
+    @classmethod
+    def _set_cached_result(cls, username: str, result: "FetchResult") -> None:
+        """Store result in cache with current timestamp."""
+        cache_key = username.lower()
+        cls._cache[cache_key] = (time.time(), result)
+
     async def fetch(
         self, subscription: Subscription, client: Optional[httpx.AsyncClient] = None
     ) -> FetchResult:
@@ -247,6 +278,7 @@ class TwitterAPIioFetcher(BaseFetcher):
             client: Optional shared HTTP client for connection pooling.
 
         Uses last_tweet_id for incremental fetching to avoid re-fetching old tweets.
+        Results are cached for TTL seconds to avoid redundant API calls.
         """
         if subscription.subscription_type != SubscriptionType.TWITTER_USER:
             return FetchResult(
@@ -264,6 +296,12 @@ class TwitterAPIioFetcher(BaseFetcher):
 
         try:
             username = subscription.name.lstrip("@")
+
+            # Check cache first to avoid redundant API calls
+            cached_result = self._get_cached_result(username)
+            if cached_result is not None:
+                logger.info(f"Using cached results for @{username} (TTL: {self._cache_ttl}s)")
+                return cached_result
 
             # Use provided client, shared client, or create new one
             http_client = client or self._shared_client
@@ -355,11 +393,15 @@ class TwitterAPIioFetcher(BaseFetcher):
             else:
                 logger.debug(f"No new tweets from @{username}")
 
-            return FetchResult(
+            result = FetchResult(
                 subscription=subscription,
                 items=items,
                 success=True,
             )
+
+            # Cache successful result
+            self._set_cached_result(username, result)
+            return result
 
         except httpx.HTTPStatusError as e:
             return FetchResult(
