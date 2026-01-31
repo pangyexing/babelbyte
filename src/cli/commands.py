@@ -262,14 +262,33 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
         # Generate digest (with optional clustering)
         if no_cluster:
             console.print("[bold]Generating digest (clustering disabled)...[/bold]")
+            digest_result = generator.generate_digest(
+                min_importance=min_importance,
+                max_items=max_items,
+                run_clustering=False,
+            )
         else:
-            console.print("[bold]Generating digest with event clustering...[/bold]")
+            # Run clustering with progress bar
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("[green]{task.fields[clustered]} clustered[/green]"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("[bold]Clustering events...[/bold]", total=None, clustered=0)
 
-        digest_result = generator.generate_digest(
-            min_importance=min_importance,
-            max_items=max_items,
-            run_clustering=not no_cluster,
-        )
+                def on_cluster_progress(current, total, clustered):
+                    progress.update(task, total=total, completed=current, clustered=clustered)
+
+                digest_result = generator.generate_digest(
+                    min_importance=min_importance,
+                    max_items=max_items,
+                    run_clustering=True,
+                    clustering_progress_callback=on_cluster_progress,
+                )
 
         if not digest_result.items and not digest_result.events:
             console.print("[yellow]No items to include in digest[/yellow]")

@@ -542,6 +542,290 @@ class TestFindClusterCandidatesWithCache:
 
 
 # ============================================
+# Tests: Progress Callback
+# ============================================
+
+
+class TestProgressCallback:
+    """Tests for progress callback in cluster_unprocessed_items."""
+
+    def test_progress_callback_is_called(self):
+        """Test that progress callback is called for each item."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        now = datetime.now()
+
+        # Create test items with LOW importance (won't create clusters)
+        items = [
+            ContentItem(
+                id=i,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id=f"item_{i}",
+                title=f"Test item {i}",
+                content="Content",
+                url=f"https://example.com/{i}",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=4,  # Low importance, won't create clusters
+                category="Tech",
+            )
+            for i in range(1, 4)
+        ]
+
+        mock_db.get_undelivered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+
+        # Track progress calls
+        progress_calls = []
+
+        def track_progress(current, total, clustered):
+            progress_calls.append((current, total, clustered))
+
+        cluster_unprocessed_items(
+            db=mock_db, use_mock=True, limit=10, progress_callback=track_progress
+        )
+
+        # Should have 3 progress calls (one per item)
+        assert len(progress_calls) == 3
+        # Items don't cluster (low importance, no existing clusters)
+        assert progress_calls[0] == (1, 3, 0)
+        assert progress_calls[1] == (2, 3, 0)
+        assert progress_calls[2] == (3, 3, 0)
+
+    def test_progress_callback_tracks_clustered_count(self):
+        """Test that progress callback correctly tracks clustered count."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        now = datetime.now()
+
+        # Create high-importance items that will create new clusters
+        items = [
+            ContentItem(
+                id=i,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id=f"item_{i}",
+                title=f"OpenAI announces model {i}",
+                content="OpenAI content",
+                url=f"https://example.com/{i}",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=8,  # High importance to create clusters
+                category="AI",
+            )
+            for i in range(1, 4)
+        ]
+
+        mock_db.get_undelivered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+
+        # Mock cluster creation
+        cluster_counter = [0]
+
+        def mock_create_cluster(cluster):
+            cluster_counter[0] += 1
+            cluster.id = cluster_counter[0]
+            return cluster
+
+        mock_db.create_event_cluster.side_effect = mock_create_cluster
+        mock_db.add_event_member.return_value = None
+
+        # Track progress calls
+        progress_calls = []
+
+        def track_progress(current, total, clustered):
+            progress_calls.append((current, total, clustered))
+
+        result = cluster_unprocessed_items(
+            db=mock_db, use_mock=True, limit=10, progress_callback=track_progress
+        )
+
+        # All items should create clusters (high importance, no existing clusters)
+        assert result == 3
+        assert len(progress_calls) == 3
+
+        # Clustered count should increase
+        assert progress_calls[0][2] == 1  # First item clustered
+        assert progress_calls[1][2] == 2  # Second item clustered
+        assert progress_calls[2][2] == 3  # Third item clustered
+
+    def test_no_callback_works(self):
+        """Test that clustering works without progress callback."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        mock_db.get_undelivered_items.return_value = []
+
+        # Should not raise error
+        result = cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
+        assert result == 0
+
+
+# ============================================
+# Tests: Cache Usage During Batch Clustering
+# ============================================
+
+
+class TestBatchClusteringCache:
+    """Tests for cache usage during batch clustering."""
+
+    def test_batch_clustering_uses_entity_cache(self):
+        """Test that batch clustering uses entity extraction cache."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        now = datetime.now()
+
+        # Create items with same entity (OpenAI)
+        items = [
+            ContentItem(
+                id=i,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id=f"item_{i}",
+                title=f"OpenAI news item {i}",
+                content="OpenAI content here",
+                url=f"https://example.com/{i}",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=5,
+                category="AI",
+            )
+            for i in range(1, 6)
+        ]
+
+        # Add an existing cluster so extraction is triggered
+        existing_cluster = EventCluster(
+            id=1,
+            event_title="OpenAI GPT Release",
+            category="AI",
+            first_seen_at=now,
+            last_updated_at=now,
+            article_count=2,
+        )
+
+        mock_db.get_undelivered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = [existing_cluster]
+
+        # Clear cache and get initial state
+        EventStreamProcessor.clear_cache()
+        cache_info_before = _extract_entities_cached.cache_info()
+
+        cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
+
+        cache_info_after = _extract_entities_cached.cache_info()
+
+        # Should have cache entries (extraction was called)
+        assert cache_info_after.currsize > 0
+        # The cluster title is extracted once and cached
+        # Items each have unique text, but cluster title hits cache on subsequent items
+        assert cache_info_after.hits > 0
+
+    def test_batch_clustering_uses_cluster_query_cache(self):
+        """Test that batch clustering uses cluster query cache."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        now = datetime.now()
+
+        # Create items with same category
+        items = [
+            ContentItem(
+                id=i,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id=f"item_{i}",
+                title=f"Tech news {i}",
+                content="Content",
+                url=f"https://example.com/{i}",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=5,  # Low importance, won't create clusters
+                category="Tech",
+            )
+            for i in range(1, 6)
+        ]
+
+        mock_db.get_undelivered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+
+        cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
+
+        # All items have same category, so cluster query should be cached
+        # Should only call database once for "Tech" category
+        assert mock_db.get_recent_event_clusters.call_count == 1
+
+    def test_batch_clustering_different_categories_queries_each(self):
+        """Test that different categories trigger separate queries."""
+        from src.processors.event_stream import cluster_unprocessed_items
+
+        mock_db = MagicMock()
+        now = datetime.now()
+
+        # Create items with different categories
+        items = [
+            ContentItem(
+                id=1,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id="item_1",
+                title="AI news",
+                content="Content",
+                url="https://example.com/1",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=5,
+                category="AI",
+            ),
+            ContentItem(
+                id=2,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id="item_2",
+                title="Tech news",
+                content="Content",
+                url="https://example.com/2",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=5,
+                category="Tech",
+            ),
+            ContentItem(
+                id=3,
+                subscription_id=1,
+                source_type=SourceType.REDDIT,
+                external_id="item_3",
+                title="More AI news",
+                content="Content",
+                url="https://example.com/3",
+                author="user",
+                published_at=now,
+                fetched_at=now,
+                importance_score=5,
+                category="AI",
+            ),
+        ]
+
+        mock_db.get_undelivered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+
+        cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
+
+        # Should call database twice: once for AI, once for Tech
+        # Third item (AI) should use cached result
+        assert mock_db.get_recent_event_clusters.call_count == 2
+
+
+# ============================================
 # Run tests if executed directly
 # ============================================
 

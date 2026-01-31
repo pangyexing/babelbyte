@@ -685,6 +685,7 @@ class DigestGenerator:
         max_items: int = 30,
         include_delivered: bool = False,
         run_clustering: bool = True,
+        clustering_progress_callback: Optional[callable] = None,
     ) -> DigestResult:
         """
         Generate a digest from processed items, with event clustering support.
@@ -694,6 +695,8 @@ class DigestGenerator:
             max_items: Maximum number of items/events in the digest.
             include_delivered: Whether to include already delivered items.
             run_clustering: Whether to run event clustering before generating digest.
+            clustering_progress_callback: Optional callback(current, total, clustered) for
+                clustering progress updates.
 
         Returns:
             DigestResult with digest items and event clusters.
@@ -707,7 +710,10 @@ class DigestGenerator:
 
             use_mock = isinstance(self.processor.ai, MockAIProcessor)
             clustered_count = cluster_unprocessed_items(
-                db=self.db, use_mock=use_mock, limit=100
+                db=self.db,
+                use_mock=use_mock,
+                limit=100,
+                progress_callback=clustering_progress_callback,
             )
             if clustered_count > 0:
                 logger.info(f"Clustered {clustered_count} items into events")
