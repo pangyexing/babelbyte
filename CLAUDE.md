@@ -23,10 +23,10 @@ bb subscribe twitter <username>     # Subscribe to Twitter user
 bb subscribe hackernews <name> --type front  # Subscribe to HN (front/new/best/ask/show)
 bb subscribe rss <name> --url <feed-url>     # Subscribe to RSS/Atom feed
 bb list                             # Show subscriptions
-bb fetch                            # Fetch content from all sources
-bb digest --dry-run                 # Preview digest (includes embeddings + topic discovery)
-bb digest                           # Generate and send email digest
-bb run                              # Start scheduler daemon (fully automated)
+bb daily                            # One-shot: fetch → process → digest (recommended)
+bb daily --dry-run                  # Preview without sending email
+bb daily --skip-fetch               # Skip fetch, process existing content
+bb run                              # Start scheduler daemon (for 24/7 servers)
 bb --mock <command>                 # Test mode with mock data
 ```
 
@@ -159,36 +159,34 @@ Fetchers      Event Stream    Topic Radar
 6. Generate HTML → Send email digest
 7. Periodic reports → Weekly/monthly summaries
 
-## Scheduler Automation
+## Daily Usage
 
-The `bb run` command starts a fully automated daemon. No manual intervention required for daily use.
-
-**Scheduled Jobs:**
-| Job | Trigger | Description |
-|-----|---------|-------------|
-| `fetch_content` | Every N hours | Fetch from all subscriptions |
-| `send_digest` | Daily at configured time | Full pipeline (see below) |
-
-**Digest Pipeline (automatic):**
-```
-send_digest
-  ├── process_content      # AI processing (consumes LLM tokens)
-  ├── compute_embeddings   # Local sentence-transformers (FREE)
-  ├── discover_topics      # Regex + statistics (FREE)
-  ├── run_clustering       # Event grouping (consumes LLM tokens)
-  └── send email
-```
-
-**Quick Start (recommended for daily use):**
+**For manual daily use (recommended):**
 ```bash
-# 1. Configure .env
+bb daily              # Run full pipeline, send email
+bb daily --dry-run    # Preview without sending
+bb daily --skip-fetch # Skip fetch if already have content
+```
+
+The `bb daily` command runs the complete pipeline in one shot:
+```
+bb daily
+  ├── 1. fetch            # Fetch from all subscriptions
+  ├── 2. process_content  # AI processing (consumes LLM tokens)
+  ├── 3. embeddings       # Local sentence-transformers (FREE)
+  ├── 4. topic discovery  # Regex + statistics (FREE)
+  ├── 5. clustering       # Event grouping (consumes LLM tokens)
+  └── 6. digest + email   # Generate and send
+```
+
+**For 24/7 servers (daemon mode):**
+```bash
+# Configure .env
 FETCH_INTERVAL_HOURS=4
 DIGEST_SEND_TIME=07:00
 
-# 2. Start daemon
+# Start daemon
 bb run
-
-# That's it! Email arrives automatically every morning.
 ```
 
 **Token Cost Summary:**
