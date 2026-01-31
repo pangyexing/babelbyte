@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     last_fetched_at TEXT,
     twitter_user_id TEXT,
     last_tweet_id TEXT,
+    last_reddit_id TEXT,
     UNIQUE(source_type, subscription_type, name)
 )
 """
@@ -297,6 +298,10 @@ class Database:
                 await cursor.execute(
                     "ALTER TABLE subscriptions ADD COLUMN last_tweet_id TEXT"
                 )
+            if "last_reddit_id" not in sub_columns:
+                await cursor.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN last_reddit_id TEXT"
+                )
 
             # Check content_items columns for Phase 1 & 4 enhancements
             await cursor.execute("PRAGMA table_info(content_items)")
@@ -392,7 +397,8 @@ class Database:
             await cursor.execute(
                 """
                 UPDATE subscriptions
-                SET enabled = ?, last_fetched_at = ?, twitter_user_id = ?, last_tweet_id = ?
+                SET enabled = ?, last_fetched_at = ?, twitter_user_id = ?, last_tweet_id = ?,
+                    last_reddit_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -400,6 +406,7 @@ class Database:
                     subscription.last_fetched_at.isoformat() if subscription.last_fetched_at else None,
                     subscription.twitter_user_id,
                     subscription.last_tweet_id,
+                    subscription.last_reddit_id,
                     subscription.id,
                 ),
             )
@@ -427,6 +434,7 @@ class Database:
             ),
             twitter_user_id=row["twitter_user_id"] if "twitter_user_id" in row.keys() else None,
             last_tweet_id=row["last_tweet_id"] if "last_tweet_id" in row.keys() else None,
+            last_reddit_id=row["last_reddit_id"] if "last_reddit_id" in row.keys() else None,
         )
 
     # Content item operations

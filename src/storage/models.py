@@ -82,6 +82,8 @@ class Subscription:
     # Twitter-specific: cache user_id and last_tweet_id to reduce API calls
     twitter_user_id: Optional[str] = None
     last_tweet_id: Optional[str] = None
+    # Reddit-specific: last external_id for incremental fetching
+    last_reddit_id: Optional[str] = None
 
     @property
     def display_name(self) -> str:

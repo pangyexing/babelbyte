@@ -67,16 +67,37 @@ class RedditFetcher(BaseFetcher):
                 )
 
             items = []
+            newest_reddit_id = subscription.last_reddit_id
+
             for entry in feed.entries:
+                external_id = entry.get("id", entry.get("link", ""))
+                if not external_id:
+                    continue
+
+                # Skip entries we've already seen (incremental fetch)
+                if subscription.last_reddit_id and external_id <= subscription.last_reddit_id:
+                    continue
+
                 item = self._parse_entry(subscription, entry)
                 if item:
                     items.append((item, entry))
+                    # Track newest external_id for next fetch
+                    if newest_reddit_id is None or external_id > newest_reddit_id:
+                        newest_reddit_id = external_id
+
+            # Update subscription with newest external_id
+            subscription.last_reddit_id = newest_reddit_id
 
             # Enhance link-posts with external content
             if self.fetch_link_content:
                 items = await self._enhance_link_posts(items)
             else:
                 items = [item for item, _ in items]
+
+            if items:
+                logger.info(f"Fetched {len(items)} new posts from {subscription.display_name}")
+            else:
+                logger.debug(f"No new posts from {subscription.display_name}")
 
             return FetchResult(
                 subscription=subscription,
