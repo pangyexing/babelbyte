@@ -148,28 +148,52 @@ class CodexConfig:
 class QualityGuardConfig:
     """Quality protection configuration for model tier selection."""
 
-    unknown_domain_use_heavy: bool = True
-    reprocess_high_score_from_light: bool = True
-    reprocess_threshold: int = 7
-    retain_key_points_for_light: bool = True
+    unknown_domain_use_heavy: bool = field(
+        default_factory=lambda: os.getenv("QUALITY_UNKNOWN_DOMAIN_USE_HEAVY", "true").lower() == "true"
+    )
+    reprocess_high_score_from_light: bool = field(
+        default_factory=lambda: os.getenv("QUALITY_REPROCESS_HIGH_SCORE", "true").lower() == "true"
+    )
+    reprocess_threshold: int = field(
+        default_factory=lambda: int(os.getenv("QUALITY_REPROCESS_THRESHOLD", "7"))
+    )
+    retain_key_points_for_light: bool = field(
+        default_factory=lambda: os.getenv("QUALITY_RETAIN_KEY_POINTS", "true").lower() == "true"
+    )
 
 
 @dataclass
 class ModelTierConfig:
     """Model tier configuration for AI cost optimization."""
 
-    enabled: bool = True
-    heavy_threshold: int = 7
-    low_confidence_threshold: int = 5
-    confidence_cutoff: float = 0.5
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("MODEL_TIER_ENABLED", "true").lower() == "true"
+    )
+    heavy_threshold: int = field(
+        default_factory=lambda: int(os.getenv("MODEL_TIER_HEAVY_THRESHOLD", "7"))
+    )
+    low_confidence_threshold: int = field(
+        default_factory=lambda: int(os.getenv("MODEL_TIER_LOW_CONFIDENCE_THRESHOLD", "5"))
+    )
+    confidence_cutoff: float = field(
+        default_factory=lambda: float(os.getenv("MODEL_TIER_CONFIDENCE_CUTOFF", "0.5"))
+    )
 
     # Claude models
-    claude_heavy: str = "sonnet"
-    claude_light: str = "haiku"
+    claude_heavy: str = field(
+        default_factory=lambda: os.getenv("CLAUDE_MODEL_HEAVY", "sonnet")
+    )
+    claude_light: str = field(
+        default_factory=lambda: os.getenv("CLAUDE_MODEL_LIGHT", "haiku")
+    )
 
     # Codex models
-    codex_heavy: str = "gpt-5.1-codex"
-    codex_light: str = "gpt-5.1-codex-mini"
+    codex_heavy: str = field(
+        default_factory=lambda: os.getenv("CODEX_MODEL_HEAVY", "gpt-5.2-codex")
+    )
+    codex_light: str = field(
+        default_factory=lambda: os.getenv("CODEX_MODEL_LIGHT", "gpt-5.1-codex-mini")
+    )
 
     # Quality protection
     quality_guard: QualityGuardConfig = field(default_factory=QualityGuardConfig)
@@ -377,11 +401,19 @@ class AIConfig:
         if self.cache_enabled and not 60 <= self.cache_ttl <= 2592000:
             raise ValueError(f"cache_ttl must be 60-2592000 seconds, got {self.cache_ttl}")
 
-        # Load model tier config from YAML if not already set
-        if isinstance(self.model_tiers, ModelTierConfig) and self.model_tiers.enabled:
-            yaml_path = PROJECT_ROOT / "config" / "ai_models.yaml"
-            if yaml_path.exists():
-                self.model_tiers = ModelTierConfig.from_yaml(yaml_path)
+        # Load task_overrides from YAML if file exists (env vars take precedence for other settings)
+        yaml_path = PROJECT_ROOT / "config" / "ai_models.yaml"
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                task_overrides = data.get("task_overrides") or {}
+                if task_overrides:
+                    self.model_tiers.task_overrides = {
+                        k: v for k, v in task_overrides.items() if v is not None
+                    }
+            except Exception:
+                pass  # Ignore YAML errors, use defaults
 
     def get_provider(self) -> str:
         """Get the actual provider to use."""

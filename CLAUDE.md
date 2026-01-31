@@ -347,6 +347,15 @@ actionable_items: list[ActionResult]
 
 Copy `.env.example` to `.env`. Key settings:
 - `AI_PROVIDER` - "claude", "codex", or "auto"
+- `CLAUDE_MODEL_HEAVY` - Claude heavy model (default: sonnet)
+- `CLAUDE_MODEL_LIGHT` - Claude light model (default: haiku)
+- `CODEX_MODEL_HEAVY` - Codex heavy model (default: gpt-5.2-codex)
+- `CODEX_MODEL_LIGHT` - Codex light model (default: gpt-5.1-codex-mini)
+- `MODEL_TIER_ENABLED` - Enable model tier selection (default: true)
+- `MODEL_TIER_HEAVY_THRESHOLD` - Importance threshold for heavy model (default: 7)
+- `MODEL_TIER_CONFIDENCE_CUTOFF` - Confidence threshold for heavy model (default: 0.5)
+- `QUALITY_UNKNOWN_DOMAIN_USE_HEAVY` - Use heavy model for unknown domains (default: true)
+- `QUALITY_REPROCESS_HIGH_SCORE` - Reprocess if light model returns high score (default: true)
 - `TWITTERAPI_IO_KEY` - TwitterAPI.io API key for Twitter data
 - `SMTP_*` - Email delivery configuration
 - `DIGEST_SEND_TIME` - Daily digest time (HH:MM)
