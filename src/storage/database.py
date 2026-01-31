@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS content_items (
     state TEXT DEFAULT 'unread',
     delivered INTEGER DEFAULT 0,
     delivered_at TEXT,
+    cluster_attempted_at TEXT,
     FOREIGN KEY (subscription_id) REFERENCES subscriptions(id),
     UNIQUE(source_type, external_id)
 )
@@ -336,6 +337,10 @@ class Database:
                 await cursor.execute(
                     "ALTER TABLE content_items ADD COLUMN state TEXT DEFAULT 'unread'"
                 )
+            if "cluster_attempted_at" not in content_columns:
+                await cursor.execute(
+                    "ALTER TABLE content_items ADD COLUMN cluster_attempted_at TEXT"
+                )
 
             await self._connection.commit()
 
@@ -524,7 +529,10 @@ class Database:
             return [self._row_to_content_item(row) for row in rows]
 
     async def get_unclustered_items(
-        self, min_importance: int = 5, limit: int = 100
+        self,
+        min_importance: int = 5,
+        limit: int = 100,
+        retry_after_hours: Optional[int] = None,
     ) -> list[ContentItem]:
         """Get processed items not yet assigned to any cluster.
 
@@ -539,6 +547,11 @@ class Database:
             List of ContentItem not in any cluster
         """
         async with self._connection.cursor() as cursor:
+            cutoff = None
+            if retry_after_hours is not None and retry_after_hours > 0:
+                cutoff = (
+                    datetime.now() - __import__("datetime").timedelta(hours=retry_after_hours)
+                ).isoformat()
             await cursor.execute(
                 """
                 SELECT c.* FROM content_items c
@@ -547,10 +560,15 @@ class Database:
                   AND c.delivered = 0
                   AND c.importance_score >= ?
                   AND em.content_item_id IS NULL
+                  AND (
+                        ? IS NULL
+                        OR c.cluster_attempted_at IS NULL
+                        OR c.cluster_attempted_at <= ?
+                  )
                 ORDER BY c.importance_score DESC, c.published_at DESC
                 LIMIT ?
                 """,
-                (min_importance, limit),
+                (min_importance, cutoff, cutoff, limit),
             )
             rows = await cursor.fetchall()
             return [self._row_to_content_item(row) for row in rows]
@@ -586,6 +604,16 @@ class Database:
             # Update FTS index if processed
             if item.processed_at and item.id:
                 await self._update_fts_index(item)
+
+    async def mark_cluster_attempted(self, item_id: int) -> None:
+        """Mark a content item as having been attempted for clustering."""
+        async with self._connection.cursor() as cursor:
+            now = datetime.now().isoformat()
+            await cursor.execute(
+                "UPDATE content_items SET cluster_attempted_at = ? WHERE id = ?",
+                (now, item_id),
+            )
+            await self._connection.commit()
 
     async def _update_fts_index(self, item: ContentItem) -> None:
         """Update FTS index for a content item."""
@@ -724,6 +752,11 @@ class Database:
             delivered=bool(row["delivered"]),
             delivered_at=(
                 datetime.fromisoformat(row["delivered_at"]) if row["delivered_at"] else None
+            ),
+            cluster_attempted_at=(
+                datetime.fromisoformat(row["cluster_attempted_at"])
+                if "cluster_attempted_at" in row_keys and row["cluster_attempted_at"]
+                else None
             ),
         )
 
@@ -1599,11 +1632,18 @@ class SyncDatabase:
     def get_undelivered_items(self, min_importance: int = 1, limit: int = 50) -> list[ContentItem]:
         return self._run(self._async_db.get_undelivered_items(min_importance, limit))
 
-    def get_unclustered_items(self, min_importance: int = 5, limit: int = 100) -> list[ContentItem]:
-        return self._run(self._async_db.get_unclustered_items(min_importance, limit))
+    def get_unclustered_items(
+        self, min_importance: int = 5, limit: int = 100, retry_after_hours: Optional[int] = None
+    ) -> list[ContentItem]:
+        return self._run(
+            self._async_db.get_unclustered_items(min_importance, limit, retry_after_hours)
+        )
 
     def update_content_item(self, item: ContentItem) -> None:
         self._run(self._async_db.update_content_item(item))
+
+    def mark_cluster_attempted(self, item_id: int) -> None:
+        self._run(self._async_db.mark_cluster_attempted(item_id))
 
     def mark_items_delivered(self, item_ids: list[int]) -> None:
         self._run(self._async_db.mark_items_delivered(item_ids))

@@ -1,5 +1,6 @@
 """Event Stream processor for clustering related content items."""
 
+import hashlib
 import json
 import logging
 import os
@@ -87,6 +88,46 @@ class EventStreamProcessor:
         self.settings = get_settings()
         # Instance-level cache for AI confirmation: {(item_id, cluster_ids_tuple): result}
         self._ai_confirm_cache: dict[tuple, Optional[ClusterCandidate]] = {}
+
+    def _build_event_confirm_cache_key(self, item_id: int, candidates: list[ClusterCandidate]) -> str:
+        """Build a stable cache key for event confirmation results."""
+        signature = "|".join(
+            f"{c.cluster_id}:{c.cluster_title}" for c in candidates
+        )
+        digest = hashlib.sha256(f"{item_id}|{signature}".encode("utf-8")).hexdigest()
+        return f"event_confirm:{digest}"
+
+    def _get_persistent_event_confirm(
+        self, item_id: int, candidates: list[ClusterCandidate]
+    ) -> tuple[bool, Optional[ClusterCandidate]]:
+        """Get cached event confirmation result from persistent cache."""
+        if not self.settings.ai.cache_enabled or not isinstance(self.db, SyncDatabase):
+            return False, None
+        cache_key = self._build_event_confirm_cache_key(item_id, candidates)
+        cached_json = self.db.get_ai_cache(cache_key)
+        if not cached_json:
+            return False, None
+        try:
+            data = json.loads(cached_json)
+            cluster_id = data.get("cluster_id")
+            if cluster_id in (None, 0):
+                return True, None
+            for candidate in candidates:
+                if candidate.cluster_id == cluster_id:
+                    return True, candidate
+        except Exception:
+            return False, None
+        return False, None
+
+    def _set_persistent_event_confirm(
+        self, item_id: int, candidates: list[ClusterCandidate], result: Optional[ClusterCandidate]
+    ) -> None:
+        """Store event confirmation result in persistent cache."""
+        if not self.settings.ai.cache_enabled or not isinstance(self.db, SyncDatabase):
+            return
+        cache_key = self._build_event_confirm_cache_key(item_id, candidates)
+        payload = {"cluster_id": result.cluster_id if result else 0}
+        self.db.set_ai_cache(cache_key, json.dumps(payload), self.settings.ai.cache_ttl)
 
     @classmethod
     def clear_cache(cls) -> None:
@@ -199,6 +240,12 @@ class EventStreamProcessor:
         if not candidates:
             return None
 
+        # Check persistent cache first (cross-run)
+        if item.id is not None:
+            cache_hit, cached = self._get_persistent_event_confirm(item.id, candidates)
+            if cache_hit:
+                return cached
+
         # Auto-accept very high confidence matches without AI call
         # This is a performance optimization - score >= 0.8 indicates strong
         # entity/keyword overlap that doesn't need AI confirmation
@@ -207,6 +254,8 @@ class EventStreamProcessor:
                 f"Auto-accepting high-confidence match (score={candidates[0].score:.2f}) "
                 f"for item {item.id} -> cluster '{candidates[0].cluster_title}'"
             )
+            if item.id is not None:
+                self._set_persistent_event_confirm(item.id, candidates, candidates[0])
             return candidates[0]
 
         # Check cache first
@@ -219,6 +268,8 @@ class EventStreamProcessor:
             # In mock mode, accept the top candidate if score > 0.5
             result = candidates[0] if candidates[0].score > 0.5 else None
             self._ai_confirm_cache[cache_key] = result
+            if item.id is not None:
+                self._set_persistent_event_confirm(item.id, candidates, result)
             return result
 
         # Build prompt for AI confirmation
@@ -267,6 +318,8 @@ class EventStreamProcessor:
                     if 1 <= idx <= len(candidates):
                         confirmed = candidates[idx - 1]
                         self._ai_confirm_cache[cache_key] = confirmed
+                        if item.id is not None:
+                            self._set_persistent_event_confirm(item.id, candidates, confirmed)
                         return confirmed
 
         except Exception as e:
@@ -276,9 +329,13 @@ class EventStreamProcessor:
         if candidates[0].score >= 0.7:
             result = candidates[0]
             self._ai_confirm_cache[cache_key] = result
+            if item.id is not None:
+                self._set_persistent_event_confirm(item.id, candidates, result)
             return result
 
         self._ai_confirm_cache[cache_key] = None
+        if item.id is not None:
+            self._set_persistent_event_confirm(item.id, candidates, None)
         return None
 
     def process_item_for_clustering(self, item: ContentItem) -> Optional[EventCluster]:
@@ -337,6 +394,9 @@ class EventStreamProcessor:
 
             logger.info(f"Created new cluster '{cluster.event_title}' for item {item.id}")
             return cluster
+
+        if item.id is not None and isinstance(self.db, SyncDatabase):
+            self.db.mark_cluster_attempted(item.id)
 
         return None
 
@@ -494,7 +554,12 @@ def cluster_unprocessed_items(
 
     # Get unclustered items only - this skips items already in clusters
     # for better performance (optimization: skip already-clustered items)
-    items = db.get_unclustered_items(min_importance=6, limit=limit)
+    retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
+    items = db.get_unclustered_items(
+        min_importance=6,
+        limit=limit,
+        retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
+    )
 
     clustered = 0
     total = len(items)
@@ -541,7 +606,12 @@ def cluster_unprocessed_items_parallel(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # Get unclustered items using the main db connection
-    items = db.get_unclustered_items(min_importance=6, limit=limit)
+    retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
+    items = db.get_unclustered_items(
+        min_importance=6,
+        limit=limit,
+        retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
+    )
 
     if not items:
         logger.info("No unclustered items to process")

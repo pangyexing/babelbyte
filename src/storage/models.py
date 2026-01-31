@@ -137,6 +137,7 @@ class ContentItem:
     # Delivery tracking
     delivered: bool = False
     delivered_at: Optional[datetime] = None
+    cluster_attempted_at: Optional[datetime] = None
 
     def get_enhanced_data(self) -> Optional[EnhancedProcessingData]:
         """Parse enhanced processing data from JSON fields."""
