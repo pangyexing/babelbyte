@@ -1,9 +1,10 @@
 """Base classes for AI processors."""
 
+import hashlib
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
@@ -153,6 +154,107 @@ key_points最多3个，actionable_items仅importance>=7时提取
     def is_available(self) -> bool:
         """Check if the AI processor is available."""
         pass
+
+    # ============================================
+    # Cache Helper Methods
+    # ============================================
+
+    @staticmethod
+    def _get_content_hash(title: str, content: str) -> str:
+        """
+        Generate content hash as cache key.
+
+        Args:
+            title: Content title.
+            content: Content body.
+
+        Returns:
+            SHA256 hash (16 characters) of combined title and content.
+        """
+        combined = f"{title}||{content}"
+        return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _serialize_result(result: ProcessingResult) -> str:
+        """
+        Serialize ProcessingResult to JSON string.
+
+        Args:
+            result: ProcessingResult to serialize.
+
+        Returns:
+            JSON string representation.
+        """
+        impact = asdict(result.impact_assessment) if result.impact_assessment else None
+        data = {
+            "summary": result.summary,
+            "category": result.category,
+            "importance_score": result.importance_score,
+            "success": result.success,
+            "error_message": result.error_message,
+            "one_liner": result.one_liner,
+            "key_points": [asdict(kp) for kp in result.key_points],
+            "impact_assessment": impact,
+            "actionable_items": [asdict(ai) for ai in result.actionable_items],
+        }
+        return json.dumps(data, ensure_ascii=False)
+
+    @staticmethod
+    def _deserialize_result(json_str: str) -> ProcessingResult:
+        """
+        Deserialize JSON string to ProcessingResult.
+
+        Args:
+            json_str: JSON string to deserialize.
+
+        Returns:
+            ProcessingResult object.
+        """
+        data = json.loads(json_str)
+
+        # Reconstruct key_points
+        key_points = []
+        for kp in data.get("key_points", []):
+            key_points.append(
+                KeyPointResult(
+                    type=kp.get("type", "事实"),
+                    value=kp.get("value", ""),
+                    impact=kp.get("impact", ""),
+                )
+            )
+
+        # Reconstruct impact_assessment
+        impact_assessment = None
+        if data.get("impact_assessment"):
+            ia = data["impact_assessment"]
+            impact_assessment = ImpactResult(
+                short_term=ia.get("short_term", ""),
+                long_term=ia.get("long_term", ""),
+                certainty=ia.get("certainty", "uncertain"),
+            )
+
+        # Reconstruct actionable_items
+        actionable_items = []
+        for ai in data.get("actionable_items", []):
+            actionable_items.append(
+                ActionResult(
+                    type=ai.get("type", "跟进"),
+                    description=ai.get("description", ""),
+                    priority=ai.get("priority", "中"),
+                )
+            )
+
+        return ProcessingResult(
+            summary=data.get("summary", ""),
+            category=data.get("category", "其他"),
+            importance_score=data.get("importance_score", 5),
+            success=data.get("success", True),
+            error_message=data.get("error_message"),
+            one_liner=data.get("one_liner", ""),
+            key_points=key_points,
+            impact_assessment=impact_assessment,
+            actionable_items=actionable_items,
+        )
 
     def _smart_truncate(self, text: str, max_length: int) -> str:
         """

@@ -208,6 +208,12 @@ class AIConfig:
     )
     batch_size_long: int = field(default_factory=lambda: int(os.getenv("AI_BATCH_SIZE_LONG", "6")))
 
+    # Cache configuration
+    cache_enabled: bool = field(
+        default_factory=lambda: os.getenv("AI_CACHE_ENABLED", "true").lower() == "true"
+    )
+    cache_ttl: int = field(default_factory=lambda: int(os.getenv("AI_CACHE_TTL", "86400")))
+
     # Model tier configuration
     model_tiers: ModelTierConfig = field(default_factory=ModelTierConfig)
 
