@@ -34,22 +34,48 @@ class ClusterCandidate:
 _ENTITY_PATTERNS = [
     # Company names (English)
     r"\b(OpenAI|Google|Microsoft|Meta|Apple|Amazon|Tesla|Anthropic|Nvidia|AMD|Intel)\b",
+    r"\b(DeepMind|Stability|Hugging\s*Face|Cohere|Mistral|xAI|Perplexity)\b",
     # Chinese company names
-    r"(阿里巴巴|腾讯|百度|字节跳动|华为|小米|京东|美团|拼多多)",
-    # Tech terms
+    r"(阿里巴巴|腾讯|百度|字节跳动|华为|小米|京东|美团|拼多多|商汤|旷视|智谱)",
+    # Tech terms / AI models
     r"\b(GPT-\d+|Claude|Gemini|Llama|ChatGPT|Copilot|DALL-E|Midjourney|Stable\s*Diffusion)\b",
-    # Common event markers
-    r"(发布|上线|宣布|收购|融资|IPO|裁员|合并|开源)",
+    r"\b(Sora|Grok|Flux|DeepSeek|Qwen|Yi|Kimi)\b",
+    # Twitter/X usernames (capture the username part)
+    r"@([A-Za-z0-9_]{1,15})\b",
+    # Hashtags
+    r"#([A-Za-z0-9_]+)\b",
+    # Common event markers (Chinese)
+    r"(发布|上线|宣布|收购|融资|IPO|裁员|合并|开源|升级|更新)",
+    # Common event markers (English)
+    r"\b(launch|release|announce|acquire|funding|merger|layoff|update)\b",
 ]
 
 
 @lru_cache(maxsize=1024)
 def _extract_entities_cached(text: str) -> frozenset[str]:
-    """Extract named entities from text (cached)."""
+    """Extract named entities from text (cached).
+
+    Extracts:
+    - Company names (OpenAI, Google, etc.)
+    - AI model names (GPT-4, Claude, etc.)
+    - Twitter usernames (@username)
+    - Hashtags (#topic)
+    - Event markers (launch, release, etc.)
+    """
     entities = set()
     for pattern in _ENTITY_PATTERNS:
         matches = re.findall(pattern, text, re.IGNORECASE)
-        entities.update(m.lower() if isinstance(m, str) else m[0].lower() for m in matches)
+        for m in matches:
+            if isinstance(m, str):
+                entities.add(m.lower())
+            elif isinstance(m, tuple):
+                # For patterns with groups, take the first non-empty group
+                for g in m:
+                    if g:
+                        entities.add(g.lower())
+                        break
+            else:
+                entities.add(str(m).lower())
     return frozenset(entities)
 
 
@@ -59,8 +85,67 @@ def _extract_keywords_cached(text: str) -> frozenset[str]:
     # Remove punctuation and split
     words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
     # Filter short words and stopwords
-    stopwords = {"的", "是", "在", "了", "和", "与", "a", "the", "is", "are", "to", "of", "in"}
+    stopwords = {
+        "的", "是", "在", "了", "和", "与", "我", "你", "他", "她", "它", "这", "那",
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+        "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her",
+        "this", "that", "these", "those", "what", "which", "who", "how", "why",
+        "and", "or", "but", "if", "so", "just", "have", "has", "had", "do", "does",
+    }
     return frozenset(w for w in words if len(w) > 1 and w not in stopwords)
+
+
+@lru_cache(maxsize=1024)
+def _normalize_title(text: str) -> str:
+    """Normalize title for comparison (cached).
+
+    Removes common prefixes like RT, hashtags formatting, and normalizes whitespace.
+    """
+    if not text:
+        return ""
+    # Remove RT prefix
+    text = re.sub(r"^RT\s+", "", text, flags=re.IGNORECASE)
+    # Remove @mentions at the start
+    text = re.sub(r"^@\w+[:\s]+", "", text)
+    # Remove URLs
+    text = re.sub(r"https?://\S+", "", text)
+    # Normalize whitespace
+    text = " ".join(text.split())
+    return text.strip().lower()
+
+
+def _calculate_title_similarity(title1: str, title2: str) -> float:
+    """Calculate Jaccard similarity between two titles.
+
+    Returns a score between 0 and 1.
+    """
+    if not title1 or not title2:
+        return 0.0
+
+    # Normalize titles
+    norm1 = _normalize_title(title1)
+    norm2 = _normalize_title(title2)
+
+    # If normalized titles are identical, return 1.0
+    if norm1 == norm2:
+        return 1.0
+
+    # Extract keywords
+    keywords1 = _extract_keywords_cached(norm1)
+    keywords2 = _extract_keywords_cached(norm2)
+
+    if not keywords1 or not keywords2:
+        return 0.0
+
+    # Jaccard similarity
+    intersection = len(keywords1 & keywords2)
+    union = len(keywords1 | keywords2)
+
+    if union == 0:
+        return 0.0
+
+    return intersection / union
 
 
 class EventStreamProcessor:
@@ -137,10 +222,15 @@ class EventStreamProcessor:
         _extract_keywords_cached.cache_clear()
 
     def _get_recent_clusters_cached(
-        self, time_window_days: int, category: Optional[str]
+        self, time_window_days: int, category: Optional[str] = None
     ) -> list[EventCluster]:
-        """Get recent clusters with TTL caching."""
-        cache_key = f"{time_window_days}:{category or ''}"
+        """Get recent clusters with TTL caching.
+
+        Args:
+            time_window_days: Look back this many days
+            category: Optional category filter. If None, returns all categories.
+        """
+        cache_key = f"{time_window_days}:{category or 'all'}"
         now = time.time()
 
         if cache_key in self._clusters_cache:
@@ -150,8 +240,9 @@ class EventStreamProcessor:
                 return cached_clusters
 
         # Query database and cache result
+        # Pass None to get clusters from ALL categories for better cross-category matching
         clusters = self.db.get_recent_event_clusters(
-            days=time_window_days, category=category, limit=50
+            days=time_window_days, category=category, limit=100
         )
         self._clusters_cache[cache_key] = (now, clusters)
         return clusters
@@ -162,6 +253,13 @@ class EventStreamProcessor:
         """
         Find potential cluster matches using rule-based pre-filtering.
 
+        Scoring breakdown (max 1.0):
+        - Title similarity (Jaccard): up to 0.5 (highest weight for content match)
+        - Entity overlap: up to 0.25
+        - Keyword overlap: up to 0.15
+        - Category match: 0.05 (reduced - don't want to block cross-category)
+        - Time proximity: 0.05
+
         Args:
             item: Content item to find clusters for
             time_window_days: Look for clusters updated within this many days
@@ -171,43 +269,55 @@ class EventStreamProcessor:
         """
         candidates = []
 
-        # Get recent clusters (cached)
-        recent_clusters = self._get_recent_clusters_cached(time_window_days, item.category)
+        # Get recent clusters from ALL categories (not filtered by item.category)
+        # This enables cross-category clustering for the same event
+        recent_clusters = self._get_recent_clusters_cached(time_window_days, category=None)
 
         if not recent_clusters:
             return candidates
 
         # Extract key entities from the item (uses LRU cached functions)
-        item_entities = _extract_entities_cached(item.title + " " + (item.content or ""))
+        item_text = item.title + " " + (item.content or "")
+        item_entities = _extract_entities_cached(item_text)
         item_keywords = _extract_keywords_cached(item.title)
 
         for cluster in recent_clusters:
             score = 0.0
             method = "keyword"
 
-            # Check entity overlap (uses LRU cached functions)
+            # 1. Title similarity (most important - up to 0.5)
+            title_sim = _calculate_title_similarity(item.title, cluster.event_title)
+            if title_sim > 0:
+                score += 0.5 * title_sim
+                if title_sim >= 0.8:
+                    method = "title"
+
+            # 2. Entity overlap (up to 0.25)
             cluster_entities = _extract_entities_cached(cluster.event_title)
             entity_overlap = item_entities & cluster_entities
             if entity_overlap:
-                score += 0.4 * min(len(entity_overlap), 3) / 3  # Max 0.4 for entities
-                method = "entity"
+                entity_score = 0.25 * min(len(entity_overlap), 3) / 3
+                score += entity_score
+                if entity_score > 0.1:
+                    method = "entity"
 
-            # Check keyword overlap in title (uses LRU cached functions)
+            # 3. Keyword overlap (up to 0.15)
             cluster_keywords = _extract_keywords_cached(cluster.event_title)
             keyword_overlap = item_keywords & cluster_keywords
             if keyword_overlap:
-                score += 0.3 * min(len(keyword_overlap), 5) / 5  # Max 0.3 for keywords
+                score += 0.15 * min(len(keyword_overlap), 5) / 5
 
-            # Check category match
+            # 4. Category match (small bonus - 0.05)
             if item.category and cluster.category == item.category:
-                score += 0.2
+                score += 0.05
 
-            # Time proximity bonus
+            # 5. Time proximity bonus (0.05)
             time_diff = abs((datetime.now() - cluster.last_updated_at).days)
             if time_diff <= 1:
-                score += 0.1
+                score += 0.05
 
-            if score >= 0.3:  # Minimum threshold
+            # Threshold: 0.2 (lowered to allow more candidates for AI confirmation)
+            if score >= 0.2:
                 candidates.append(
                     ClusterCandidate(
                         cluster_id=cluster.id,
@@ -246,10 +356,13 @@ class EventStreamProcessor:
             if cache_hit:
                 return cached
 
-        # Auto-accept very high confidence matches without AI call
-        # This is a performance optimization - score >= 0.8 indicates strong
-        # entity/keyword overlap that doesn't need AI confirmation
-        if candidates[0].score >= 0.8:
+        # Auto-accept high confidence matches without AI call
+        # Score >= 0.6 indicates strong title/entity overlap
+        # With the new scoring system:
+        # - Title similarity 0.8+ alone gives 0.4+ score
+        # - Title 0.5 + 2 entities + same category = 0.25 + 0.17 + 0.05 = 0.47
+        # - So 0.6 means very confident match
+        if candidates[0].score >= 0.6:
             logger.info(
                 f"Auto-accepting high-confidence match (score={candidates[0].score:.2f}) "
                 f"for item {item.id} -> cluster '{candidates[0].cluster_title}'"
@@ -265,8 +378,9 @@ class EventStreamProcessor:
             return self._ai_confirm_cache[cache_key]
 
         if self.use_mock:
-            # In mock mode, accept the top candidate if score > 0.5
-            result = candidates[0] if candidates[0].score > 0.5 else None
+            # In mock mode, accept the top candidate if score > 0.35
+            # (lowered threshold for better clustering in mock mode)
+            result = candidates[0] if candidates[0].score > 0.35 else None
             self._ai_confirm_cache[cache_key] = result
             if item.id is not None:
                 self._set_persistent_event_confirm(item.id, candidates, result)
@@ -325,8 +439,8 @@ class EventStreamProcessor:
         except Exception as e:
             logger.warning(f"AI confirmation failed: {e}")
 
-        # Fallback: accept high-confidence matches
-        if candidates[0].score >= 0.7:
+        # Fallback: accept moderately confident matches when AI fails
+        if candidates[0].score >= 0.5:
             result = candidates[0]
             self._ai_confirm_cache[cache_key] = result
             if item.id is not None:
@@ -352,6 +466,11 @@ class EventStreamProcessor:
             logger.warning("Cannot cluster item without ID")
             return None
 
+        # Check if item is already in a cluster (prevent duplicates)
+        if self.db.is_item_in_cluster(item.id):
+            logger.debug(f"Item {item.id} already in a cluster, skipping")
+            return None
+
         # Find candidates
         candidates = self.find_cluster_candidates(item)
 
@@ -373,7 +492,8 @@ class EventStreamProcessor:
                 return cluster
 
         # Create new cluster for high-importance items
-        if item.importance_score and item.importance_score >= 6:
+        # Raised threshold from 6 to 7 to reduce cluster fragmentation
+        if item.importance_score and item.importance_score >= 7:
             cluster = EventCluster(
                 event_title=self._generate_event_title(item),
                 category=item.category or "其他",
@@ -391,6 +511,11 @@ class EventStreamProcessor:
                 detection_method="initial",
             )
             self.db.add_event_member(member)
+
+            # Invalidate cluster cache since we created a new cluster
+            cache_key = f"3:{None or 'all'}"
+            if cache_key in self._clusters_cache:
+                del self._clusters_cache[cache_key]
 
             logger.info(f"Created new cluster '{cluster.event_title}' for item {item.id}")
             return cluster
@@ -677,11 +802,30 @@ def cluster_unprocessed_items_parallel(
 
             raise e
 
+    # Track thread-local resources for cleanup (use set to avoid duplicates)
+    thread_resources: set = set()
+    resources_lock = threading.Lock()
+
+    def register_thread_resources():
+        """Register current thread's resources for later cleanup."""
+        if hasattr(thread_local, "db") and thread_local.db is not db:
+            with resources_lock:
+                thread_resources.add(thread_local.db)
+
+    def process_single_item_with_registration(item: "ContentItem") -> bool:
+        """Process a single item and register resources for cleanup."""
+        result = process_single_item(item)
+        register_thread_resources()
+        return result
+
     # Process items in parallel
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
-            futures = {executor.submit(process_single_item, item): item for item in items}
+            futures = {
+                executor.submit(process_single_item_with_registration, item): item
+                for item in items
+            }
 
             # Wait for completion (results are tracked via side effects)
             for future in as_completed(futures):
@@ -691,10 +835,12 @@ def cluster_unprocessed_items_parallel(
                     item = futures[future]
                     logger.warning(f"Error processing item {item.id}: {e}")
     finally:
-        # Clean up thread-local database connections
-        # Note: ThreadPoolExecutor reuses threads, so we can't easily close
-        # connections here. They will be closed when the threads are destroyed.
-        pass
+        # Clean up all thread-local database connections
+        for thread_db in thread_resources:
+            try:
+                thread_db.close()
+            except Exception:
+                pass
 
     logger.info(
         f"Clustered {clustered}/{total} items into events (parallel, {max_workers} workers)"

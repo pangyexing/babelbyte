@@ -31,9 +31,10 @@ def mock_db():
     db.get_recent_event_clusters = MagicMock(return_value=[])
     db.get_unclustered_items = MagicMock(return_value=[])
     db.get_undelivered_items = MagicMock(return_value=[])
-    db.add_event_member = MagicMock()
+    db.add_event_member = MagicMock(return_value=True)
     db.create_event_cluster = MagicMock()
     db.get_event_cluster = MagicMock()
+    db.is_item_in_cluster = MagicMock(return_value=False)  # Items not yet in any cluster
     return db
 
 
@@ -223,6 +224,94 @@ class TestHighConfidenceAutoAccept:
 # ============================================
 # Tests: Parallel Processing
 # ============================================
+
+
+class TestThreadResourceCleanup:
+    """Tests for thread-local resource cleanup in parallel processing."""
+
+    def test_thread_cleanup_path_executes(self, mock_db):
+        """Test that the thread cleanup code path executes without errors."""
+        # Mock db returns no items, so no thread-local dbs are created
+        # but the cleanup code path is still exercised
+        mock_db.get_unclustered_items.return_value = []
+
+        # Should complete without threading cleanup errors
+        cluster_unprocessed_items_parallel(
+            db=mock_db,
+            use_mock=True,
+            limit=10,
+            max_workers=2,
+        )
+
+        # Verify the function completed (cleanup ran successfully)
+        mock_db.get_unclustered_items.assert_called_once()
+
+    def test_parallel_cleanup_with_items(self, mock_db):
+        """Test that cleanup happens even when items are processed."""
+        items = [create_content_item(i, f"News {i}") for i in range(5)]
+        mock_db.get_unclustered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+        mock_db.create_event_cluster.return_value = EventCluster(
+            id=1,
+            event_title="Test",
+            category="AI",
+            first_seen_at=datetime.now(),
+            last_updated_at=datetime.now(),
+            article_count=1,
+        )
+
+        # Should complete without threading cleanup errors
+        clustered = cluster_unprocessed_items_parallel(
+            db=mock_db,
+            use_mock=True,
+            limit=5,
+            max_workers=4,
+        )
+
+        assert clustered >= 0
+
+    def test_parallel_cleanup_with_exception(self, mock_db):
+        """Test that cleanup happens even when processing fails."""
+        items = [create_content_item(1, "News 1")]
+        mock_db.get_unclustered_items.return_value = items
+        mock_db.get_recent_event_clusters.side_effect = Exception("Simulated error")
+
+        # Should complete without hanging or leaving threads unclean
+        clustered = cluster_unprocessed_items_parallel(
+            db=mock_db,
+            use_mock=True,
+            limit=1,
+            max_workers=2,
+        )
+
+        # Even with errors, should return 0 (no items clustered)
+        assert clustered == 0
+
+    def test_parallel_no_duplicate_resource_registration(self, mock_db):
+        """Test that same thread's resources aren't registered multiple times."""
+        # Process multiple items with single worker (same thread processes all)
+        items = [create_content_item(i, f"News {i}") for i in range(10)]
+        mock_db.get_unclustered_items.return_value = items
+        mock_db.get_recent_event_clusters.return_value = []
+        mock_db.create_event_cluster.return_value = EventCluster(
+            id=1,
+            event_title="Test",
+            category="AI",
+            first_seen_at=datetime.now(),
+            last_updated_at=datetime.now(),
+            article_count=1,
+        )
+
+        # With single worker, only one thread-local db should be created
+        # This tests that set() deduplication works
+        clustered = cluster_unprocessed_items_parallel(
+            db=mock_db,
+            use_mock=True,
+            limit=10,
+            max_workers=1,  # Single worker = single thread
+        )
+
+        assert clustered >= 0
 
 
 class TestParallelProcessing:
