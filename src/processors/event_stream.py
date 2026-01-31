@@ -461,7 +461,12 @@ high表示各来源一致，conflicted表示有分歧"""
         return f"事件「{cluster.event_title}」今日有{len(today_items)}篇更新", "high"
 
 
-def cluster_unprocessed_items(db: SyncDatabase, use_mock: bool = False, limit: int = 100) -> int:
+def cluster_unprocessed_items(
+    db: SyncDatabase,
+    use_mock: bool = False,
+    limit: int = 100,
+    progress_callback: Optional[callable] = None,
+) -> int:
     """
     Cluster all processed but unclustered items.
 
@@ -469,6 +474,7 @@ def cluster_unprocessed_items(db: SyncDatabase, use_mock: bool = False, limit: i
         db: Database connection
         use_mock: Use mock mode
         limit: Maximum items to process
+        progress_callback: Optional callback(current, total, clustered) for progress updates
 
     Returns:
         Number of items clustered
@@ -480,10 +486,15 @@ def cluster_unprocessed_items(db: SyncDatabase, use_mock: bool = False, limit: i
     items = db.get_undelivered_items(min_importance=6, limit=limit)
 
     clustered = 0
-    for item in items:
+    total = len(items)
+
+    for i, item in enumerate(items):
         result = processor.process_item_for_clustering(item)
         if result:
             clustered += 1
 
-    logger.info(f"Clustered {clustered}/{len(items)} items into events")
+        if progress_callback:
+            progress_callback(i + 1, total, clustered)
+
+    logger.info(f"Clustered {clustered}/{total} items into events")
     return clustered

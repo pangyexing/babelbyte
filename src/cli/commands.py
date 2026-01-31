@@ -1062,9 +1062,22 @@ def cluster_content(ctx, limit):
     try:
         from src.processors.event_stream import cluster_unprocessed_items
 
-        console.print("[bold]Running event clustering...[/bold]")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[green]{task.fields[clustered]} clustered[/green]"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[bold]Clustering...[/bold]", total=None, clustered=0)
 
-        clustered = cluster_unprocessed_items(db=db, use_mock=mock, limit=limit)
+            def on_progress(current, total, clustered):
+                progress.update(task, total=total, completed=current, clustered=clustered)
+
+            clustered = cluster_unprocessed_items(
+                db=db, use_mock=mock, limit=limit, progress_callback=on_progress
+            )
 
         console.print(f"[green]Clustered {clustered} items into events[/green]")
 
