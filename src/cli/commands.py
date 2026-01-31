@@ -6,7 +6,7 @@ all command groups from their respective modules.
 
 import click
 
-from src.cli import actions, events, fetch, reports, search, subscribe, topics, validation
+from src.cli import actions, embeddings, events, fetch, reports, search, subscribe, topics, validation
 
 
 @click.group()
@@ -27,6 +27,7 @@ topics.register_commands(cli)
 actions.register_commands(cli)
 reports.register_commands(cli)
 validation.register_commands(cli)
+embeddings.register_commands(cli)
 
 
 if __name__ == "__main__":

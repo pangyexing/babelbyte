@@ -13,7 +13,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
 from src.fetchers.base import BaseFetcher, FetchResult
+from src.fetchers.hackernews import HackerNewsFetcher
 from src.fetchers.reddit import RedditFetcher
+from src.fetchers.rss import GenericRSSFetcher
 from src.fetchers.twitter import MockTwitterFetcher, TwitterAPIioFetcher
 from src.processors.digest_processor import DigestGenerator
 from src.storage.database import SyncDatabase
@@ -69,6 +71,8 @@ class JobRunner:
         # Separate subscriptions by type for optimized parallel fetching
         reddit_subs = [s for s in subscriptions if s.source_type == SourceType.REDDIT]
         twitter_subs = [s for s in subscriptions if s.source_type == SourceType.TWITTER]
+        hackernews_subs = [s for s in subscriptions if s.source_type == SourceType.HACKERNEWS]
+        rss_subs = [s for s in subscriptions if s.source_type == SourceType.RSS]
 
         stats = {"total": len(subscriptions), "fetched": 0, "errors": 0, "new_items": 0}
 
@@ -77,7 +81,9 @@ class JobRunner:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             results = loop.run_until_complete(
-                self._fetch_all_async(reddit_subs, twitter_subs, progress_callback)
+                self._fetch_all_async(
+                    reddit_subs, twitter_subs, hackernews_subs, rss_subs, progress_callback
+                )
             )
             loop.close()
         except (RuntimeError, asyncio.CancelledError) as e:
@@ -128,6 +134,8 @@ class JobRunner:
         self,
         reddit_subs: List[Subscription],
         twitter_subs: List[Subscription],
+        hackernews_subs: List[Subscription] = None,
+        rss_subs: List[Subscription] = None,
         progress_callback=None,
     ) -> List[Tuple[FetchResult, Subscription]]:
         """
@@ -135,12 +143,18 @@ class JobRunner:
 
         - Reddit: Fully parallel (no rate limits)
         - Twitter: Controlled concurrency with semaphore for rate limiting
+        - HackerNews: Fully parallel (no rate limits)
+        - RSS: Fully parallel (no rate limits)
         """
         settings = get_settings()
         results = []
+        hackernews_subs = hackernews_subs or []
+        rss_subs = rss_subs or []
 
         # Initialize fetchers
         reddit_fetcher = RedditFetcher()
+        hackernews_fetcher = HackerNewsFetcher()
+        rss_fetcher = GenericRSSFetcher()
 
         use_twitterapi_io = False
         if self.use_mock:
@@ -159,6 +173,38 @@ class JobRunner:
             reddit_results = await asyncio.gather(*reddit_tasks, return_exceptions=True)
 
             for sub, result in zip(reddit_subs, reddit_results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error fetching {sub.display_name}: {result}")
+                    error_result = FetchResult(
+                        subscription=sub, success=False, error_message=str(result)
+                    )
+                    results.append((error_result, sub))
+                else:
+                    results.append((result, sub))
+
+        # Fetch HackerNews subscriptions fully in parallel
+        if hackernews_subs:
+            logger.info(f"Fetching {len(hackernews_subs)} HackerNews subscriptions in parallel...")
+            hn_tasks = [hackernews_fetcher.fetch(sub) for sub in hackernews_subs]
+            hn_results = await asyncio.gather(*hn_tasks, return_exceptions=True)
+
+            for sub, result in zip(hackernews_subs, hn_results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error fetching {sub.display_name}: {result}")
+                    error_result = FetchResult(
+                        subscription=sub, success=False, error_message=str(result)
+                    )
+                    results.append((error_result, sub))
+                else:
+                    results.append((result, sub))
+
+        # Fetch RSS subscriptions fully in parallel
+        if rss_subs:
+            logger.info(f"Fetching {len(rss_subs)} RSS subscriptions in parallel...")
+            rss_tasks = [rss_fetcher.fetch(sub) for sub in rss_subs]
+            rss_results = await asyncio.gather(*rss_tasks, return_exceptions=True)
+
+            for sub, result in zip(rss_subs, rss_results):
                 if isinstance(result, Exception):
                     logger.error(f"Error fetching {sub.display_name}: {result}")
                     error_result = FetchResult(

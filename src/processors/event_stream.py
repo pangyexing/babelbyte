@@ -11,12 +11,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from config.settings import get_settings
 from src.analytics.token_tracker import AICallType, record_ai_call
 from src.storage.database import SyncDatabase
 from src.storage.models import ContentItem, EventCluster, EventMember, EventTimeline
+
+# Optional numpy import for embeddings
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None
+    NUMPY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +36,9 @@ class ClusterCandidate:
     cluster_id: int
     cluster_title: str
     score: float  # 0-1 similarity score
-    method: str  # 'keyword' or 'entity'
+    method: str  # 'keyword', 'entity', 'semantic', or 'hybrid'
+    rule_score: float = 0.0  # Rule-based component
+    semantic_score: float = 0.0  # Semantic/embedding component
 
 
 # Common entity patterns for extraction (module-level for caching)
@@ -213,13 +223,16 @@ class EventStreamProcessor:
 
     Pipeline:
     1. Rule-based pre-filtering (keywords, time window, entities)
-    2. AI confirmation for borderline cases
-    3. Event timeline generation
+    2. Semantic similarity using embeddings (optional)
+    3. Hybrid scoring combining rule-based and semantic scores
+    4. AI confirmation for borderline cases
+    5. Event timeline generation
 
     Caching:
     - Entity/keyword extraction: LRU cache (module-level)
     - Recent clusters query: TTL cache (class-level, 60s)
     - AI confirmation: Per-session cache (instance-level)
+    - Embeddings: Managed by EmbeddingManager
     """
 
     # Class-level TTL cache for recent clusters: {cache_key: (timestamp, clusters)}
@@ -232,6 +245,68 @@ class EventStreamProcessor:
         self.settings = get_settings()
         # Instance-level cache for AI confirmation: {(item_id, cluster_ids_tuple): result}
         self._ai_confirm_cache: dict[tuple, Optional[ClusterCandidate]] = {}
+        # Embedding manager for semantic similarity (lazy loaded)
+        self._embedding_manager = None
+        # Cache for cluster centroids: {cluster_id: embedding}
+        self._centroid_cache: dict = {}
+
+    def _get_embedding_manager(self):
+        """Get embedding manager if enabled."""
+        if not self.settings.embedding.enabled:
+            return None
+        if self._embedding_manager is None:
+            try:
+                from src.processors.embeddings import EmbeddingManager
+                self._embedding_manager = EmbeddingManager.get_instance()
+            except ImportError as e:
+                logger.warning(f"Embeddings disabled: {e}")
+                return None
+        return self._embedding_manager
+
+    def _get_cluster_centroid(self, cluster_id: int):
+        """Get cluster centroid embedding with caching."""
+        if cluster_id in self._centroid_cache:
+            return self._centroid_cache[cluster_id]
+
+        result = self.db.get_cluster_centroid(cluster_id)
+        if result:
+            centroid_bytes, member_count = result
+            manager = self._get_embedding_manager()
+            if manager:
+                from src.processors.embeddings import bytes_to_embedding
+                centroid = bytes_to_embedding(centroid_bytes, manager.dimension)
+                self._centroid_cache[cluster_id] = centroid
+                return centroid
+        return None
+
+    def _compute_semantic_similarity(
+        self, item: ContentItem, cluster: EventCluster
+    ) -> float:
+        """Compute semantic similarity between item and cluster using embeddings."""
+        manager = self._get_embedding_manager()
+        if not manager:
+            return 0.0
+
+        try:
+            # Get item embedding
+            item_text = f"{item.title} {item.summary or ''}"[:500]
+            item_embedding = manager.get_embedding(item_text)
+
+            # Get cluster centroid
+            centroid = self._get_cluster_centroid(cluster.id)
+            if centroid is not None:
+                similarity = manager.cosine_similarity(item_embedding, centroid)
+                # Map from [-1, 1] to [0, 1]
+                return max(0.0, (similarity + 1) / 2)
+
+            # Fallback: compare with cluster title
+            cluster_embedding = manager.get_embedding(cluster.event_title)
+            similarity = manager.cosine_similarity(item_embedding, cluster_embedding)
+            return max(0.0, (similarity + 1) / 2)
+
+        except Exception as e:
+            logger.warning(f"Semantic similarity failed: {e}")
+            return 0.0
 
     def _build_event_confirm_cache_key(
         self, item_id: int, candidates: list[ClusterCandidate]
@@ -280,6 +355,68 @@ class EventStreamProcessor:
         _extract_entities_cached.cache_clear()
         _extract_keywords_cached.cache_clear()
 
+    def _update_cluster_centroid(
+        self, cluster_id: int, item: ContentItem, is_initial: bool = False
+    ) -> None:
+        """Update cluster centroid after adding a new member.
+
+        Uses incremental centroid update formula:
+        new_centroid = (old_centroid * n + new_embedding) / (n + 1)
+
+        Args:
+            cluster_id: Cluster ID to update
+            item: New content item being added
+            is_initial: If True, this is the first member (create centroid)
+        """
+        manager = self._get_embedding_manager()
+        if not manager:
+            return
+
+        if not NUMPY_AVAILABLE:
+            return
+
+        try:
+            from src.processors.embeddings import bytes_to_embedding, embedding_to_bytes
+
+            # Get item embedding
+            item_text = f"{item.title} {item.summary or ''}"[:500]
+            item_embedding = manager.get_embedding(item_text)
+
+            if is_initial:
+                # First member - use item embedding as centroid
+                centroid_bytes = embedding_to_bytes(item_embedding)
+                self.db.save_cluster_centroid(cluster_id, centroid_bytes, 1)
+                self._centroid_cache[cluster_id] = item_embedding
+                logger.debug(f"Initialized centroid for cluster {cluster_id}")
+            else:
+                # Get existing centroid
+                existing = self.db.get_cluster_centroid(cluster_id)
+                if existing:
+                    centroid_bytes, member_count = existing
+                    old_centroid = bytes_to_embedding(centroid_bytes, manager.dimension)
+
+                    # Incremental update
+                    new_centroid = (old_centroid * member_count + item_embedding) / (member_count + 1)
+
+                    # Normalize
+                    norm = np.linalg.norm(new_centroid)
+                    if norm > 0:
+                        new_centroid = new_centroid / norm
+
+                    new_centroid_bytes = embedding_to_bytes(new_centroid)
+                    self.db.save_cluster_centroid(cluster_id, new_centroid_bytes, member_count + 1)
+                    self._centroid_cache[cluster_id] = new_centroid
+                    logger.debug(f"Updated centroid for cluster {cluster_id} (now {member_count + 1} members)")
+                else:
+                    # No existing centroid - create one
+                    centroid_bytes = embedding_to_bytes(item_embedding)
+                    self.db.save_cluster_centroid(cluster_id, centroid_bytes, 1)
+                    self._centroid_cache[cluster_id] = item_embedding
+                    logger.debug(f"Created centroid for cluster {cluster_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to update cluster centroid: {e}")
+
     def _get_recent_clusters_cached(
         self, time_window_days: int, category: Optional[str] = None
     ) -> list[EventCluster]:
@@ -310,14 +447,17 @@ class EventStreamProcessor:
         self, item: ContentItem, time_window_days: int = 3
     ) -> list[ClusterCandidate]:
         """
-        Find potential cluster matches using rule-based pre-filtering.
+        Find potential cluster matches using hybrid similarity (rule-based + semantic).
 
-        Scoring breakdown (max 1.0):
+        Rule-based scoring breakdown (max 1.0):
         - Title similarity (Jaccard): up to 0.5 (highest weight for content match)
         - Entity overlap: up to 0.25
         - Keyword overlap: up to 0.15
         - Category match: 0.05 (reduced - don't want to block cross-category)
         - Time proximity: 0.05
+
+        When embeddings are enabled, final score is:
+        - 40% rule-based score + 60% semantic score (configurable)
 
         Args:
             item: Content item to find clusters for
@@ -340,14 +480,17 @@ class EventStreamProcessor:
         item_entities = _extract_entities_cached(item_text)
         item_keywords = _extract_keywords_cached(item.title)
 
+        # Check if embeddings are enabled
+        use_embeddings = self.settings.embedding.enabled and self._get_embedding_manager() is not None
+
         for cluster in recent_clusters:
-            score = 0.0
+            rule_score = 0.0
             method = "keyword"
 
             # 1. Title similarity (most important - up to 0.5)
             title_sim = _calculate_title_similarity(item.title, cluster.event_title)
             if title_sim > 0:
-                score += 0.5 * title_sim
+                rule_score += 0.5 * title_sim
                 if title_sim >= 0.8:
                     method = "title"
 
@@ -356,7 +499,7 @@ class EventStreamProcessor:
             entity_overlap = item_entities & cluster_entities
             if entity_overlap:
                 entity_score = 0.25 * min(len(entity_overlap), 3) / 3
-                score += entity_score
+                rule_score += entity_score
                 if entity_score > 0.1:
                     method = "entity"
 
@@ -364,25 +507,45 @@ class EventStreamProcessor:
             cluster_keywords = _extract_keywords_cached(cluster.event_title)
             keyword_overlap = item_keywords & cluster_keywords
             if keyword_overlap:
-                score += 0.15 * min(len(keyword_overlap), 5) / 5
+                rule_score += 0.15 * min(len(keyword_overlap), 5) / 5
 
             # 4. Category match (small bonus - 0.05)
             if item.category and cluster.category == item.category:
-                score += 0.05
+                rule_score += 0.05
 
             # 5. Time proximity bonus (0.05)
             time_diff = abs((datetime.now() - cluster.last_updated_at).days)
             if time_diff <= 1:
-                score += 0.05
+                rule_score += 0.05
+
+            # Compute final score with hybrid similarity if embeddings enabled
+            semantic_score = 0.0
+            if use_embeddings:
+                semantic_score = self._compute_semantic_similarity(item, cluster)
+                from src.processors.embeddings import compute_hybrid_similarity
+                final_score = compute_hybrid_similarity(
+                    rule_score,
+                    semantic_score,
+                    self.settings.embedding.rule_weight,
+                    self.settings.embedding.semantic_weight,
+                )
+                if semantic_score > 0.7:
+                    method = "semantic"
+                elif semantic_score > 0.5 and rule_score > 0.1:
+                    method = "hybrid"
+            else:
+                final_score = rule_score
 
             # Threshold: 0.2 (lowered to allow more candidates for AI confirmation)
-            if score >= 0.2:
+            if final_score >= 0.2:
                 candidates.append(
                     ClusterCandidate(
                         cluster_id=cluster.id,
                         cluster_title=cluster.event_title,
-                        score=score,
+                        score=final_score,
                         method=method,
+                        rule_score=rule_score,
+                        semantic_score=semantic_score,
                     )
                 )
 
@@ -593,6 +756,9 @@ class EventStreamProcessor:
                 )
                 self.db.add_event_member(member)
 
+                # Update cluster centroid if embeddings enabled
+                self._update_cluster_centroid(confirmed.cluster_id, item)
+
                 cluster = self.db.get_event_cluster(confirmed.cluster_id)
                 logger.info(f"Added item {item.id} to cluster '{confirmed.cluster_title}'")
                 return cluster
@@ -617,6 +783,9 @@ class EventStreamProcessor:
                 detection_method="initial",
             )
             self.db.add_event_member(member)
+
+            # Initialize cluster centroid if embeddings enabled
+            self._update_cluster_centroid(cluster.id, item, is_initial=True)
 
             # Invalidate cluster cache since we created a new cluster
             cache_key = f"3:{None or 'all'}"

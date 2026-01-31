@@ -10,18 +10,29 @@ from src.storage.models import SourceType, Subscription, SubscriptionType
 
 
 @click.command()
-@click.argument("source", type=click.Choice(["reddit", "twitter"]))
+@click.argument("source", type=click.Choice(["reddit", "twitter", "hackernews", "rss"]))
 @click.argument("name")
 @click.option("--user", "-u", is_flag=True, help="Subscribe to a user (Reddit only)")
+@click.option(
+    "--type", "-t", "feed_type",
+    type=click.Choice(["front", "new", "best", "ask", "show"]),
+    default="front",
+    help="HackerNews feed type (default: front)"
+)
+@click.option("--url", help="RSS feed URL (required for rss source)")
 @click.pass_context
-def subscribe(ctx, source, name, user):
+def subscribe(ctx, source, name, user, feed_type, url):
     """Subscribe to a content source.
 
     Examples:
         babelbyte subscribe reddit MachineLearning
         babelbyte subscribe reddit --user spez
         babelbyte subscribe twitter elonmusk
+        babelbyte subscribe hackernews tech --type front
+        babelbyte subscribe rss "TechCrunch" --url "https://techcrunch.com/feed/"
     """
+    feed_url_override = None
+
     if source == "reddit":
         source_type = SourceType.REDDIT
         if user:
@@ -30,10 +41,30 @@ def subscribe(ctx, source, name, user):
         else:
             sub_type = SubscriptionType.SUBREDDIT
             name = name.removeprefix("r/").removeprefix("/r/")
-    else:
+    elif source == "twitter":
         source_type = SourceType.TWITTER
         sub_type = SubscriptionType.TWITTER_USER
         name = name.lstrip("@")
+    elif source == "hackernews":
+        source_type = SourceType.HACKERNEWS
+        hn_types = {
+            "front": SubscriptionType.HN_FRONT,
+            "new": SubscriptionType.HN_NEW,
+            "best": SubscriptionType.HN_BEST,
+            "ask": SubscriptionType.HN_ASK,
+            "show": SubscriptionType.HN_SHOW,
+        }
+        sub_type = hn_types.get(feed_type, SubscriptionType.HN_FRONT)
+    elif source == "rss":
+        source_type = SourceType.RSS
+        sub_type = SubscriptionType.RSS_FEED
+        if not url:
+            console.print("[red]Error: --url is required for RSS subscriptions[/red]")
+            return
+        feed_url_override = url
+    else:
+        console.print(f"[red]Unknown source: {source}[/red]")
+        return
 
     db = get_db()
     try:
@@ -53,6 +84,7 @@ def subscribe(ctx, source, name, user):
             name=name,
             enabled=True,
             created_at=datetime.now(),
+            feed_url_override=feed_url_override,
         )
         db.add_subscription(sub)
         console.print(f"[green]Subscribed to {sub.display_name}[/green]")
@@ -62,26 +94,50 @@ def subscribe(ctx, source, name, user):
 
 
 @click.command()
-@click.argument("source", type=click.Choice(["reddit", "twitter"]))
+@click.argument("source", type=click.Choice(["reddit", "twitter", "hackernews", "rss"]))
 @click.argument("name")
 @click.option("--user", "-u", is_flag=True, help="Unsubscribe from a user (Reddit only)")
 @click.option("--delete", "-d", is_flag=True, help="Permanently delete instead of disable")
+@click.option(
+    "--type", "-t", "feed_type",
+    type=click.Choice(["front", "new", "best", "ask", "show"]),
+    default="front",
+    help="HackerNews feed type (default: front)"
+)
 @click.pass_context
-def unsubscribe(ctx, source, name, user, delete):
+def unsubscribe(ctx, source, name, user, delete, feed_type):
     """Unsubscribe from a content source.
 
     Examples:
         babelbyte unsubscribe reddit MachineLearning
         babelbyte unsubscribe twitter elonmusk
+        babelbyte unsubscribe hackernews tech --type front
+        babelbyte unsubscribe rss "TechCrunch"
     """
     if source == "reddit":
         source_type = SourceType.REDDIT
         sub_type = SubscriptionType.REDDIT_USER if user else SubscriptionType.SUBREDDIT
         name = name.removeprefix("r/").removeprefix("/r/").removeprefix("u/").removeprefix("/u/")
-    else:
+    elif source == "twitter":
         source_type = SourceType.TWITTER
         sub_type = SubscriptionType.TWITTER_USER
         name = name.lstrip("@")
+    elif source == "hackernews":
+        source_type = SourceType.HACKERNEWS
+        hn_types = {
+            "front": SubscriptionType.HN_FRONT,
+            "new": SubscriptionType.HN_NEW,
+            "best": SubscriptionType.HN_BEST,
+            "ask": SubscriptionType.HN_ASK,
+            "show": SubscriptionType.HN_SHOW,
+        }
+        sub_type = hn_types.get(feed_type, SubscriptionType.HN_FRONT)
+    elif source == "rss":
+        source_type = SourceType.RSS
+        sub_type = SubscriptionType.RSS_FEED
+    else:
+        console.print(f"[red]Unknown source: {source}[/red]")
+        return
 
     db = get_db()
     try:

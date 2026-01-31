@@ -228,6 +228,57 @@ class ModelTierConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    """Embedding provider configuration."""
+
+    # Provider: "sentence-transformers" (local, free) or "openai" (API, paid)
+    provider: str = field(default_factory=lambda: os.getenv("EMBEDDING_PROVIDER", "sentence-transformers"))
+
+    # Model settings
+    sentence_transformers_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_ST_MODEL", "all-MiniLM-L6-v2")
+    )
+    openai_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_OPENAI_MODEL", "text-embedding-3-small")
+    )
+
+    # Dimension (auto-detected based on model, but can be overridden)
+    dimension: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIMENSION", "0")))
+
+    # Caching
+    cache_size: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_CACHE_SIZE", "1000")))
+
+    # Hybrid similarity weights
+    rule_weight: float = field(default_factory=lambda: float(os.getenv("EMBEDDING_RULE_WEIGHT", "0.4")))
+    semantic_weight: float = field(
+        default_factory=lambda: float(os.getenv("EMBEDDING_SEMANTIC_WEIGHT", "0.6"))
+    )
+
+    # Enable/disable embeddings
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("EMBEDDING_ENABLED", "true").lower() == "true"
+    )
+
+    def __post_init__(self):
+        """Validate embedding configuration."""
+        valid_providers = {"sentence-transformers", "openai"}
+        if self.provider not in valid_providers:
+            raise ValueError(f"EMBEDDING_PROVIDER must be one of {valid_providers}, got '{self.provider}'")
+
+        if not 0.0 <= self.rule_weight <= 1.0:
+            raise ValueError(f"rule_weight must be 0.0-1.0, got {self.rule_weight}")
+        if not 0.0 <= self.semantic_weight <= 1.0:
+            raise ValueError(f"semantic_weight must be 0.0-1.0, got {self.semantic_weight}")
+
+        # Weights should sum to 1.0 (with small tolerance)
+        if abs(self.rule_weight + self.semantic_weight - 1.0) > 0.01:
+            raise ValueError(
+                f"rule_weight + semantic_weight should equal 1.0, "
+                f"got {self.rule_weight} + {self.semantic_weight} = {self.rule_weight + self.semantic_weight}"
+            )
+
+
+@dataclass
 class AIConfig:
     """AI provider configuration."""
 
@@ -306,6 +357,7 @@ class Settings:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
     ai: AIConfig = field(default_factory=AIConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
 # Global settings instance

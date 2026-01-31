@@ -11,6 +11,8 @@ class SourceType(Enum):
 
     REDDIT = "reddit"
     TWITTER = "twitter"
+    HACKERNEWS = "hackernews"
+    RSS = "rss"
 
 
 class SubscriptionType(Enum):
@@ -19,6 +21,12 @@ class SubscriptionType(Enum):
     SUBREDDIT = "subreddit"
     REDDIT_USER = "reddit_user"
     TWITTER_USER = "twitter_user"
+    HN_FRONT = "hn_front"
+    HN_NEW = "hn_new"
+    HN_BEST = "hn_best"
+    HN_ASK = "hn_ask"
+    HN_SHOW = "hn_show"
+    RSS_FEED = "rss_feed"
 
 
 class ItemState(Enum):
@@ -84,6 +92,9 @@ class Subscription:
     last_tweet_id: Optional[str] = None
     # Reddit-specific: last external_id for incremental fetching
     last_reddit_id: Optional[str] = None
+    # RSS/HackerNews-specific: custom feed URL and last entry ID
+    feed_url_override: Optional[str] = None
+    last_entry_id: Optional[str] = None
 
     @property
     def display_name(self) -> str:
@@ -92,15 +103,41 @@ class Subscription:
             if self.subscription_type == SubscriptionType.SUBREDDIT:
                 return f"r/{self.name}"
             return f"u/{self.name}"
-        return f"@{self.name}"
+        elif self.source_type == SourceType.TWITTER:
+            return f"@{self.name}"
+        elif self.source_type == SourceType.HACKERNEWS:
+            hn_types = {
+                SubscriptionType.HN_FRONT: "HN Front",
+                SubscriptionType.HN_NEW: "HN New",
+                SubscriptionType.HN_BEST: "HN Best",
+                SubscriptionType.HN_ASK: "HN Ask",
+                SubscriptionType.HN_SHOW: "HN Show",
+            }
+            return f"{hn_types.get(self.subscription_type, 'HN')}: {self.name}"
+        elif self.source_type == SourceType.RSS:
+            return f"RSS: {self.name}"
+        return self.name
 
     @property
     def feed_url(self) -> Optional[str]:
-        """RSS feed URL for Reddit sources."""
+        """RSS feed URL for this subscription."""
+        # Custom URL takes precedence
+        if self.feed_url_override:
+            return self.feed_url_override
+
         if self.source_type == SourceType.REDDIT:
             if self.subscription_type == SubscriptionType.SUBREDDIT:
                 return f"https://www.reddit.com/r/{self.name}/.rss"
             return f"https://www.reddit.com/user/{self.name}/.rss"
+        elif self.source_type == SourceType.HACKERNEWS:
+            hn_feeds = {
+                SubscriptionType.HN_FRONT: "https://hnrss.org/frontpage",
+                SubscriptionType.HN_NEW: "https://hnrss.org/newest",
+                SubscriptionType.HN_BEST: "https://hnrss.org/best",
+                SubscriptionType.HN_ASK: "https://hnrss.org/ask",
+                SubscriptionType.HN_SHOW: "https://hnrss.org/show",
+            }
+            return hn_feeds.get(self.subscription_type)
         return None
 
 
@@ -353,6 +390,45 @@ class TopicSnapshot:
     key_entities: Optional[str] = None  # JSON
     metrics: Optional[str] = None  # JSON
     trend: str = "stable"  # 'up' / 'down' / 'stable'
+
+
+@dataclass
+class TopicSuggestion:
+    """A suggested topic discovered from content analysis."""
+
+    id: Optional[int] = None
+    name: str = ""
+    keywords: Optional[str] = None  # JSON: list of keywords
+    frequency: int = 0
+    confidence: float = 0.0
+    source: str = ""  # 'entity', 'keyword', 'trend'
+    sample_titles: Optional[str] = None  # JSON: list of sample titles
+    status: str = "pending"  # 'pending', 'accepted', 'rejected', 'merged'
+    suggested_at: datetime = field(default_factory=datetime.now)
+    reviewed_at: Optional[datetime] = None
+    merged_with_topic_id: Optional[int] = None
+
+    def get_keywords(self) -> list[str]:
+        """Parse keywords from JSON."""
+        import json
+
+        if self.keywords:
+            try:
+                return json.loads(self.keywords)
+            except json.JSONDecodeError:
+                return []
+        return []
+
+    def get_sample_titles(self) -> list[str]:
+        """Parse sample titles from JSON."""
+        import json
+
+        if self.sample_titles:
+            try:
+                return json.loads(self.sample_titles)
+            except json.JSONDecodeError:
+                return []
+        return []
 
 
 # ============================================

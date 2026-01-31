@@ -23,6 +23,7 @@ from src.storage.models import (
     TokenUsage,
     Topic,
     TopicSnapshot,
+    TopicSuggestion,
     Trigger,
     UserProfile,
 )
@@ -208,6 +209,46 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 )
 """
 
+# Embedding tables for semantic similarity
+CREATE_CONTENT_EMBEDDINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS content_embeddings (
+    content_id INTEGER PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    model TEXT NOT NULL,
+    dimension INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (content_id) REFERENCES content_items(id)
+)
+"""
+
+CREATE_CLUSTER_EMBEDDINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS cluster_embeddings (
+    cluster_id INTEGER PRIMARY KEY,
+    centroid_embedding BLOB NOT NULL,
+    member_count INTEGER NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    FOREIGN KEY (cluster_id) REFERENCES event_clusters(id)
+)
+"""
+
+# Topic suggestions table for automatic topic discovery
+CREATE_TOPIC_SUGGESTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS topic_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    keywords TEXT NOT NULL,
+    frequency INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    source TEXT NOT NULL,
+    sample_titles TEXT,
+    status TEXT DEFAULT 'pending',
+    suggested_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    merged_with_topic_id INTEGER,
+    FOREIGN KEY (merged_with_topic_id) REFERENCES topics(id)
+)
+"""
+
 # Performance indexes for common queries
 CREATE_INDEXES = """
 -- Index for fetching unprocessed items (processed_at IS NULL)
@@ -314,6 +355,13 @@ class Database:
             # Token Usage table
             await cursor.execute(CREATE_TOKEN_USAGE_TABLE)
 
+            # Embedding tables
+            await cursor.execute(CREATE_CONTENT_EMBEDDINGS_TABLE)
+            await cursor.execute(CREATE_CLUSTER_EMBEDDINGS_TABLE)
+
+            # Topic suggestions table
+            await cursor.execute(CREATE_TOPIC_SUGGESTIONS_TABLE)
+
             # Create performance indexes
             for statement in CREATE_INDEXES.strip().split(";"):
                 statement = statement.strip()
@@ -339,6 +387,10 @@ class Database:
                 await cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_tweet_id TEXT")
             if "last_reddit_id" not in sub_columns:
                 await cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_reddit_id TEXT")
+            if "feed_url_override" not in sub_columns:
+                await cursor.execute("ALTER TABLE subscriptions ADD COLUMN feed_url_override TEXT")
+            if "last_entry_id" not in sub_columns:
+                await cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_entry_id TEXT")
 
             # Check content_items columns for Phase 1 & 4 enhancements
             await cursor.execute("PRAGMA table_info(content_items)")
@@ -450,8 +502,9 @@ class Database:
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 """
-                INSERT INTO subscriptions (source_type, subscription_type, name, enabled, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO subscriptions (source_type, subscription_type, name, enabled, created_at,
+                    feed_url_override, last_entry_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     subscription.source_type.value,
@@ -459,6 +512,8 @@ class Database:
                     subscription.name,
                     1 if subscription.enabled else 0,
                     subscription.created_at.isoformat(),
+                    subscription.feed_url_override,
+                    subscription.last_entry_id,
                 ),
             )
             await self._connection.commit()
@@ -508,7 +563,7 @@ class Database:
                 """
                 UPDATE subscriptions
                 SET enabled = ?, last_fetched_at = ?, twitter_user_id = ?, last_tweet_id = ?,
-                    last_reddit_id = ?
+                    last_reddit_id = ?, feed_url_override = ?, last_entry_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -521,6 +576,8 @@ class Database:
                     subscription.twitter_user_id,
                     subscription.last_tweet_id,
                     subscription.last_reddit_id,
+                    subscription.feed_url_override,
+                    subscription.last_entry_id,
                     subscription.id,
                 ),
             )
@@ -534,6 +591,7 @@ class Database:
 
     def _row_to_subscription(self, row: aiosqlite.Row) -> Subscription:
         """Convert a database row to a Subscription object."""
+        row_keys = row.keys()
         return Subscription(
             id=row["id"],
             source_type=SourceType(row["source_type"]),
@@ -544,9 +602,11 @@ class Database:
             last_fetched_at=(
                 datetime.fromisoformat(row["last_fetched_at"]) if row["last_fetched_at"] else None
             ),
-            twitter_user_id=row["twitter_user_id"] if "twitter_user_id" in row.keys() else None,
-            last_tweet_id=row["last_tweet_id"] if "last_tweet_id" in row.keys() else None,
-            last_reddit_id=row["last_reddit_id"] if "last_reddit_id" in row.keys() else None,
+            twitter_user_id=row["twitter_user_id"] if "twitter_user_id" in row_keys else None,
+            last_tweet_id=row["last_tweet_id"] if "last_tweet_id" in row_keys else None,
+            last_reddit_id=row["last_reddit_id"] if "last_reddit_id" in row_keys else None,
+            feed_url_override=row["feed_url_override"] if "feed_url_override" in row_keys else None,
+            last_entry_id=row["last_entry_id"] if "last_entry_id" in row_keys else None,
         )
 
     # Content item operations
@@ -1565,6 +1625,124 @@ class Database:
             trend=row["trend"],
         )
 
+    # Topic Suggestion operations
+
+    async def create_topic_suggestion(self, suggestion: TopicSuggestion) -> TopicSuggestion:
+        """Create a new topic suggestion."""
+        import json
+
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT INTO topic_suggestions
+                    (name, keywords, frequency, confidence, source, sample_titles, status, suggested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    suggestion.name,
+                    json.dumps(suggestion.get_keywords(), ensure_ascii=False)
+                    if isinstance(suggestion.keywords, str) else
+                    json.dumps(suggestion.keywords or [], ensure_ascii=False),
+                    suggestion.frequency,
+                    suggestion.confidence,
+                    suggestion.source,
+                    json.dumps(suggestion.get_sample_titles(), ensure_ascii=False)
+                    if isinstance(suggestion.sample_titles, str) else
+                    json.dumps(suggestion.sample_titles or [], ensure_ascii=False),
+                    suggestion.status,
+                    suggestion.suggested_at.isoformat(),
+                ),
+            )
+            await self._connection.commit()
+            suggestion.id = cursor.lastrowid
+            return suggestion
+
+    async def get_topic_suggestion(self, suggestion_id: int) -> Optional[TopicSuggestion]:
+        """Get a topic suggestion by ID."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT * FROM topic_suggestions WHERE id = ?",
+                (suggestion_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return self._row_to_topic_suggestion(row)
+            return None
+
+    async def get_topic_suggestions(
+        self, status: Optional[str] = None, limit: int = 50
+    ) -> list[TopicSuggestion]:
+        """Get topic suggestions with optional status filter."""
+        async with self._connection.cursor() as cursor:
+            if status:
+                await cursor.execute(
+                    """
+                    SELECT * FROM topic_suggestions
+                    WHERE status = ?
+                    ORDER BY confidence * frequency DESC
+                    LIMIT ?
+                    """,
+                    (status, limit),
+                )
+            else:
+                await cursor.execute(
+                    """
+                    SELECT * FROM topic_suggestions
+                    ORDER BY suggested_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            rows = await cursor.fetchall()
+            return [self._row_to_topic_suggestion(row) for row in rows]
+
+    async def update_topic_suggestion_status(
+        self,
+        suggestion_id: int,
+        status: str,
+        merged_with_topic_id: Optional[int] = None,
+    ) -> bool:
+        """Update the status of a topic suggestion."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                UPDATE topic_suggestions
+                SET status = ?, reviewed_at = ?, merged_with_topic_id = ?
+                WHERE id = ?
+                """,
+                (status, datetime.now().isoformat(), merged_with_topic_id, suggestion_id),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+
+    async def update_topic(self, topic: Topic) -> None:
+        """Update a topic's keywords."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                UPDATE topics SET keywords = ?, description = ?
+                WHERE id = ?
+                """,
+                (topic.keywords, topic.description, topic.id),
+            )
+            await self._connection.commit()
+
+    def _row_to_topic_suggestion(self, row: aiosqlite.Row) -> TopicSuggestion:
+        """Convert a database row to a TopicSuggestion object."""
+        return TopicSuggestion(
+            id=row["id"],
+            name=row["name"],
+            keywords=row["keywords"],
+            frequency=row["frequency"],
+            confidence=row["confidence"],
+            source=row["source"],
+            sample_titles=row["sample_titles"],
+            status=row["status"],
+            suggested_at=datetime.fromisoformat(row["suggested_at"]),
+            reviewed_at=datetime.fromisoformat(row["reviewed_at"]) if row["reviewed_at"] else None,
+            merged_with_topic_id=row["merged_with_topic_id"],
+        )
+
     # ============================================
     # Phase 5: Action List Operations
     # ============================================
@@ -1984,6 +2162,149 @@ class Database:
             error=row["error"],
         )
 
+    # Embedding operations
+
+    async def save_content_embedding(
+        self, content_id: int, embedding: bytes, model: str, dimension: int
+    ) -> None:
+        """Save or update embedding for a content item."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT OR REPLACE INTO content_embeddings
+                    (content_id, embedding, model, dimension, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (content_id, embedding, model, dimension, datetime.now().isoformat()),
+            )
+            await self._connection.commit()
+
+    async def get_content_embedding(self, content_id: int) -> Optional[tuple[bytes, str, int]]:
+        """Get embedding for a content item.
+
+        Returns:
+            Tuple of (embedding_bytes, model, dimension) or None if not found.
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT embedding, model, dimension FROM content_embeddings WHERE content_id = ?",
+                (content_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return (row["embedding"], row["model"], row["dimension"])
+            return None
+
+    async def get_content_embeddings_batch(
+        self, content_ids: list[int]
+    ) -> dict[int, tuple[bytes, str, int]]:
+        """Get embeddings for multiple content items."""
+        if not content_ids:
+            return {}
+
+        async with self._connection.cursor() as cursor:
+            placeholders = ",".join("?" * len(content_ids))
+            await cursor.execute(
+                f"""
+                SELECT content_id, embedding, model, dimension
+                FROM content_embeddings
+                WHERE content_id IN ({placeholders})
+                """,
+                content_ids,
+            )
+            rows = await cursor.fetchall()
+            return {
+                row["content_id"]: (row["embedding"], row["model"], row["dimension"])
+                for row in rows
+            }
+
+    async def get_content_ids_without_embeddings(self, limit: int = 100) -> list[int]:
+        """Get content item IDs that don't have embeddings yet."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT c.id FROM content_items c
+                LEFT JOIN content_embeddings ce ON c.id = ce.content_id
+                WHERE ce.content_id IS NULL AND c.processed_at IS NOT NULL
+                ORDER BY c.published_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [row["id"] for row in rows]
+
+    async def save_cluster_centroid(
+        self, cluster_id: int, centroid: bytes, member_count: int
+    ) -> None:
+        """Save or update centroid embedding for a cluster."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT OR REPLACE INTO cluster_embeddings
+                    (cluster_id, centroid_embedding, member_count, last_updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (cluster_id, centroid, member_count, datetime.now().isoformat()),
+            )
+            await self._connection.commit()
+
+    async def get_cluster_centroid(self, cluster_id: int) -> Optional[tuple[bytes, int]]:
+        """Get centroid embedding for a cluster.
+
+        Returns:
+            Tuple of (centroid_bytes, member_count) or None if not found.
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT centroid_embedding, member_count FROM cluster_embeddings WHERE cluster_id = ?",
+                (cluster_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return (row["centroid_embedding"], row["member_count"])
+            return None
+
+    async def get_all_cluster_centroids(self) -> dict[int, tuple[bytes, int]]:
+        """Get all cluster centroids."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT cluster_id, centroid_embedding, member_count FROM cluster_embeddings"
+            )
+            rows = await cursor.fetchall()
+            return {
+                row["cluster_id"]: (row["centroid_embedding"], row["member_count"])
+                for row in rows
+            }
+
+    async def get_embedding_stats(self) -> dict:
+        """Get embedding statistics."""
+        async with self._connection.cursor() as cursor:
+            # Content embeddings
+            await cursor.execute("SELECT COUNT(*) FROM content_embeddings")
+            row = await cursor.fetchone()
+            content_count = row[0] if row else 0
+
+            # Cluster centroids
+            await cursor.execute("SELECT COUNT(*) FROM cluster_embeddings")
+            row = await cursor.fetchone()
+            cluster_count = row[0] if row else 0
+
+            # Content items total
+            await cursor.execute(
+                "SELECT COUNT(*) FROM content_items WHERE processed_at IS NOT NULL"
+            )
+            row = await cursor.fetchone()
+            processed_items = row[0] if row else 0
+
+            return {
+                "content_embeddings": content_count,
+                "cluster_centroids": cluster_count,
+                "processed_items": processed_items,
+                "coverage_percent": round(content_count / processed_items * 100, 1)
+                if processed_items > 0 else 0,
+            }
+
 
 # Synchronous wrapper for CLI usage
 class SyncDatabase:
@@ -2184,6 +2505,29 @@ class SyncDatabase:
     def get_topic_snapshots(self, topic_id: int, limit: int = 10) -> list[TopicSnapshot]:
         return self._run(self._async_db.get_topic_snapshots(topic_id, limit))
 
+    # Topic Suggestion sync wrappers
+
+    def create_topic_suggestion(self, suggestion: TopicSuggestion) -> TopicSuggestion:
+        return self._run(self._async_db.create_topic_suggestion(suggestion))
+
+    def get_topic_suggestion(self, suggestion_id: int) -> Optional[TopicSuggestion]:
+        return self._run(self._async_db.get_topic_suggestion(suggestion_id))
+
+    def get_topic_suggestions(
+        self, status: Optional[str] = None, limit: int = 50
+    ) -> list[TopicSuggestion]:
+        return self._run(self._async_db.get_topic_suggestions(status, limit))
+
+    def update_topic_suggestion_status(
+        self, suggestion_id: int, status: str, merged_with_topic_id: Optional[int] = None
+    ) -> bool:
+        return self._run(
+            self._async_db.update_topic_suggestion_status(suggestion_id, status, merged_with_topic_id)
+        )
+
+    def update_topic(self, topic: Topic) -> None:
+        self._run(self._async_db.update_topic(topic))
+
     # Phase 5: Action List sync wrappers
 
     def create_action_item(self, action: ActionItem) -> ActionItem:
@@ -2239,6 +2583,36 @@ class SyncDatabase:
 
     def clear_token_usage(self, before: Optional[datetime] = None) -> int:
         return self._run(self._async_db.clear_token_usage(before))
+
+    # Embedding sync wrappers
+
+    def save_content_embedding(
+        self, content_id: int, embedding: bytes, model: str, dimension: int
+    ) -> None:
+        self._run(self._async_db.save_content_embedding(content_id, embedding, model, dimension))
+
+    def get_content_embedding(self, content_id: int) -> Optional[tuple[bytes, str, int]]:
+        return self._run(self._async_db.get_content_embedding(content_id))
+
+    def get_content_embeddings_batch(
+        self, content_ids: list[int]
+    ) -> dict[int, tuple[bytes, str, int]]:
+        return self._run(self._async_db.get_content_embeddings_batch(content_ids))
+
+    def get_content_ids_without_embeddings(self, limit: int = 100) -> list[int]:
+        return self._run(self._async_db.get_content_ids_without_embeddings(limit))
+
+    def save_cluster_centroid(self, cluster_id: int, centroid: bytes, member_count: int) -> None:
+        self._run(self._async_db.save_cluster_centroid(cluster_id, centroid, member_count))
+
+    def get_cluster_centroid(self, cluster_id: int) -> Optional[tuple[bytes, int]]:
+        return self._run(self._async_db.get_cluster_centroid(cluster_id))
+
+    def get_all_cluster_centroids(self) -> dict[int, tuple[bytes, int]]:
+        return self._run(self._async_db.get_all_cluster_centroids())
+
+    def get_embedding_stats(self) -> dict:
+        return self._run(self._async_db.get_embedding_stats())
 
     def __enter__(self):
         self.connect()
