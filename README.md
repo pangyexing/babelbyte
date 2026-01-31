@@ -17,7 +17,7 @@ AI 驱动的**个人情报产品**，从 Reddit 和 Twitter 抓取内容，通�
 
 ## 功能特性
 
-- **多平台支持**: Reddit (RSS) 和 Twitter (API v2 + TwitterAPI.io)
+- **多平台支持**: Reddit (RSS) 和 Twitter (TwitterAPI.io)
 - **AI 智能处理**: 通过 Claude/Codex CLI 生成结构化分析
 - **结构化输出**: 摘要、关键点、短期/长期影响、行动项
 - **事件聚类**: 相关内容自动合并成事件流，支持并行处理
@@ -68,9 +68,8 @@ cp .env.example .env
 # AI 提供商配置 (claude / codex / auto)
 AI_PROVIDER=auto
 
-# Twitter API (二选一)
-TWITTERAPI_IO_KEY=your_key    # TwitterAPI.io (推荐，更便宜)
-TWITTER_BEARER_TOKEN=your_token  # 官方 API v2
+# Twitter API (TwitterAPI.io)
+TWITTERAPI_IO_KEY=your_key
 
 # 邮件配置
 SMTP_HOST=smtp.139.com
@@ -304,7 +303,7 @@ babelbyte/
 │   ├── fetchers/               # 内容抓取
 │   │   ├── base.py
 │   │   ├── reddit.py           # Reddit RSS + 增量抓取
-│   │   └── twitter.py          # Twitter API v2 + TwitterAPI.io
+│   │   └── twitter.py          # Twitter (TwitterAPI.io)
 │   ├── processors/             # AI 处理
 │   │   ├── base.py             # 基类 + 增强结果
 │   │   ├── claude_cli.py       # Claude CLI
@@ -430,14 +429,13 @@ triggers          # 触发器 (自动化规则)
 - Subreddit: `https://www.reddit.com/r/{name}/.rss`
 - 用户: `https://www.reddit.com/user/{name}/.rss`
 
-### Twitter API v2
+### Twitter (TwitterAPI.io)
 
-免费版限额: 1,500 条推文/月
+使用 TwitterAPI.io 第三方服务获取推文:
 
-1. 访问 https://developer.twitter.com
-2. 创建项目和应用
-3. 获取 Bearer Token
-4. 配置到 `.env` 文件
+1. 访问 https://twitterapi.io 注册账号
+2. 获取 API Key
+3. 配置 `TWITTERAPI_IO_KEY` 到 `.env` 文件
 
 ### 邮箱 SMTP
 

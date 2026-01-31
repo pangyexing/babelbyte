@@ -14,7 +14,7 @@ from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
 from src.fetchers.base import BaseFetcher, FetchResult
 from src.fetchers.reddit import RedditFetcher
-from src.fetchers.twitter import MockTwitterFetcher, TwitterAPIioFetcher, TwitterFetcher
+from src.fetchers.twitter import MockTwitterFetcher, TwitterAPIioFetcher
 from src.processors.digest_processor import DigestGenerator
 from src.storage.database import SyncDatabase
 from src.storage.models import SourceType, Subscription
@@ -145,12 +145,10 @@ class JobRunner:
         use_twitterapi_io = False
         if self.use_mock:
             twitter_fetcher = MockTwitterFetcher()
-        elif settings.twitter.use_twitterapi_io:
+        elif settings.twitter.is_configured:
             twitter_fetcher = TwitterAPIioFetcher()
             use_twitterapi_io = True
             logger.info("Using TwitterAPI.io for Twitter data (parallel mode)")
-        elif settings.twitter.bearer_token:
-            twitter_fetcher = TwitterFetcher()
         else:
             twitter_fetcher = MockTwitterFetcher()
 

@@ -107,7 +107,7 @@ Fetchers      Event Stream    Topic Radar
 ```
 
 **Key modules:**
-- `src/fetchers/` - Abstract `BaseFetcher` with Reddit (RSS/feedparser) and Twitter (tweepy + TwitterAPI.io) implementations
+- `src/fetchers/` - Abstract `BaseFetcher` with Reddit (RSS/feedparser) and Twitter (TwitterAPI.io) implementations
 - `src/processors/` - AI processing with enhanced JSON output (summary, key_points, impact, actions)
   - `base.py` - `ProcessingResult` with enhanced fields, prompt templates
   - `claude_cli.py` / `openai_cli.py` - CLI wrappers with batch processing
@@ -266,8 +266,7 @@ actionable_items: list[ActionResult]
 
 Copy `.env.example` to `.env`. Key settings:
 - `AI_PROVIDER` - "claude", "codex", or "auto"
-- `TWITTERAPI_IO_KEY` - TwitterAPI.io key (recommended, cheaper)
-- `TWITTER_BEARER_TOKEN` - Official Twitter API v2 (optional)
+- `TWITTERAPI_IO_KEY` - TwitterAPI.io API key for Twitter data
 - `SMTP_*` - Email delivery configuration
 - `DIGEST_SEND_TIME` - Daily digest time (HH:MM)
 - `FETCH_INTERVAL_HOURS` - Content fetch frequency

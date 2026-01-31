@@ -17,19 +17,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 @dataclass
 class TwitterConfig:
-    """Twitter API configuration."""
+    """Twitter API configuration using TwitterAPI.io."""
 
-    bearer_token: str = field(default_factory=lambda: os.getenv("TWITTER_BEARER_TOKEN", ""))
-    # TwitterAPI.io - third-party API (cheaper alternative)
     twitterapi_io_key: str = field(default_factory=lambda: os.getenv("TWITTERAPI_IO_KEY", ""))
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.bearer_token) or bool(self.twitterapi_io_key)
-
-    @property
-    def use_twitterapi_io(self) -> bool:
-        """Use TwitterAPI.io if configured (preferred over official API)."""
         return bool(self.twitterapi_io_key)
 
 
