@@ -151,8 +151,8 @@ bb daily --skip-fetch
 ```
 bb daily
   ├── 1. fetch            # 抓取所有订阅源
-  ├── 2. process_content  # AI 处理 (消耗 LLM Token)
-  ├── 3. embeddings       # 本地 Embedding (免费)
+  ├── 2. embeddings       # 本地 Embedding (免费，启用语义去重)
+  ├── 3. process_content  # AI 处理 (跳过相似内容，节省 Token)
   ├── 4. topic discovery  # 主题自动发现 (免费)
   ├── 5. clustering       # 事件聚类 (消耗 LLM Token)
   └── 6. digest + email   # 生成并发送邮件
@@ -333,16 +333,19 @@ bb --mock digest --dry-run
                             ↓
                    Scheduler (APScheduler)
                             ↓
-┌───────────────────────────┼───────────────────────────┐
-↓                           ↓                           ↓
-Fetchers               Rule Classifier            Embeddings
-(Reddit/Twitter/       (40+ 域名模式              (SentenceTransformers
- HN/RSS)                预分类/跳过)               本地/OpenAI)
-↓                           ↓                           ↓
+┌───────────────────────────┴───────────────────────────┐
+↓                                                       ↓
+Fetchers                                         Rule Classifier
+(Reddit/Twitter/HN/RSS)                          (40+ 域名预分类)
+↓                                                       ↓
 └───────────────→ SQLite + FTS5 ←───────────────────────┘
+                            ↓
+                      Embeddings ←─── (本地免费，启用语义去重)
+                 (SentenceTransformers)
                             ↓
                     AI Processors ←─── Token Tracker
                  (Claude/Codex CLI)     (8类调用追踪)
+                 (跳过相似内容:92%阈值)
                             ↓
         ┌───────────────────┼───────────────────┐
         ↓                   ↓                   ↓

@@ -169,7 +169,7 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parall
 def daily(ctx, dry_run, skip_fetch):
     """Run the complete daily pipeline in one command.
 
-    Executes: fetch → process → embeddings → topics → cluster → digest
+    Executes: fetch → embeddings → process → topics → cluster → digest
 
     Perfect for manual daily runs when you can't keep a daemon running.
 
@@ -207,21 +207,8 @@ def daily(ctx, dry_run, skip_fetch):
         else:
             console.print("\n[bold cyan]Step 1/6: Fetch skipped[/bold cyan]")
 
-        # Step 2: Process content with AI
-        console.print("\n[bold cyan]Step 2/6: Processing with AI...[/bold cyan]")
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Processing...", total=None)
-            processed = runner.process_content(limit=100)
-
-        console.print(f"  [green]✓[/green] Processed {processed} items")
-
-        # Step 3: Compute embeddings (free, local)
-        console.print("\n[bold cyan]Step 3/6: Computing embeddings...[/bold cyan]")
+        # Step 2: Compute embeddings (free, local) - before AI to enable dedup
+        console.print("\n[bold cyan]Step 2/6: Computing embeddings...[/bold cyan]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -237,6 +224,19 @@ def daily(ctx, dry_run, skip_fetch):
             console.print(f"  [yellow]Warning: {emb_stats['error']}[/yellow]")
         else:
             console.print(f"  [green]✓[/green] Computed {emb_stats['computed']} embeddings")
+
+        # Step 3: Process content with AI (can leverage embeddings for dedup)
+        console.print("\n[bold cyan]Step 3/6: Processing with AI...[/bold cyan]")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Processing...", total=None)
+            processed = runner.process_content(limit=100)
+
+        console.print(f"  [green]✓[/green] Processed {processed} items")
 
         # Step 4: Discover topics (free, statistics only)
         console.print("\n[bold cyan]Step 4/6: Discovering topics...[/bold cyan]")

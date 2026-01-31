@@ -2219,13 +2219,16 @@ class Database:
             }
 
     async def get_content_ids_without_embeddings(self, limit: int = 100) -> list[int]:
-        """Get content item IDs that don't have embeddings yet."""
+        """Get content item IDs that don't have embeddings yet.
+
+        Note: No longer requires processed_at since embeddings are computed before AI processing.
+        """
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 """
                 SELECT c.id FROM content_items c
                 LEFT JOIN content_embeddings ce ON c.id = ce.content_id
-                WHERE ce.content_id IS NULL AND c.processed_at IS NOT NULL
+                WHERE ce.content_id IS NULL
                 ORDER BY c.published_at DESC
                 LIMIT ?
                 """,
@@ -2233,6 +2236,65 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [row["id"] for row in rows]
+
+    async def get_processed_items_with_embeddings(
+        self, since: datetime, limit: int = 200
+    ) -> list[tuple["ContentItem", bytes, int]]:
+        """Get processed content items that have embeddings.
+
+        Used for finding similar items to reuse AI results.
+
+        Args:
+            since: Only return items published after this date.
+            limit: Maximum number of items to return.
+
+        Returns:
+            List of tuples: (ContentItem, embedding_bytes, dimension)
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT c.*, ce.embedding, ce.dimension
+                FROM content_items c
+                JOIN content_embeddings ce ON c.id = ce.content_id
+                WHERE c.processed_at IS NOT NULL
+                    AND c.summary IS NOT NULL
+                    AND c.published_at >= ?
+                ORDER BY c.published_at DESC
+                LIMIT ?
+                """,
+                (since.isoformat(), limit),
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                item = ContentItem(
+                    id=row["id"],
+                    subscription_id=row["subscription_id"],
+                    external_id=row["external_id"],
+                    title=row["title"],
+                    content=row["content"],
+                    url=row["url"],
+                    author=row["author"],
+                    published_at=datetime.fromisoformat(row["published_at"])
+                    if row["published_at"]
+                    else None,
+                    created_at=datetime.fromisoformat(row["created_at"])
+                    if row["created_at"]
+                    else None,
+                    processed_at=datetime.fromisoformat(row["processed_at"])
+                    if row["processed_at"]
+                    else None,
+                    summary=row["summary"],
+                    category=row["category"],
+                    importance_score=row["importance_score"],
+                    one_liner=row["one_liner"],
+                    key_points=row["key_points"],
+                    impact_assessment=row["impact_assessment"],
+                    actionable_items=row["actionable_items"],
+                )
+                results.append((item, row["embedding"], row["dimension"]))
+            return results
 
     async def save_cluster_centroid(
         self, cluster_id: int, centroid: bytes, member_count: int
@@ -2601,6 +2663,11 @@ class SyncDatabase:
 
     def get_content_ids_without_embeddings(self, limit: int = 100) -> list[int]:
         return self._run(self._async_db.get_content_ids_without_embeddings(limit))
+
+    def get_processed_items_with_embeddings(
+        self, since: datetime, limit: int = 200
+    ) -> list[tuple["ContentItem", bytes, int]]:
+        return self._run(self._async_db.get_processed_items_with_embeddings(since, limit))
 
     def save_cluster_centroid(self, cluster_id: int, centroid: bytes, member_count: int) -> None:
         self._run(self._async_db.save_cluster_centroid(cluster_id, centroid, member_count))

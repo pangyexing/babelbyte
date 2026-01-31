@@ -3,10 +3,18 @@
 import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.storage.models import ContentItem
 
 logger = logging.getLogger(__name__)
+
+
+# Threshold for considering two items as semantic duplicates
+EMBEDDING_SIMILARITY_THRESHOLD = 0.92
 
 
 @lru_cache(maxsize=10000)
@@ -199,3 +207,115 @@ class DedupOptimizer:
             "cache_size": cache_info.currsize,
             "cache_maxsize": cache_info.maxsize,
         }
+
+
+@dataclass
+class SimilarItemResult:
+    """Result of finding a similar processed item."""
+
+    source_id: int
+    similarity: float
+    summary: str
+    category: str
+    importance_score: int
+    one_liner: Optional[str] = None
+    key_points: Optional[str] = None
+    impact_assessment: Optional[str] = None
+    actionable_items: Optional[str] = None
+
+
+def find_similar_processed_item(
+    item: "ContentItem",
+    db,
+    threshold: float = EMBEDDING_SIMILARITY_THRESHOLD,
+) -> Optional[SimilarItemResult]:
+    """
+    Find a similar already-processed item using embedding similarity.
+
+    This allows reusing AI results for semantically similar content,
+    saving LLM tokens.
+
+    Args:
+        item: The unprocessed item to find similar content for.
+        db: Database instance.
+        threshold: Minimum similarity threshold (0-1).
+
+    Returns:
+        SimilarItemResult if a similar processed item is found, None otherwise.
+    """
+    try:
+        from src.processors.embeddings import EmbeddingManager, bytes_to_embedding
+        from config.settings import get_settings
+
+        settings = get_settings()
+        if not settings.embedding.enabled:
+            return None
+
+        # Get embedding for the current item
+        item_embedding_data = db.get_content_embedding(item.id)
+        if not item_embedding_data:
+            return None
+
+        item_embedding_bytes, _, dimension = item_embedding_data
+        item_embedding = bytes_to_embedding(item_embedding_bytes, dimension)
+
+        # Get recent processed items with embeddings
+        # Limit search to last 7 days for efficiency
+        from datetime import datetime, timedelta
+
+        recent_cutoff = datetime.now() - timedelta(days=7)
+        processed_items = db.get_processed_items_with_embeddings(
+            since=recent_cutoff, limit=200
+        )
+
+        if not processed_items:
+            return None
+
+        manager = EmbeddingManager.get_instance()
+        best_match = None
+        best_similarity = 0.0
+
+        for processed_item, emb_bytes, emb_dimension in processed_items:
+            # Skip self
+            if processed_item.id == item.id:
+                continue
+
+            # Skip items without summary (not properly processed)
+            if not processed_item.summary:
+                continue
+
+            processed_embedding = bytes_to_embedding(emb_bytes, emb_dimension)
+            similarity = manager.cosine_similarity(item_embedding, processed_embedding)
+
+            # Convert from [-1, 1] to [0, 1] range
+            similarity_normalized = (similarity + 1) / 2
+
+            if similarity_normalized > best_similarity and similarity_normalized >= threshold:
+                best_similarity = similarity_normalized
+                best_match = processed_item
+
+        if best_match:
+            logger.info(
+                f"Found similar processed item (similarity={best_similarity:.3f}): "
+                f"'{item.title[:40]}...' -> '{best_match.title[:40]}...'"
+            )
+            return SimilarItemResult(
+                source_id=best_match.id,
+                similarity=best_similarity,
+                summary=best_match.summary,
+                category=best_match.category,
+                importance_score=best_match.importance_score,
+                one_liner=best_match.one_liner,
+                key_points=best_match.key_points,
+                impact_assessment=best_match.impact_assessment,
+                actionable_items=best_match.actionable_items,
+            )
+
+        return None
+
+    except ImportError as e:
+        logger.debug(f"Embedding dedup not available: {e}")
+        return None
+    except (ValueError, TypeError, OSError) as e:
+        logger.warning(f"Error finding similar item: {e}")
+        return None

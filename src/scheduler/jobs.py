@@ -363,7 +363,9 @@ class JobRunner:
 
             for item in items:
                 try:
-                    text = f"{item.title} {item.summary or ''}"[:500]
+                    # Use title + original content for embedding (not summary)
+                    # This allows computing embeddings BEFORE AI processing
+                    text = f"{item.title} {item.content or ''}"[:500]
                     embedding = manager.get_embedding(text)
                     embedding_bytes = embedding_to_bytes(embedding)
 

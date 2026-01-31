@@ -23,6 +23,7 @@ from src.processors.rule_classifier import (
     should_skip_ai_processing,
     try_rule_only_processing,
 )
+from src.optimization.dedup_optimizer import find_similar_processed_item
 from src.storage.database import SyncDatabase
 from src.storage.models import ActionItem, ActionStatus, ContentItem, DigestItem, EventDigestItem
 
@@ -262,6 +263,26 @@ class DigestGenerator:
                 processed_count += 1
                 logger.debug(
                     f"Rule-only processed: {item.title[:40]}... -> {rule_only_result.category}"
+                )
+                continue
+
+            # Try embedding-based dedup: reuse AI results from similar items
+            similar_result = find_similar_processed_item(item, self.db)
+            if similar_result:
+                item.summary = similar_result.summary
+                item.category = similar_result.category
+                item.importance_score = similar_result.importance_score
+                item.one_liner = similar_result.one_liner
+                item.key_points = similar_result.key_points
+                item.impact_assessment = similar_result.impact_assessment
+                item.actionable_items = similar_result.actionable_items
+                item.processed_at = datetime.now()
+                self.db.update_content_item(item)
+                skipped_count += 1
+                processed_count += 1
+                logger.debug(
+                    f"Embedding dedup: {item.title[:40]}... "
+                    f"(similar to #{similar_result.source_id}, score={similar_result.similarity:.3f})"
                 )
                 continue
 

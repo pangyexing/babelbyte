@@ -104,16 +104,19 @@ ruff check . --select E,F,W,I              # Lint
                             ↓
                    Scheduler (APScheduler)
                             ↓
-┌───────────────────────────┼───────────────────────────┐
-↓                           ↓                           ↓
-Fetchers               Rule Classifier            Embeddings
-(Reddit/Twitter/       (40+ 域名模式              (SentenceTransformers
- HN/RSS)                预分类/跳过)               本地/OpenAI)
-↓                           ↓                           ↓
+┌───────────────────────────┴───────────────────────────┐
+↓                                                       ↓
+Fetchers                                         Rule Classifier
+(Reddit/Twitter/HN/RSS)                          (40+ 域名预分类)
+↓                                                       ↓
 └───────────────→ SQLite + FTS5 ←───────────────────────┘
+                            ↓
+                      Embeddings ←─── (本地免费，启用语义去重)
+                 (SentenceTransformers)
                             ↓
                     AI Processors ←─── Token Tracker
                  (Claude/Codex CLI)     (8类调用追踪)
+                 (跳过相似内容:92%阈值)
                             ↓
         ┌───────────────────┼───────────────────┐
         ↓                   ↓                   ↓
@@ -184,8 +187,8 @@ The `bb daily` command runs the complete pipeline in one shot:
 ```
 bb daily
   ├── 1. fetch            # Fetch from all subscriptions
-  ├── 2. process_content  # AI processing (consumes LLM tokens)
-  ├── 3. embeddings       # Local sentence-transformers (FREE)
+  ├── 2. embeddings       # Local sentence-transformers (FREE, enables dedup)
+  ├── 3. process_content  # AI processing (consumes LLM tokens, with dedup)
   ├── 4. topic discovery  # Regex + statistics (FREE)
   ├── 5. clustering       # Event grouping (consumes LLM tokens)
   └── 6. digest + email   # Generate and send
@@ -302,6 +305,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Mock mode:** `--mock` flag enables `MockAIProcessor` and `MockTwitterFetcher` for testing
 - **JSON AI responses:** Processors parse JSON from CLI output, handle markdown code blocks, fallback to defaults
 - **Token optimization:** Rule-based pre-classification skips AI for low-value content
+- **Embedding dedup:** Semantic similarity (>=92%) reuses AI results from similar processed items
 - **Batch processing:** Multiple items processed in single AI call for efficiency
 - **FTS5 search:** Full-text search with filters (category, date, importance, state)
 - **State management:** Content items have state (unread/read/saved/archived/flagged)
