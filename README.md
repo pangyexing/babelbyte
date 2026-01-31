@@ -17,10 +17,11 @@ AI 驱动的**个人情报产品**，从 Reddit 和 Twitter 抓取内容，通�
 
 ## 功能特性
 
-- **多平台支持**: Reddit (RSS) 和 Twitter (TwitterAPI.io)
+- **多平台支持**: Reddit、Twitter、Hacker News、通用 RSS/Atom
 - **AI 智能处理**: 通过 Claude/Codex CLI 生成结构化分析
 - **结构化输出**: 摘要、关键点、短期/长期影响、行动项
-- **事件聚类**: 相关内容自动合并成事件流，支持并行处理
+- **语义聚类**: 混合相似度 (40% 规则 + 60% Embedding) 智能合并
+- **自动主题发现**: 基于实体频率、关键词共现、趋势突增自动发现主题
 - **主题追踪**: 定义关键词，持续追踪主题动态
 - **全文检索**: 基于 FTS5 的快速搜索
 - **周期报告**: 自动生成周报和月报
@@ -90,6 +91,11 @@ AI_CACHE_TTL=86400            # 24 小时
 # 聚类配置
 CLUSTER_CACHE_TTL=60          # 聚类缓存秒数
 CLUSTER_RETRY_HOURS=24        # 失败重试间隔
+
+# Embedding 配置 (可选)
+EMBEDDING_PROVIDER=sentence-transformers  # 或 openai
+EMBEDDING_RULE_WEIGHT=0.4     # 规则相似度权重
+EMBEDDING_SEMANTIC_WEIGHT=0.6 # 语义相似度权重
 ```
 
 ## 使用方法
@@ -103,11 +109,21 @@ bb subscribe reddit MachineLearning
 # 订阅 Twitter 用户
 bb subscribe twitter elonmusk
 
+# 订阅 Hacker News (支持 front/new/best/ask/show)
+bb subscribe hackernews tech --type front
+bb subscribe hackernews ai --type best
+
+# 订阅通用 RSS/Atom Feed
+bb subscribe rss "TechCrunch" --url "https://techcrunch.com/feed/"
+bb subscribe rss "OpenAI Blog" --url "https://openai.com/blog/rss.xml"
+
 # 查看订阅列表
 bb list
 
 # 取消订阅
 bb unsubscribe reddit MachineLearning
+bb unsubscribe hackernews tech
+bb unsubscribe rss "TechCrunch"
 ```
 
 ### 内容抓取与处理
@@ -183,6 +199,15 @@ bb topic show "AI应用"
 
 # 删除主题
 bb topic delete "AI应用" --yes
+
+# 自动发现主题 (基于实体频率、关键词共现、趋势突增)
+bb topic discover --days 14 --min-frequency 5
+
+# 查看主题建议
+bb topic suggestions
+
+# 交互式审核建议 (接受/拒绝/合并)
+bb topic review
 ```
 
 ### 行动清单 (Phase 5)
@@ -239,6 +264,19 @@ bb cluster --parallel --workers 8
 bb digest --parallel
 ```
 
+### 语义 Embedding
+
+```bash
+# 计算内容 Embedding
+bb embeddings compute --limit 1000
+
+# 查看 Embedding 统计
+bb embeddings stats
+
+# 重建聚类中心向量
+bb embeddings rebuild-centroids
+```
+
 ### 其他命令
 
 ```bash
@@ -264,8 +302,9 @@ CLI (Click) → Scheduler (APScheduler)
     ┌───────────────┼───────────────┐
     ↓               ↓               ↓
 Fetchers      Event Stream    Topic Radar
-(Reddit/Twitter)    ↓               ↓
-    ↓          Clustering      Matching
+(Reddit/Twitter/   ↓               ↓
+ HN/RSS)    Hybrid Clustering  Auto Discovery
+    ↓       (Rule+Embedding)       ↓
     └──────→ SQLite + FTS5 ←───────┘
                     ↓
             AI Processors
@@ -303,16 +342,20 @@ babelbyte/
 │   ├── fetchers/               # 内容抓取
 │   │   ├── base.py
 │   │   ├── reddit.py           # Reddit RSS + 增量抓取
-│   │   └── twitter.py          # Twitter (TwitterAPI.io)
+│   │   ├── twitter.py          # Twitter (TwitterAPI.io)
+│   │   ├── hackernews.py       # Hacker News (5 种 Feed)
+│   │   └── rss.py              # 通用 RSS/Atom
 │   ├── processors/             # AI 处理
 │   │   ├── base.py             # 基类 + 增强结果
 │   │   ├── claude_cli.py       # Claude CLI
 │   │   ├── openai_cli.py       # Codex CLI
 │   │   ├── digest_processor.py # 摘要 + 行动提取
-│   │   ├── event_stream.py     # 事件聚类 + 并行处理
+│   │   ├── event_stream.py     # 事件聚类 + 混合相似度
+│   │   ├── embeddings.py       # Embedding 提供者 + 管理器
 │   │   └── rule_classifier.py  # 规则预分类 (40+ 域名)
 │   ├── analytics/              # 分析模块
 │   │   ├── topic_radar.py      # 主题雷达
+│   │   ├── topic_discovery.py  # 自动主题发现
 │   │   ├── reports.py          # 周报/月报
 │   │   └── token_tracker.py    # Token 使用追踪
 │   ├── optimization/           # 性能优化
@@ -386,7 +429,9 @@ triggers          # 触发器 (自动化规则)
 | 命令 | 说明 |
 |------|------|
 | **订阅管理** | |
-| `subscribe reddit/twitter <name>` | 订阅 |
+| `subscribe reddit/twitter <name>` | 订阅 Reddit/Twitter |
+| `subscribe hackernews <name> --type` | 订阅 HN (front/new/best/ask/show) |
+| `subscribe rss <name> --url` | 订阅 RSS/Atom Feed |
 | `unsubscribe <source> <name>` | 取消订阅 |
 | `list [-a]` | 查看订阅 |
 | **内容处理** | |
@@ -405,6 +450,9 @@ triggers          # 触发器 (自动化规则)
 | **主题** | |
 | `topics` | 主题列表 |
 | `topic add/show/delete` | 主题管理 |
+| `topic discover [--days]` | 自动发现主题 |
+| `topic suggestions` | 查看主题建议 |
+| `topic review` | 交互式审核建议 |
 | **行动** | |
 | `actions [--status]` | 行动列表 |
 | `action <id> done/dismissed` | 更新状态 |
@@ -415,6 +463,10 @@ triggers          # 触发器 (自动化规则)
 | `validate [--fix]` | 数据完整性校验 |
 | `token-stats [--reset]` | Token 使用统计 |
 | `cache-stats [--cleanup]` | 缓存管理 |
+| **Embedding** | |
+| `embeddings compute [--limit]` | 计算内容 Embedding |
+| `embeddings stats` | Embedding 统计 |
+| `embeddings rebuild-centroids` | 重建聚类中心向量 |
 | **其他** | |
 | `config` | 查看配置 |
 | `test-email` | 测试邮件 |

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-BabelByte is an AI-powered **personal intelligence product** that fetches content from Reddit and Twitter, processes it with AI (Claude CLI or Codex CLI), and delivers structured intelligence briefings via email. It supports event tracking, topic radar, knowledge base search, and periodic reports.
+BabelByte is an AI-powered **personal intelligence product** that fetches content from Reddit, Twitter, Hacker News, and RSS feeds, processes it with AI (Claude CLI or Codex CLI), and delivers structured intelligence briefings via email. It supports event tracking with semantic clustering, automatic topic discovery, knowledge base search, and periodic reports.
 
 ## Commands
 
@@ -20,6 +20,8 @@ pip install -e ".[dev]"       # With dev dependencies (pytest, black, ruff)
 ```bash
 bb subscribe reddit <subreddit>     # Subscribe to subreddit
 bb subscribe twitter <username>     # Subscribe to Twitter user
+bb subscribe hackernews <name> --type front  # Subscribe to HN (front/new/best/ask/show)
+bb subscribe rss <name> --url <feed-url>     # Subscribe to RSS/Atom feed
 bb list                             # Show subscriptions
 bb fetch                            # Fetch content from all sources
 bb digest --dry-run                 # Preview digest without sending
@@ -52,6 +54,9 @@ bb topics                           # List all topics
 bb topic add "AI" --keywords "GPT,ChatGPT,AI"
 bb topic show "AI"                  # View topic details
 bb topic delete "AI" --yes
+bb topic discover --days 14         # Auto-discover topics from content
+bb topic suggestions                # View pending topic suggestions
+bb topic review                     # Interactive review of suggestions
 ```
 
 **Action List (Phase 5):**
@@ -64,6 +69,13 @@ bb action 123 done                  # Mark action as done/dismissed
 ```bash
 bb report week                      # Generate weekly report
 bb report month --months-ago 1      # Generate monthly report
+```
+
+**Embeddings (Semantic Clustering):**
+```bash
+bb embeddings compute --limit 1000  # Compute content embeddings
+bb embeddings stats                 # View embedding statistics
+bb embeddings rebuild-centroids     # Rebuild cluster centroid vectors
 ```
 
 **Diagnostics & Optimization:**
@@ -107,15 +119,21 @@ Fetchers      Event Stream    Topic Radar
 ```
 
 **Key modules:**
-- `src/fetchers/` - Abstract `BaseFetcher` with Reddit (RSS/feedparser) and Twitter (TwitterAPI.io) implementations
+- `src/fetchers/` - Abstract `BaseFetcher` with multiple implementations
+  - `reddit.py` - Reddit RSS/feedparser
+  - `twitter.py` - Twitter (TwitterAPI.io)
+  - `hackernews.py` - Hacker News (5 feed types via hnrss.org)
+  - `rss.py` - Generic RSS/Atom feeds
 - `src/processors/` - AI processing with enhanced JSON output (summary, key_points, impact, actions)
   - `base.py` - `ProcessingResult` with enhanced fields, prompt templates
   - `claude_cli.py` / `openai_cli.py` - CLI wrappers with batch processing
   - `digest_processor.py` - Digest generation + action extraction
-  - `event_stream.py` - Event clustering (rule-based + AI confirmation + parallel processing)
+  - `event_stream.py` - Event clustering (hybrid: rule-based + semantic + AI confirmation)
+  - `embeddings.py` - Embedding providers (sentence-transformers, OpenAI) + manager
   - `rule_classifier.py` - Pre-classification with 40+ domain patterns
 - `src/analytics/` - Analysis modules
   - `topic_radar.py` - Topic matching, trend detection, snapshots
+  - `topic_discovery.py` - Automatic topic discovery (entity frequency, keyword clustering, trend detection)
   - `reports.py` - Weekly/monthly report generation
   - `token_tracker.py` - AI call tracking, cost estimation, cache hit rates
 - `src/optimization/` - Performance tuning
@@ -199,7 +217,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 ## Database Schema
 
 **Core tables:**
-- `subscriptions` - Source subscriptions (Reddit/Twitter)
+- `subscriptions` - Source subscriptions (Reddit/Twitter/HackerNews/RSS)
 - `content_items` - Fetched content with AI processing results
 - `user_profiles` - User preferences
 - `content_fts` - FTS5 virtual table for full-text search
@@ -209,10 +227,15 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - `event_members` - Content-event associations
 - `event_timeline` - Daily event summaries
 
+**Embeddings (Semantic Clustering):**
+- `content_embeddings` - Content embedding vectors (content_id, embedding, model, dimension)
+- `cluster_embeddings` - Cluster centroid vectors (cluster_id, centroid_embedding, member_count)
+
 **Phase 3 - Topic Radar:**
 - `topics` - Topic definitions with keywords
 - `content_topics` - Content-topic associations
 - `topic_snapshots` - Periodic topic summaries
+- `topic_suggestions` - Auto-discovered topic suggestions (name, keywords, frequency, confidence, status)
 
 **Phase 5 - Action List:**
 - `action_items` - Extracted actions with priority/status
@@ -239,6 +262,9 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Duplicate prevention:** UNIQUE constraint on content_item_id in event_members
 - **Token tracking:** Per-call-type tracking with cost estimation (Haiku/Sonnet/Opus pricing)
 - **Data validation:** 12 integrity checks with auto-fix capability
+- **Hybrid similarity:** 40% rule-based + 60% semantic (embedding cosine similarity) for event clustering
+- **Embedding providers:** Pluggable providers (sentence-transformers local, OpenAI API) with lazy loading
+- **Topic discovery:** Entity frequency analysis, keyword bigram clustering, trend spike detection (3x week-over-week)
 
 ## Data Models
 
@@ -277,3 +303,7 @@ Copy `.env.example` to `.env`. Key settings:
 - `AI_BATCH_SIZE_LONG` - Batch size for long content (default: 6)
 - `CLUSTER_CACHE_TTL` - Cluster cache seconds (default: 60)
 - `CLUSTER_RETRY_HOURS` - Retry failed clusters after hours (default: 24)
+- `EMBEDDING_PROVIDER` - "sentence-transformers" (default, local) or "openai"
+- `EMBEDDING_ENABLED` - Enable semantic similarity (default: true)
+- `EMBEDDING_RULE_WEIGHT` - Rule-based similarity weight (default: 0.4)
+- `EMBEDDING_SEMANTIC_WEIGHT` - Semantic similarity weight (default: 0.6)
