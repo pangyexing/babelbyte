@@ -3,12 +3,19 @@
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+import yaml
 
 from src.storage.models import ContentItem
 
 logger = logging.getLogger(__name__)
+
+# Path to classification config
+CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "classifications.yaml"
 
 
 @dataclass
@@ -30,6 +37,84 @@ class RuleClassificationResult:
     reason: str = ""  # Why this rule matched
 
 
+@lru_cache(maxsize=1)
+def _load_classifications() -> dict:
+    """Load classifications from YAML config (cached)."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.warning(f"Classifications config not found at {CONFIG_PATH}, using defaults")
+        return {}
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse classifications config: {e}")
+        return {}
+
+
+def _get_domain_categories() -> dict[str, tuple[str, int]]:
+    """Get domain to category mappings from config."""
+    config = _load_classifications()
+    domain_config = config.get("domain_categories", {})
+
+    result = {}
+    for domain, data in domain_config.items():
+        if isinstance(data, dict):
+            category = data.get("category", "其他")
+            importance = data.get("importance", 5)
+            result[domain] = (category, importance)
+
+    return result
+
+
+def _get_title_keywords() -> list[tuple[re.Pattern, str, int]]:
+    """Get title keyword patterns from config."""
+    config = _load_classifications()
+    keywords_config = config.get("title_keywords", [])
+
+    result = []
+    for item in keywords_config:
+        if not isinstance(item, dict):
+            continue
+
+        pattern_str = item.get("pattern", "")
+        if not pattern_str:
+            continue
+
+        category = item.get("category", "其他")
+        boost = item.get("boost", 0)
+        case_insensitive = item.get("case_insensitive", False)
+
+        try:
+            flags = re.IGNORECASE if case_insensitive else 0
+            pattern = re.compile(pattern_str, flags)
+            result.append((pattern, category, boost))
+        except re.error as e:
+            logger.warning(f"Invalid regex pattern '{pattern_str}': {e}")
+
+    return result
+
+
+def _get_importance_patterns(key: str) -> list[tuple[str, int, float]]:
+    """Get importance estimation patterns from config."""
+    config = _load_classifications()
+    patterns_config = config.get(key, [])
+
+    result = []
+    for item in patterns_config:
+        if not isinstance(item, dict):
+            continue
+
+        pattern = item.get("pattern", "")
+        if not pattern:
+            continue
+
+        boost = item.get("boost", 0)
+        confidence = item.get("confidence", 0.5)
+        result.append((pattern, boost, confidence))
+
+    return result
+
+
 class RuleClassifier:
     """
     Rule-based content classifier to reduce AI token usage.
@@ -38,132 +123,28 @@ class RuleClassifier:
     - Domain patterns in URLs
     - Title keywords
     - Content patterns
+
+    Configuration is loaded from config/classifications.yaml
     """
 
-    # Domain -> (category, base_importance)
-    DOMAIN_CATEGORIES: dict[str, tuple[str, int]] = {
-        # Programming
-        "github.com": ("编程", 6),
-        "gitlab.com": ("编程", 6),
-        "stackoverflow.com": ("编程", 5),
-        "dev.to": ("编程", 5),
-        "hackernews.com": ("技术", 6),
-        "news.ycombinator.com": ("技术", 7),
-        "medium.com": ("技术", 5),
-        "substack.com": ("技术", 5),
-        "hashnode.dev": ("编程", 5),
-        "codepen.io": ("编程", 5),
-        "replit.com": ("编程", 5),
-        "codesandbox.io": ("编程", 5),
-        "console.dev": ("编程", 6),
-        "infoq.com": ("编程", 6),
-        "dzone.com": ("编程", 5),
-        # Science
-        "arxiv.org": ("科学", 7),
-        "nature.com": ("科学", 8),
-        "science.org": ("科学", 8),
-        "sciencedirect.com": ("科学", 7),
-        "pubmed.ncbi.nlm.nih.gov": ("科学", 7),
-        "biorxiv.org": ("科学", 7),
-        "medrxiv.org": ("科学", 7),
-        "pnas.org": ("科学", 7),
-        "cell.com": ("科学", 8),
-        # AI - Extended
-        "openai.com": ("AI", 8),
-        "anthropic.com": ("AI", 8),
-        "deepmind.com": ("AI", 8),
-        "huggingface.co": ("AI", 7),
-        "replicate.com": ("AI", 6),
-        "stability.ai": ("AI", 7),
-        "midjourney.com": ("AI", 6),
-        "paperswithcode.com": ("AI", 7),
-        "the-decoder.com": ("AI", 7),
-        "together.ai": ("AI", 7),
-        "cohere.com": ("AI", 7),
-        "mistral.ai": ("AI", 8),
-        "perplexity.ai": ("AI", 7),
-        "runway.com": ("AI", 6),
-        "pika.art": ("AI", 6),
-        "suno.ai": ("AI", 6),
-        "claude.ai": ("AI", 8),
-        "chat.openai.com": ("AI", 7),
-        "gemini.google.com": ("AI", 7),
-        "labs.google": ("AI", 7),
-        "ai.meta.com": ("AI", 8),
-        "nvidia.com/en-us/ai": ("AI", 7),
-        # Tech news
-        "techcrunch.com": ("技术", 6),
-        "theverge.com": ("技术", 5),
-        "wired.com": ("技术", 5),
-        "arstechnica.com": ("技术", 6),
-        "engadget.com": ("技术", 5),
-        "thenextweb.com": ("技术", 5),
-        "zdnet.com": ("技术", 5),
-        "cnet.com": ("技术", 5),
-        "9to5mac.com": ("技术", 5),
-        "9to5google.com": ("技术", 5),
-        "macrumors.com": ("技术", 5),
-        "tomshardware.com": ("技术", 5),
-        "anandtech.com": ("技术", 6),
-        # Product
-        "producthunt.com": ("产品", 6),
-        "indiegogo.com": ("产品", 5),
-        "kickstarter.com": ("产品", 5),
-        "betalist.com": ("产品", 5),
-        "alternativeto.net": ("产品", 5),
-        # Business/Startup
-        "crunchbase.com": ("创业", 6),
-        "ycombinator.com": ("创业", 7),
-        "techstars.com": ("创业", 6),
-        "bloomberg.com": ("商业", 6),
-        "wsj.com": ("商业", 6),
-        "ft.com": ("商业", 6),
-        "techcrunch.com/tag/funding": ("创业", 7),
-        "venturebeat.com": ("创业", 6),
-        "pitchbook.com": ("创业", 6),
-        "sifted.eu": ("创业", 6),
-        "eu-startups.com": ("创业", 5),
-        # Chinese tech/AI sources
-        "36kr.com": ("创业", 6),
-        "geekpark.net": ("技术", 6),
-        "jiqizhixin.com": ("AI", 7),
-        "leiphone.com": ("AI", 6),
-        "sspai.com": ("产品", 5),
-        "ifanr.com": ("技术", 5),
-    }
+    def __init__(self):
+        """Initialize the classifier with config-based mappings."""
+        self._domain_categories: Optional[dict[str, tuple[str, int]]] = None
+        self._title_keywords: Optional[list[tuple[re.Pattern, str, int]]] = None
 
-    # Title keyword patterns -> (category, importance_boost)
-    TITLE_KEYWORDS: list[tuple[re.Pattern, str, int]] = [
-        # AI keywords
-        (re.compile(r"\b(GPT-?[45]|Claude|Gemini|LLM|ChatGPT)\b", re.I), "AI", 2),
-        (re.compile(r"\b(machine learning|deep learning|neural network)\b", re.I), "AI", 1),
-        (re.compile(r"\b(transformer|diffusion|RLHF)\b", re.I), "AI", 1),
-        (re.compile(r"\b(AI|artificial intelligence|ML model)\b", re.I), "AI", 1),
-        (re.compile(r"\b(RAG|fine-?tun|embeddings?|vector)\b", re.I), "AI", 1),
-        # Programming keywords
-        (re.compile(r"\b(Python|Rust|Go|JavaScript|TypeScript)\b"), "编程", 0),
-        (re.compile(r"\b(API|SDK|framework|library)\b", re.I), "编程", 0),
-        (re.compile(r"\b(React|Vue|Angular|Node\.?js|Django|Flask)\b", re.I), "编程", 0),
-        (re.compile(r"\b(database|SQL|PostgreSQL|MongoDB|Redis)\b", re.I), "编程", 0),
-        (re.compile(r"\b(Docker|Kubernetes|K8s|DevOps|CI/CD)\b", re.I), "编程", 1),
-        # Product launches
-        (re.compile(r"\b(launch|announce|release|introducing)\b", re.I), "产品", 1),
-        (re.compile(r"\b(new feature|update|v\d+\.\d+)\b", re.I), "产品", 0),
-        # Funding/business
-        (re.compile(r"\$\d+[MBK]|\d+ million|\d+ billion", re.I), "商业", 1),
-        (re.compile(r"\b(Series [A-Z]|seed round|IPO|acquisition)\b", re.I), "创业", 2),
-        (re.compile(r"\b(startup|founder|YC|Y Combinator)\b", re.I), "创业", 1),
-        # Question posts (common on Reddit)
-        (
-            re.compile(r"^(How|What|Why|When|Where|Who|Which|Can|Should|Is|Are|Does|Do)\b", re.I),
-            "其他",
-            0,
-        ),  # noqa: E501
-        (re.compile(r"\?$"), "其他", 0),
-        # Science
-        (re.compile(r"\b(research|study|paper|published)\b", re.I), "科学", 0),
-        (re.compile(r"\b(breakthrough|discovery|experiment)\b", re.I), "科学", 1),
-    ]
+    @property
+    def domain_categories(self) -> dict[str, tuple[str, int]]:
+        """Get domain categories (lazy loaded)."""
+        if self._domain_categories is None:
+            self._domain_categories = _get_domain_categories()
+        return self._domain_categories
+
+    @property
+    def title_keywords(self) -> list[tuple[re.Pattern, str, int]]:
+        """Get title keywords (lazy loaded)."""
+        if self._title_keywords is None:
+            self._title_keywords = _get_title_keywords()
+        return self._title_keywords
 
     def classify(self, item: ContentItem) -> Optional[RuleClassificationResult]:
         """
@@ -209,8 +190,8 @@ class RuleClassifier:
                 domain = domain[4:]
 
             # Check exact match first
-            if domain in self.DOMAIN_CATEGORIES:
-                category, importance = self.DOMAIN_CATEGORIES[domain]
+            if domain in self.domain_categories:
+                category, importance = self.domain_categories[domain]
                 return RuleClassificationResult(
                     category=category,
                     importance_score=importance,
@@ -218,7 +199,7 @@ class RuleClassifier:
                 )
 
             # Check subdomain matches (e.g., blog.github.com)
-            for known_domain, (category, importance) in self.DOMAIN_CATEGORIES.items():
+            for known_domain, (category, importance) in self.domain_categories.items():
                 if domain.endswith("." + known_domain) or domain == known_domain:
                     return RuleClassificationResult(
                         category=category,
@@ -226,7 +207,7 @@ class RuleClassifier:
                         reason=f"domain:{known_domain}",
                     )
 
-        except Exception:
+        except (ValueError, AttributeError):
             pass
 
         return None
@@ -235,12 +216,12 @@ class RuleClassifier:
         self, item: ContentItem, result: RuleClassificationResult
     ) -> RuleClassificationResult:
         """Adjust classification based on title keywords."""
-        text = f"{item.title} {item.content[:500]}"
+        text = f"{item.title} {item.content[:500] if item.content else ''}"
 
         importance_boost = 0
         matched_keywords = []
 
-        for pattern, _, boost in self.TITLE_KEYWORDS:
+        for pattern, _, boost in self.title_keywords:
             if pattern.search(text):
                 importance_boost = max(importance_boost, boost)
                 matched_keywords.append(pattern.pattern[:20])
@@ -254,12 +235,12 @@ class RuleClassifier:
 
     def _classify_by_keywords_only(self, item: ContentItem) -> Optional[RuleClassificationResult]:
         """Classify based on strong keyword signals only (no domain match)."""
-        text = f"{item.title} {item.content[:500]}"
+        text = f"{item.title} {item.content[:500] if item.content else ''}"
 
         # Count category signals
         category_scores: dict[str, int] = {}
 
-        for pattern, category, boost in self.TITLE_KEYWORDS:
+        for pattern, category, boost in self.title_keywords:
             if pattern.search(text):
                 if category not in category_scores:
                     category_scores[category] = 0
@@ -267,8 +248,8 @@ class RuleClassifier:
 
         # Classify if we have moderate signals (2+ score for same category)
         if category_scores:
-            best_category = max(category_scores, key=category_scores.get)
-            if category_scores[best_category] >= 2:  # Lowered threshold for better coverage
+            best_category = max(category_scores, key=lambda k: category_scores[k])
+            if category_scores[best_category] >= 2:
                 return RuleClassificationResult(
                     category=best_category,
                     importance_score=6,  # Default medium importance
@@ -291,8 +272,8 @@ class RuleClassifier:
                 domain = domain[4:]
 
             # Check exact match first
-            if domain in self.DOMAIN_CATEGORIES:
-                category, importance = self.DOMAIN_CATEGORIES[domain]
+            if domain in self.domain_categories:
+                category, importance = self.domain_categories[domain]
                 return RuleClassificationResult(
                     category=category,
                     importance_score=importance,
@@ -300,7 +281,7 @@ class RuleClassifier:
                 )
 
             # Check subdomain matches
-            for known_domain, (category, importance) in self.DOMAIN_CATEGORIES.items():
+            for known_domain, (category, importance) in self.domain_categories.items():
                 if domain.endswith("." + known_domain) or domain == known_domain:
                     return RuleClassificationResult(
                         category=category,
@@ -308,7 +289,7 @@ class RuleClassifier:
                         reason=f"domain:{known_domain}",
                     )
 
-        except Exception:
+        except (ValueError, AttributeError):
             pass
 
         return None
@@ -344,14 +325,7 @@ def estimate_importance(item: ContentItem) -> ImportanceEstimate:
     # 2. Strong keyword patterns - medium-high confidence
     text = f"{item.title} {item.content[:500] if item.content else ''}"
 
-    high_value_patterns = [
-        (r"(OpenAI|Anthropic|Google|Meta)\s+(announces?|launches?|releases?)", 3, 0.8),
-        (r"\$\d+[BM]\b", 2, 0.75),
-        (r"(breakthrough|major|significant)\s+(discovery|advancement|update)", 2, 0.7),
-        (r"(Series [C-Z]|IPO|acqui)", 2, 0.7),
-        (r"(GPT-?5|Claude\s+\d|Gemini\s+\d)", 2, 0.75),
-    ]
-
+    high_value_patterns = _get_importance_patterns("high_value_patterns")
     for pattern, boost, conf in high_value_patterns:
         if re.search(pattern, text, re.IGNORECASE):
             score = min(10, score + boost)
@@ -360,12 +334,7 @@ def estimate_importance(item: ContentItem) -> ImportanceEstimate:
             return ImportanceEstimate(score, confidence, reason)
 
     # 3. Weak keyword patterns - medium confidence
-    weak_patterns = [
-        (r"\b(GPT|Claude|Gemini|LLM|ChatGPT)\b", 1, 0.55),
-        (r"\b(AI|ML|机器学习|深度学习)\b", 1, 0.5),
-        (r"\b(launch|announce|release|发布|上线)\b", 1, 0.45),
-    ]
-
+    weak_patterns = _get_importance_patterns("weak_patterns")
     for pattern, boost, conf in weak_patterns:
         if re.search(pattern, text, re.IGNORECASE):
             score = min(10, score + boost)
@@ -417,5 +386,11 @@ def create_skip_result(item: ContentItem, reason: str) -> tuple[str, str, int]:
         (summary, category, importance_score) tuple
     """
     # Use title as summary for skipped items
-    summary = f"[跳过] {item.title[:40]}..." if len(item.title) > 40 else f"[跳过] {item.title}"
+    title_preview = item.title[:40] + "..." if len(item.title) > 40 else item.title
+    summary = f"[Skipped] {title_preview}"
     return summary, "其他", 1  # Low importance for skipped items
+
+
+def reload_classifications() -> None:
+    """Force reload of classifications config."""
+    _load_classifications.cache_clear()

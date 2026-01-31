@@ -128,11 +128,17 @@ class EmailSender:
                 success=False,
                 message=f"SMTP error: {str(e)}",
             )
-        except Exception as e:
-            logger.error(f"Failed to send email: {e}")
+        except ssl.SSLError as e:
+            logger.error(f"SSL error: {e}")
             return EmailResult(
                 success=False,
-                message=f"Failed to send email: {str(e)}",
+                message=f"SSL connection error: {str(e)}",
+            )
+        except OSError as e:
+            logger.error(f"Network error: {e}")
+            return EmailResult(
+                success=False,
+                message=f"Network error: {str(e)}",
             )
 
     def _send_email(self, msg: MIMEMultipart, recipient: str) -> None:
@@ -261,7 +267,7 @@ BabelByte - AI 内容订阅系统
                 sent_at=datetime.now(),
             )
 
-        except Exception as e:
+        except (smtplib.SMTPException, ssl.SSLError, OSError) as e:
             return EmailResult(
                 success=False,
                 message=f"Failed to send test email: {str(e)}",

@@ -259,7 +259,7 @@ class EventStreamProcessor:
             for candidate in candidates:
                 if candidate.cluster_id == cluster_id:
                     return True, candidate
-        except Exception:
+        except (json.JSONDecodeError, KeyError, TypeError):
             return False, None
         return False, None
 
@@ -526,7 +526,16 @@ class EventStreamProcessor:
                     error=result.stderr[:100] if result.stderr else "Non-zero exit",
                 )
 
-        except Exception as e:
+        except subprocess.TimeoutExpired:
+            logger.warning("AI confirmation timed out")
+            record_ai_call(
+                call_type=AICallType.EVENT_CONFIRM,
+                cached=False,
+                input_chars=len(prompt),
+                success=False,
+                error="Timeout",
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
             logger.warning(f"AI confirmation failed: {e}")
             record_ai_call(
                 call_type=AICallType.EVENT_CONFIRM,
@@ -713,7 +722,7 @@ class EventStreamProcessor:
                         duration_ms=duration_ms,
                         success=False,
                     )
-            except Exception as e:
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError, subprocess.SubprocessError) as e:
                 record_ai_call(
                     call_type=AICallType.EVENT_TITLE,
                     cached=False,
@@ -796,14 +805,23 @@ high表示各来源一致，conflicted表示有分歧"""
                     success=False,
                 )
 
-        except Exception as e:
-            logger.warning(f"Timeline summary generation failed: {e}")
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Timeline summary CLI failed: {e}")
             record_ai_call(
                 call_type=AICallType.TIMELINE_SUMMARY,
                 cached=False,
                 input_chars=len(prompt),
                 success=False,
                 error=str(e)[:50],
+            )
+        except json.JSONDecodeError as e:
+            logger.warning(f"Timeline summary JSON parse failed: {e}")
+            record_ai_call(
+                call_type=AICallType.TIMELINE_SUMMARY,
+                cached=False,
+                input_chars=len(prompt),
+                success=False,
+                error="JSON parse error",
             )
 
         # Fallback

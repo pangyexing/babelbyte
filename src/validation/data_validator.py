@@ -1,6 +1,7 @@
 """Data validation module for verifying database integrity."""
 
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -127,7 +128,7 @@ class DataValidator:
             cursor = self.db._run(conn.execute(query))
             rows = self.db._run(cursor.fetchall())
             return list(rows)
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Query failed: {e}")
             return []
 
@@ -439,7 +440,7 @@ class DataValidator:
             self.db._run(conn.commit())
             logger.info("Fixed cluster article counts")
             return 1
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Failed to fix cluster counts: {e}")
             return 0
 
@@ -456,7 +457,7 @@ class DataValidator:
             deleted = cursor.rowcount
             logger.info(f"Deleted {deleted} empty clusters")
             return deleted
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Failed to fix empty clusters: {e}")
             return 0
 
@@ -466,7 +467,7 @@ class DataValidator:
             removed = self.db.cleanup_duplicate_cluster_memberships()
             logger.info(f"Removed {removed} duplicate memberships")
             return removed
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Failed to fix duplicate memberships: {e}")
             return 0
 
@@ -476,7 +477,7 @@ class DataValidator:
             count = self.db.rebuild_fts_index()
             logger.info(f"Rebuilt FTS index with {count} entries")
             return count
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Failed to rebuild FTS index: {e}")
             return 0
 
@@ -486,7 +487,7 @@ class DataValidator:
             cleaned = self.db.cleanup_expired_cache()
             logger.info(f"Cleaned up {cleaned} expired cache entries")
             return cleaned
-        except Exception as e:
+        except (sqlite3.Error, AttributeError) as e:
             logger.error(f"Failed to clean up cache: {e}")
             return 0
 

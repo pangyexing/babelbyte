@@ -1,0 +1,382 @@
+# Domain and keyword classifications for content pre-filtering
+# These rules are used to classify content before AI processing to save tokens
+
+# Domain -> category and base importance score mappings
+domain_categories:
+  # Programming
+  github.com:
+    category: "编程"
+    importance: 6
+  gitlab.com:
+    category: "编程"
+    importance: 6
+  stackoverflow.com:
+    category: "编程"
+    importance: 5
+  dev.to:
+    category: "编程"
+    importance: 5
+  hackernews.com:
+    category: "技术"
+    importance: 6
+  news.ycombinator.com:
+    category: "技术"
+    importance: 7
+  medium.com:
+    category: "技术"
+    importance: 5
+  substack.com:
+    category: "技术"
+    importance: 5
+  hashnode.dev:
+    category: "编程"
+    importance: 5
+  codepen.io:
+    category: "编程"
+    importance: 5
+  replit.com:
+    category: "编程"
+    importance: 5
+  codesandbox.io:
+    category: "编程"
+    importance: 5
+  console.dev:
+    category: "编程"
+    importance: 6
+  infoq.com:
+    category: "编程"
+    importance: 6
+  dzone.com:
+    category: "编程"
+    importance: 5
+
+  # Science
+  arxiv.org:
+    category: "科学"
+    importance: 7
+  nature.com:
+    category: "科学"
+    importance: 8
+  science.org:
+    category: "科学"
+    importance: 8
+  sciencedirect.com:
+    category: "科学"
+    importance: 7
+  pubmed.ncbi.nlm.nih.gov:
+    category: "科学"
+    importance: 7
+  biorxiv.org:
+    category: "科学"
+    importance: 7
+  medrxiv.org:
+    category: "科学"
+    importance: 7
+  pnas.org:
+    category: "科学"
+    importance: 7
+  cell.com:
+    category: "科学"
+    importance: 8
+
+  # AI - Extended
+  openai.com:
+    category: "AI"
+    importance: 8
+  anthropic.com:
+    category: "AI"
+    importance: 8
+  deepmind.com:
+    category: "AI"
+    importance: 8
+  huggingface.co:
+    category: "AI"
+    importance: 7
+  replicate.com:
+    category: "AI"
+    importance: 6
+  stability.ai:
+    category: "AI"
+    importance: 7
+  midjourney.com:
+    category: "AI"
+    importance: 6
+  paperswithcode.com:
+    category: "AI"
+    importance: 7
+  the-decoder.com:
+    category: "AI"
+    importance: 7
+  together.ai:
+    category: "AI"
+    importance: 7
+  cohere.com:
+    category: "AI"
+    importance: 7
+  mistral.ai:
+    category: "AI"
+    importance: 8
+  perplexity.ai:
+    category: "AI"
+    importance: 7
+  runway.com:
+    category: "AI"
+    importance: 6
+  pika.art:
+    category: "AI"
+    importance: 6
+  suno.ai:
+    category: "AI"
+    importance: 6
+  claude.ai:
+    category: "AI"
+    importance: 8
+  chat.openai.com:
+    category: "AI"
+    importance: 7
+  gemini.google.com:
+    category: "AI"
+    importance: 7
+  labs.google:
+    category: "AI"
+    importance: 7
+  ai.meta.com:
+    category: "AI"
+    importance: 8
+  nvidia.com/en-us/ai:
+    category: "AI"
+    importance: 7
+
+  # Tech news
+  techcrunch.com:
+    category: "技术"
+    importance: 6
+  theverge.com:
+    category: "技术"
+    importance: 5
+  wired.com:
+    category: "技术"
+    importance: 5
+  arstechnica.com:
+    category: "技术"
+    importance: 6
+  engadget.com:
+    category: "技术"
+    importance: 5
+  thenextweb.com:
+    category: "技术"
+    importance: 5
+  zdnet.com:
+    category: "技术"
+    importance: 5
+  cnet.com:
+    category: "技术"
+    importance: 5
+  9to5mac.com:
+    category: "技术"
+    importance: 5
+  9to5google.com:
+    category: "技术"
+    importance: 5
+  macrumors.com:
+    category: "技术"
+    importance: 5
+  tomshardware.com:
+    category: "技术"
+    importance: 5
+  anandtech.com:
+    category: "技术"
+    importance: 6
+
+  # Product
+  producthunt.com:
+    category: "产品"
+    importance: 6
+  indiegogo.com:
+    category: "产品"
+    importance: 5
+  kickstarter.com:
+    category: "产品"
+    importance: 5
+  betalist.com:
+    category: "产品"
+    importance: 5
+  alternativeto.net:
+    category: "产品"
+    importance: 5
+
+  # Business/Startup
+  crunchbase.com:
+    category: "创业"
+    importance: 6
+  ycombinator.com:
+    category: "创业"
+    importance: 7
+  techstars.com:
+    category: "创业"
+    importance: 6
+  bloomberg.com:
+    category: "商业"
+    importance: 6
+  wsj.com:
+    category: "商业"
+    importance: 6
+  ft.com:
+    category: "商业"
+    importance: 6
+  techcrunch.com/tag/funding:
+    category: "创业"
+    importance: 7
+  venturebeat.com:
+    category: "创业"
+    importance: 6
+  pitchbook.com:
+    category: "创业"
+    importance: 6
+  sifted.eu:
+    category: "创业"
+    importance: 6
+  eu-startups.com:
+    category: "创业"
+    importance: 5
+
+  # Chinese tech/AI sources
+  36kr.com:
+    category: "创业"
+    importance: 6
+  geekpark.net:
+    category: "技术"
+    importance: 6
+  jiqizhixin.com:
+    category: "AI"
+    importance: 7
+  leiphone.com:
+    category: "AI"
+    importance: 6
+  sspai.com:
+    category: "产品"
+    importance: 5
+  ifanr.com:
+    category: "技术"
+    importance: 5
+
+# Title keyword patterns for classification
+# Each entry has: pattern (regex), category, and importance_boost
+title_keywords:
+  # AI keywords
+  - pattern: '\b(GPT-?[45]|Claude|Gemini|LLM|ChatGPT)\b'
+    case_insensitive: true
+    category: "AI"
+    boost: 2
+  - pattern: '\b(machine learning|deep learning|neural network)\b'
+    case_insensitive: true
+    category: "AI"
+    boost: 1
+  - pattern: '\b(transformer|diffusion|RLHF)\b'
+    case_insensitive: true
+    category: "AI"
+    boost: 1
+  - pattern: '\b(AI|artificial intelligence|ML model)\b'
+    case_insensitive: true
+    category: "AI"
+    boost: 1
+  - pattern: '\b(RAG|fine-?tun|embeddings?|vector)\b'
+    case_insensitive: true
+    category: "AI"
+    boost: 1
+
+  # Programming keywords
+  - pattern: '\b(Python|Rust|Go|JavaScript|TypeScript)\b'
+    case_insensitive: false
+    category: "编程"
+    boost: 0
+  - pattern: '\b(API|SDK|framework|library)\b'
+    case_insensitive: true
+    category: "编程"
+    boost: 0
+  - pattern: '\b(React|Vue|Angular|Node\.?js|Django|Flask)\b'
+    case_insensitive: true
+    category: "编程"
+    boost: 0
+  - pattern: '\b(database|SQL|PostgreSQL|MongoDB|Redis)\b'
+    case_insensitive: true
+    category: "编程"
+    boost: 0
+  - pattern: '\b(Docker|Kubernetes|K8s|DevOps|CI/CD)\b'
+    case_insensitive: true
+    category: "编程"
+    boost: 1
+
+  # Product launches
+  - pattern: '\b(launch|announce|release|introducing)\b'
+    case_insensitive: true
+    category: "产品"
+    boost: 1
+  - pattern: '\b(new feature|update|v\d+\.\d+)\b'
+    case_insensitive: true
+    category: "产品"
+    boost: 0
+
+  # Funding/business
+  - pattern: '\$\d+[MBK]|\d+ million|\d+ billion'
+    case_insensitive: true
+    category: "商业"
+    boost: 1
+  - pattern: '\b(Series [A-Z]|seed round|IPO|acquisition)\b'
+    case_insensitive: true
+    category: "创业"
+    boost: 2
+  - pattern: '\b(startup|founder|YC|Y Combinator)\b'
+    case_insensitive: true
+    category: "创业"
+    boost: 1
+
+  # Question posts (common on Reddit)
+  - pattern: '^(How|What|Why|When|Where|Who|Which|Can|Should|Is|Are|Does|Do)\b'
+    case_insensitive: true
+    category: "其他"
+    boost: 0
+  - pattern: '\?$'
+    case_insensitive: false
+    category: "其他"
+    boost: 0
+
+  # Science
+  - pattern: '\b(research|study|paper|published)\b'
+    case_insensitive: true
+    category: "科学"
+    boost: 0
+  - pattern: '\b(breakthrough|discovery|experiment)\b'
+    case_insensitive: true
+    category: "科学"
+    boost: 1
+
+# High-value keyword patterns for importance estimation (used for model tier selection)
+high_value_patterns:
+  - pattern: '(OpenAI|Anthropic|Google|Meta)\s+(announces?|launches?|releases?)'
+    boost: 3
+    confidence: 0.8
+  - pattern: '\$\d+[BM]\b'
+    boost: 2
+    confidence: 0.75
+  - pattern: '(breakthrough|major|significant)\s+(discovery|advancement|update)'
+    boost: 2
+    confidence: 0.7
+  - pattern: '(Series [C-Z]|IPO|acqui)'
+    boost: 2
+    confidence: 0.7
+  - pattern: '(GPT-?5|Claude\s+\d|Gemini\s+\d)'
+    boost: 2
+    confidence: 0.75
+
+# Weak keyword patterns for importance estimation
+weak_patterns:
+  - pattern: '\b(GPT|Claude|Gemini|LLM|ChatGPT)\b'
+    boost: 1
+    confidence: 0.55
+  - pattern: '\b(AI|ML|机器学习|深度学习)\b'
+    boost: 1
+    confidence: 0.5
+  - pattern: '\b(launch|announce|release|发布|上线)\b'
+    boost: 1
+    confidence: 0.45

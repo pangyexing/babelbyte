@@ -80,8 +80,11 @@ class JobRunner:
                 self._fetch_all_async(reddit_subs, twitter_subs, progress_callback)
             )
             loop.close()
-        except Exception as e:
-            logger.error(f"Error in async fetch: {e}")
+        except (RuntimeError, asyncio.CancelledError) as e:
+            logger.error(f"Async event loop error: {e}")
+            results = []
+        except OSError as e:
+            logger.error(f"OS error during fetch: {e}")
             results = []
 
         # Process results and store items
@@ -111,7 +114,7 @@ class JobRunner:
                 else:
                     stats["errors"] += 1
                     logger.error(f"Failed to fetch {sub.display_name}: {result.error_message}")
-            except Exception as e:
+            except (OSError, ValueError, TypeError) as e:
                 stats["errors"] += 1
                 logger.error(f"Error processing {sub.display_name}: {e}")
 
@@ -230,7 +233,7 @@ class JobRunner:
                     else:
                         result = await fetcher.fetch(sub)
                     return (result, sub)
-                except Exception as e:
+                except (httpx.HTTPError, asyncio.TimeoutError, OSError) as e:
                     logger.error(f"Error fetching {sub.display_name}: {e}")
                     return (FetchResult(subscription=sub, success=False, error_message=str(e)), sub)
 

@@ -44,6 +44,18 @@ class EmailConfig:
     from_addr: str = field(default_factory=lambda: os.getenv("EMAIL_FROM", ""))
     to_addr: str = field(default_factory=lambda: os.getenv("EMAIL_TO", ""))
 
+    def __post_init__(self):
+        """Validate email configuration values."""
+        # Validate port range
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"SMTP port must be 1-65535, got {self.port}")
+
+        # Validate email format if provided
+        if self.from_addr and "@" not in self.from_addr:
+            raise ValueError(f"Invalid from_addr format: {self.from_addr}")
+        if self.to_addr and "@" not in self.to_addr:
+            raise ValueError(f"Invalid to_addr format: {self.to_addr}")
+
     @property
     def is_configured(self) -> bool:
         return all([self.host, self.port, self.user, self.password, self.from_addr, self.to_addr])
@@ -84,6 +96,29 @@ class SchedulerConfig:
     fetch_interval_hours: int = field(
         default_factory=lambda: int(os.getenv("FETCH_INTERVAL_HOURS", "6"))
     )
+
+    def __post_init__(self):
+        """Validate scheduler configuration values."""
+        # Validate time format
+        if ":" not in self.digest_send_time:
+            raise ValueError(
+                f"Invalid digest_send_time format: {self.digest_send_time}, expected HH:MM"
+            )
+
+        try:
+            hour, minute = self.digest_send_time.split(":")
+            hour_int = int(hour)
+            minute_int = int(minute)
+            if not (0 <= hour_int <= 23):
+                raise ValueError(f"Hour must be 0-23, got {hour_int}")
+            if not (0 <= minute_int <= 59):
+                raise ValueError(f"Minute must be 0-59, got {minute_int}")
+        except ValueError as e:
+            raise ValueError(f"Invalid digest_send_time '{self.digest_send_time}': {e}") from e
+
+        # Validate fetch interval
+        if not 1 <= self.fetch_interval_hours <= 168:  # 1 hour to 1 week
+            raise ValueError(f"fetch_interval_hours must be 1-168, got {self.fetch_interval_hours}")
 
     @property
     def digest_hour(self) -> int:
@@ -148,6 +183,18 @@ class ModelTierConfig:
 
     # Task-level overrides
     task_overrides: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Validate model tier configuration values."""
+        # Validate thresholds are in valid range
+        if not 1 <= self.heavy_threshold <= 10:
+            raise ValueError(f"heavy_threshold must be 1-10, got {self.heavy_threshold}")
+        if not 1 <= self.low_confidence_threshold <= 10:
+            raise ValueError(
+                f"low_confidence_threshold must be 1-10, got {self.low_confidence_threshold}"
+            )
+        if not 0.0 <= self.confidence_cutoff <= 1.0:
+            raise ValueError(f"confidence_cutoff must be 0.0-1.0, got {self.confidence_cutoff}")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ModelTierConfig":
@@ -218,9 +265,30 @@ class AIConfig:
     model_tiers: ModelTierConfig = field(default_factory=ModelTierConfig)
 
     def __post_init__(self):
-        """Load model tier config from YAML if not already set."""
+        """Validate AI configuration and load model tier config from YAML."""
+        # Validate provider
+        valid_providers = {"claude", "codex", "auto"}
+        if self.provider not in valid_providers:
+            raise ValueError(f"provider must be one of {valid_providers}, got '{self.provider}'")
+
+        # Validate content lengths
+        if self.max_content_length < 100:
+            raise ValueError(f"max_content_length must be >= 100, got {self.max_content_length}")
+        if self.max_title_length < 20:
+            raise ValueError(f"max_title_length must be >= 20, got {self.max_title_length}")
+
+        # Validate batch sizes
+        if not 1 <= self.batch_size_short <= 50:
+            raise ValueError(f"batch_size_short must be 1-50, got {self.batch_size_short}")
+        if not 1 <= self.batch_size_long <= 20:
+            raise ValueError(f"batch_size_long must be 1-20, got {self.batch_size_long}")
+
+        # Validate cache TTL (1 minute to 30 days)
+        if self.cache_enabled and not 60 <= self.cache_ttl <= 2592000:
+            raise ValueError(f"cache_ttl must be 60-2592000 seconds, got {self.cache_ttl}")
+
+        # Load model tier config from YAML if not already set
         if isinstance(self.model_tiers, ModelTierConfig) and self.model_tiers.enabled:
-            # Try to load from YAML
             yaml_path = PROJECT_ROOT / "config" / "ai_models.yaml"
             if yaml_path.exists():
                 self.model_tiers = ModelTierConfig.from_yaml(yaml_path)
