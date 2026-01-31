@@ -12,17 +12,22 @@ AI 驱动的**个人情报产品**，从 Reddit 和 Twitter 抓取内容，通�
 | **知识库** | 全文搜索、按日期浏览、状态管理 | ✅ |
 | **行动清单** | 从高价值内容自动提取可执行项 | ✅ |
 | **周报/月报** | 周期性复盘，知识增长可见 | ✅ |
+| **Token 追踪** | AI 调用统计、成本估算、缓存命中率 | ✅ |
+| **数据校验** | 12 项完整性检查，自动修复 | ✅ |
 
 ## 功能特性
 
-- **多平台支持**: Reddit (RSS) 和 Twitter (API v2)
+- **多平台支持**: Reddit (RSS) 和 Twitter (API v2 + TwitterAPI.io)
 - **AI 智能处理**: 通过 Claude/Codex CLI 生成结构化分析
 - **结构化输出**: 摘要、关键点、短期/长期影响、行动项
-- **事件聚类**: 相关内容自动合并成事件流
+- **事件聚类**: 相关内容自动合并成事件流，支持并行处理
 - **主题追踪**: 定义关键词，持续追踪主题动态
 - **全文检索**: 基于 FTS5 的快速搜索
 - **周期报告**: 自动生成周报和月报
 - **邮件推送**: 每日定时发送精美的 HTML 格式摘要邮件
+- **Token 优化**: 规则预分类、模型分层、批量处理，节省 AI 成本
+- **持久缓存**: 事件确认结果缓存，避免重复 AI 调用
+- **数据校验**: 12 项完整性检查，支持自动修复
 
 ## 安装
 
@@ -63,8 +68,9 @@ cp .env.example .env
 # AI 提供商配置 (claude / codex / auto)
 AI_PROVIDER=auto
 
-# Twitter API v2 (可选，免费版 1,500条/月)
-TWITTER_BEARER_TOKEN=your_twitter_bearer_token
+# Twitter API (二选一)
+TWITTERAPI_IO_KEY=your_key    # TwitterAPI.io (推荐，更便宜)
+TWITTER_BEARER_TOKEN=your_token  # 官方 API v2
 
 # 邮件配置
 SMTP_HOST=smtp.139.com
@@ -77,6 +83,14 @@ EMAIL_TO=recipient@example.com
 # 调度设置
 DIGEST_SEND_TIME=08:00
 FETCH_INTERVAL_HOURS=6
+
+# AI 缓存配置
+AI_CACHE_ENABLED=true
+AI_CACHE_TTL=86400            # 24 小时
+
+# 聚类配置
+CLUSTER_CACHE_TTL=60          # 聚类缓存秒数
+CLUSTER_RETRY_HOURS=24        # 失败重试间隔
 ```
 
 ## 使用方法
@@ -198,6 +212,34 @@ bb report month
 bb report month --months-ago 1 # 上月
 ```
 
+### 诊断与优化
+
+```bash
+# 数据完整性校验
+bb validate                  # 运行 12 项检查
+bb validate --fix            # 自动修复问题
+bb validate --verbose        # 显示详细信息
+
+# Token 使用统计
+bb token-stats               # 查看调用统计和成本估算
+bb token-stats --reset       # 重置统计数据
+
+# 缓存管理
+bb cache-stats               # 查看缓存指标
+bb cache-stats --cleanup     # 清理过期缓存
+```
+
+### 并行处理
+
+```bash
+# 并行事件聚类 (默认 4 线程)
+bb cluster --parallel
+bb cluster --parallel --workers 8
+
+# 并行生成摘要
+bb digest --parallel
+```
+
 ### 其他命令
 
 ```bash
@@ -256,33 +298,42 @@ babelbyte/
 ├── .env.example                # 环境变量模板
 ├── main.py                     # 主入口
 ├── config/
-│   └── settings.py             # 配置加载
+│   ├── settings.py             # 配置加载
+│   └── ai_models.yaml          # AI 模型分层配置
 ├── src/
 │   ├── fetchers/               # 内容抓取
 │   │   ├── base.py
-│   │   ├── reddit.py           # Reddit RSS
-│   │   └── twitter.py          # Twitter API v2
+│   │   ├── reddit.py           # Reddit RSS + 增量抓取
+│   │   └── twitter.py          # Twitter API v2 + TwitterAPI.io
 │   ├── processors/             # AI 处理
 │   │   ├── base.py             # 基类 + 增强结果
 │   │   ├── claude_cli.py       # Claude CLI
 │   │   ├── openai_cli.py       # Codex CLI
 │   │   ├── digest_processor.py # 摘要 + 行动提取
-│   │   ├── event_stream.py     # 事件聚类 (Phase 2)
-│   │   └── rule_classifier.py  # 规则预分类
+│   │   ├── event_stream.py     # 事件聚类 + 并行处理
+│   │   └── rule_classifier.py  # 规则预分类 (40+ 域名)
 │   ├── analytics/              # 分析模块
-│   │   ├── topic_radar.py      # 主题雷达 (Phase 3)
-│   │   └── reports.py          # 周报/月报 (Phase 6)
+│   │   ├── topic_radar.py      # 主题雷达
+│   │   ├── reports.py          # 周报/月报
+│   │   └── token_tracker.py    # Token 使用追踪
+│   ├── optimization/           # 性能优化
+│   │   ├── cache_optimizer.py  # 缓存指标与清理
+│   │   └── dedup_optimizer.py  # 重复检测
+│   ├── validation/             # 数据校验
+│   │   ├── data_validator.py   # 12 项完整性检查
+│   │   └── diagnostic_queries.py # SQL 诊断查询
 │   ├── delivery/
 │   │   └── email_sender.py     # 邮件发送
 │   ├── storage/
-│   │   ├── models.py           # 数据模型 (含所有 Phase)
+│   │   ├── models.py           # 数据模型
 │   │   └── database.py         # SQLite + FTS5
 │   ├── scheduler/
 │   │   └── jobs.py             # 定时任务
 │   └── cli/
-│       └── commands.py         # CLI 命令
+│       └── commands.py         # CLI 命令 (20+)
 ├── templates/
 │   └── email_digest.html       # 增强版邮件模板
+├── tests/                      # 测试用例 (3400+ 行)
 ├── data/                       # SQLite 数据库
 └── logs/                       # 日志文件
 ```
@@ -341,8 +392,8 @@ triggers          # 触发器 (自动化规则)
 | `list [-a]` | 查看订阅 |
 | **内容处理** | |
 | `fetch` | 抓取内容 |
-| `digest [--dry-run]` | 生成摘要 |
-| `cluster` | 事件聚类 |
+| `digest [--dry-run] [--parallel]` | 生成摘要 |
+| `cluster [--parallel] [--workers]` | 事件聚类 |
 | **知识库** | |
 | `search <query>` | 全文搜索 |
 | `browse [--date]` | 按日期浏览 |
@@ -361,6 +412,10 @@ triggers          # 触发器 (自动化规则)
 | **报告** | |
 | `report week [--weeks-ago]` | 周报 |
 | `report month [--months-ago]` | 月报 |
+| **诊断优化** | |
+| `validate [--fix]` | 数据完整性校验 |
+| `token-stats [--reset]` | Token 使用统计 |
+| `cache-stats [--cleanup]` | 缓存管理 |
 | **其他** | |
 | `config` | 查看配置 |
 | `test-email` | 测试邮件 |

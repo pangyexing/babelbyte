@@ -66,6 +66,19 @@ bb report week                      # Generate weekly report
 bb report month --months-ago 1      # Generate monthly report
 ```
 
+**Diagnostics & Optimization:**
+```bash
+bb validate [--fix] [--verbose]     # Run 12 data integrity checks
+bb token-stats [--reset]            # View token usage and costs
+bb cache-stats [--cleanup]          # Cache metrics and cleanup
+```
+
+**Parallel Processing:**
+```bash
+bb cluster --parallel --workers 4   # Parallel event clustering
+bb digest --parallel                # Parallel digest generation
+```
+
 **Code quality:**
 ```bash
 black .                                    # Format (line length: 100)
@@ -94,22 +107,30 @@ Fetchers      Event Stream    Topic Radar
 ```
 
 **Key modules:**
-- `src/fetchers/` - Abstract `BaseFetcher` with Reddit (RSS/feedparser) and Twitter (tweepy) implementations
+- `src/fetchers/` - Abstract `BaseFetcher` with Reddit (RSS/feedparser) and Twitter (tweepy + TwitterAPI.io) implementations
 - `src/processors/` - AI processing with enhanced JSON output (summary, key_points, impact, actions)
   - `base.py` - `ProcessingResult` with enhanced fields, prompt templates
   - `claude_cli.py` / `openai_cli.py` - CLI wrappers with batch processing
   - `digest_processor.py` - Digest generation + action extraction
-  - `event_stream.py` - Event clustering (rule-based + AI confirmation)
-  - `rule_classifier.py` - Pre-classification to save tokens
+  - `event_stream.py` - Event clustering (rule-based + AI confirmation + parallel processing)
+  - `rule_classifier.py` - Pre-classification with 40+ domain patterns
 - `src/analytics/` - Analysis modules
   - `topic_radar.py` - Topic matching, trend detection, snapshots
   - `reports.py` - Weekly/monthly report generation
+  - `token_tracker.py` - AI call tracking, cost estimation, cache hit rates
+- `src/optimization/` - Performance tuning
+  - `cache_optimizer.py` - Cache metrics, efficiency analysis, cleanup
+  - `dedup_optimizer.py` - Title/content hash for duplicate detection
+- `src/validation/` - Data integrity
+  - `data_validator.py` - 12-check validator with auto-fix
+  - `diagnostic_queries.py` - SQL diagnostics for data issues
 - `src/storage/` - SQLite with FTS5 full-text search
   - `models.py` - All data models (ContentItem, EventCluster, Topic, ActionItem, etc.)
   - `database.py` - Async/sync interfaces with all CRUD operations
 - `src/delivery/` - SMTP email with Jinja2 HTML templates
 - `src/scheduler/` - APScheduler for periodic fetch and daily digest jobs
 - `config/settings.py` - Dataclass-based configuration from environment variables
+- `config/ai_models.yaml` - Model tier configuration (heavy/light models)
 
 **Data flow:**
 1. Subscriptions → Fetch → Store in SQLite
@@ -119,6 +140,61 @@ Fetchers      Event Stream    Topic Radar
 5. Action extraction → Create actionable items from high-importance content
 6. Generate HTML → Send email digest
 7. Periodic reports → Weekly/monthly summaries
+
+## Data Validation Checks
+
+The `bb validate` command runs 12 integrity checks:
+1. Orphan content items (invalid subscription_id)
+2. Duplicate external IDs
+3. Processed items without summaries
+4. Invalid importance scores (must be 1-10)
+5. Empty event clusters
+6. Cluster article count mismatches
+7. Missing FTS index entries
+8. Expired cache entries
+9. Orphan event members
+10. Orphan topic associations
+11. Orphan action items
+12. Duplicate cluster memberships
+
+Use `--fix` to auto-repair identified issues.
+
+## Performance Optimizations
+
+**Parallel Clustering:**
+- ThreadPoolExecutor with configurable workers (default: 4)
+- Thread-local database connections to avoid asyncio conflicts
+- 3-4x speedup when AI calls are needed
+- Thread-safe progress tracking with locks
+
+**Caching Strategy (3-tier):**
+1. Module-level LRU caches - Entity/keyword extraction (1024 entries)
+2. Class-level TTL cache - Recent clusters (60s default)
+3. Persistent database cache - Event confirmations with TTL
+
+**Token Optimization:**
+- Rule-based pre-classification (DOMAIN_CATEGORIES with 40+ patterns)
+- Light vs heavy model tier selection based on importance score
+- Batch processing (short: 12, long: 6 items per call)
+- Content truncation (1500 chars content, 200 chars title)
+
+**Database Indexes:**
+- `event_members(content_id)` - Fast membership lookups
+- `event_members(cluster_id)` - Fast cluster member queries
+
+## Token Tracking
+
+The `TokenTracker` (singleton) tracks 8 AI call types:
+- `CONTENT_HEAVY` (825 tokens) - High-importance content
+- `CONTENT_LIGHT` (615 tokens) - Low-importance content
+- `CONTENT_BATCH` (215 tokens) - Batch processing
+- `EVENT_CONFIRM` (220 tokens) - Cluster confirmation
+- `EVENT_TITLE` (50 tokens) - Event title generation
+- `TIMELINE_SUMMARY` (150 tokens) - Timeline summaries
+- `DIGEST_GENERATE` (500 tokens) - Digest generation
+- `REPORT` (800 tokens) - Report generation
+
+Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) per 1M tokens.
 
 ## Database Schema
 
@@ -142,6 +218,9 @@ Fetchers      Event Stream    Topic Radar
 - `action_items` - Extracted actions with priority/status
 - `triggers` - User-defined automation rules
 
+**Caching:**
+- `ai_cache` - AI processing cache with TTL-based expiration
+
 ## Key Patterns
 
 - **Enhanced AI output:** ProcessingResult includes `one_liner`, `key_points`, `impact_assessment`, `actionable_items`
@@ -153,6 +232,13 @@ Fetchers      Event Stream    Topic Radar
 - **Batch processing:** Multiple items processed in single AI call for efficiency
 - **FTS5 search:** Full-text search with filters (category, date, importance, state)
 - **State management:** Content items have state (unread/read/saved/archived/flagged)
+- **Model tiering:** Heavy model (importance >= 7) vs light model, with quality protection
+- **Parallel clustering:** ThreadPoolExecutor with configurable workers (default: 4)
+- **3-tier caching:** Module LRU + class TTL + persistent DB cache for event confirmations
+- **Auto-accept threshold:** High-confidence matches (score >= 0.6) skip AI confirmation
+- **Duplicate prevention:** UNIQUE constraint on content_item_id in event_members
+- **Token tracking:** Per-call-type tracking with cost estimation (Haiku/Sonnet/Opus pricing)
+- **Data validation:** 12 integrity checks with auto-fix capability
 
 ## Data Models
 
@@ -180,7 +266,15 @@ actionable_items: list[ActionResult]
 
 Copy `.env.example` to `.env`. Key settings:
 - `AI_PROVIDER` - "claude", "codex", or "auto"
-- `TWITTER_BEARER_TOKEN` - Optional, for Twitter API
+- `TWITTERAPI_IO_KEY` - TwitterAPI.io key (recommended, cheaper)
+- `TWITTER_BEARER_TOKEN` - Official Twitter API v2 (optional)
 - `SMTP_*` - Email delivery configuration
 - `DIGEST_SEND_TIME` - Daily digest time (HH:MM)
 - `FETCH_INTERVAL_HOURS` - Content fetch frequency
+- `AI_CACHE_ENABLED` - Enable AI response caching (default: true)
+- `AI_CACHE_TTL` - Cache TTL in seconds (default: 86400)
+- `AI_MAX_CONTENT_LENGTH` - Content truncation limit (default: 1500)
+- `AI_BATCH_SIZE_SHORT` - Batch size for short content (default: 12)
+- `AI_BATCH_SIZE_LONG` - Batch size for long content (default: 6)
+- `CLUSTER_CACHE_TTL` - Cluster cache seconds (default: 60)
+- `CLUSTER_RETRY_HOURS` - Retry failed clusters after hours (default: 24)
