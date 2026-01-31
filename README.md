@@ -96,6 +96,14 @@ CLUSTER_RETRY_HOURS=24        # 失败重试间隔
 EMBEDDING_PROVIDER=sentence-transformers  # 或 openai
 EMBEDDING_RULE_WEIGHT=0.4     # 规则相似度权重
 EMBEDDING_SEMANTIC_WEIGHT=0.6 # 语义相似度权重
+
+# Token 优化配置
+RULE_ONLY_ENABLED=true        # 规则预处理 (高置信度跳过 AI)
+RULE_ONLY_MAX_CONTENT=1000    # 规则处理最大内容长度
+RULE_ONLY_MIN_BOOST=1         # 最小关键词增强
+SKIP_ENABLED=true             # 跳过垃圾/招聘等低价值内容
+MINIMAL_PROMPT_ENABLED=true   # 低重要性内容使用简化提示
+MINIMAL_PROMPT_THRESHOLD=3    # 简化提示阈值
 ```
 
 ## 使用方法
@@ -126,7 +134,31 @@ bb unsubscribe hackernews tech
 bb unsubscribe rss "TechCrunch"
 ```
 
-### 内容抓取与处理
+### 每日使用 (推荐)
+
+```bash
+# 一键运行完整流程: fetch → process → embeddings → topics → cluster → digest
+bb daily
+
+# 预览不发送邮件
+bb daily --dry-run
+
+# 跳过抓取 (已有内容时)
+bb daily --skip-fetch
+```
+
+**流程说明:**
+```
+bb daily
+  ├── 1. fetch            # 抓取所有订阅源
+  ├── 2. process_content  # AI 处理 (消耗 LLM Token)
+  ├── 3. embeddings       # 本地 Embedding (免费)
+  ├── 4. topic discovery  # 主题自动发现 (免费)
+  ├── 5. clustering       # 事件聚类 (消耗 LLM Token)
+  └── 6. digest + email   # 生成并发送邮件
+```
+
+### 内容抓取与处理 (分步执行)
 
 ```bash
 # 手动抓取所有订阅源
@@ -435,6 +467,7 @@ triggers          # 触发器 (自动化规则)
 | `unsubscribe <source> <name>` | 取消订阅 |
 | `list [-a]` | 查看订阅 |
 | **内容处理** | |
+| `daily [--dry-run] [--skip-fetch]` | 一键运行完整流程 (推荐) |
 | `fetch` | 抓取内容 |
 | `digest [--dry-run] [--parallel]` | 生成摘要 |
 | `cluster [--parallel] [--workers]` | 事件聚类 |
