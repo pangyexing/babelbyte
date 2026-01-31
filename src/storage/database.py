@@ -20,6 +20,7 @@ from src.storage.models import (
     SourceType,
     Subscription,
     SubscriptionType,
+    TokenUsage,
     Topic,
     TopicSnapshot,
     Trigger,
@@ -179,6 +180,21 @@ CREATE TABLE IF NOT EXISTS ai_cache (
 )
 """
 
+# Token Usage table for tracking AI calls
+CREATE_TOKEN_USAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_type TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    cached INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    success INTEGER DEFAULT 1,
+    error TEXT
+)
+"""
+
 CREATE_USER_PROFILES_TABLE = """
 CREATE TABLE IF NOT EXISTS user_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,6 +248,10 @@ CREATE INDEX IF NOT EXISTS idx_event_members_cluster_id ON event_members(event_c
 
 -- AI cache indexes
 CREATE INDEX IF NOT EXISTS idx_ai_cache_expires ON ai_cache(expires_at);
+
+-- Token usage indexes
+CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_token_usage_call_type ON token_usage(call_type);
 """
 
 # Full-text search virtual table for Phase 4: Knowledge Base
@@ -290,6 +310,9 @@ class Database:
 
             # AI Cache table
             await cursor.execute(CREATE_AI_CACHE_TABLE)
+
+            # Token Usage table
+            await cursor.execute(CREATE_TOKEN_USAGE_TABLE)
 
             # Create performance indexes
             for statement in CREATE_INDEXES.strip().split(";"):
@@ -1793,6 +1816,174 @@ class Database:
                 "newest_entry": newest,
             }
 
+    # ============================================
+    # Token Usage Operations
+    # ============================================
+
+    async def record_token_usage(self, usage: TokenUsage) -> TokenUsage:
+        """Record a token usage entry."""
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT INTO token_usage
+                    (call_type, timestamp, cached, input_tokens, output_tokens,
+                     duration_ms, success, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    usage.call_type,
+                    usage.timestamp.isoformat(),
+                    1 if usage.cached else 0,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.duration_ms,
+                    1 if usage.success else 0,
+                    usage.error,
+                ),
+            )
+            await self._connection.commit()
+            usage.id = cursor.lastrowid
+            return usage
+
+    async def get_token_usage_stats(
+        self, since: Optional[datetime] = None
+    ) -> dict:
+        """
+        Get token usage statistics.
+
+        Args:
+            since: Only count usage since this time. If None, count all.
+
+        Returns:
+            Dict with aggregated statistics.
+        """
+        async with self._connection.cursor() as cursor:
+            where_clause = ""
+            params: list = []
+            if since:
+                where_clause = "WHERE timestamp >= ?"
+                params.append(since.isoformat())
+
+            # Total calls
+            await cursor.execute(
+                f"SELECT COUNT(*) FROM token_usage {where_clause}", params
+            )
+            row = await cursor.fetchone()
+            total_calls = row[0] if row else 0
+
+            # Actual AI calls (not cached)
+            await cursor.execute(
+                f"SELECT COUNT(*) FROM token_usage {where_clause} {'AND' if where_clause else 'WHERE'} cached = 0",
+                params,
+            )
+            row = await cursor.fetchone()
+            actual_ai_calls = row[0] if row else 0
+
+            # Cache hits
+            cache_hits = total_calls - actual_ai_calls
+
+            # Token counts (only for non-cached calls)
+            await cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(duration_ms), 0)
+                FROM token_usage
+                {where_clause} {'AND' if where_clause else 'WHERE'} cached = 0
+                """,
+                params,
+            )
+            row = await cursor.fetchone()
+            input_tokens = row[0] if row else 0
+            output_tokens = row[1] if row else 0
+            total_duration_ms = row[2] if row else 0
+
+            # Errors
+            await cursor.execute(
+                f"SELECT COUNT(*) FROM token_usage {where_clause} {'AND' if where_clause else 'WHERE'} success = 0",
+                params,
+            )
+            row = await cursor.fetchone()
+            errors = row[0] if row else 0
+
+            # By call type
+            await cursor.execute(
+                f"""
+                SELECT call_type,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END) as cached,
+                       SUM(CASE WHEN cached = 0 THEN input_tokens + output_tokens ELSE 0 END) as tokens
+                FROM token_usage
+                {where_clause}
+                GROUP BY call_type
+                """,
+                params,
+            )
+            rows = await cursor.fetchall()
+            calls_by_type = {
+                row["call_type"]: {
+                    "total": row["total"],
+                    "cached": row["cached"],
+                    "tokens": row["tokens"],
+                }
+                for row in rows
+            }
+
+            return {
+                "total_calls": total_calls,
+                "actual_ai_calls": actual_ai_calls,
+                "cache_hits": cache_hits,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_duration_ms": total_duration_ms,
+                "errors": errors,
+                "calls_by_type": calls_by_type,
+            }
+
+    async def clear_token_usage(self, before: Optional[datetime] = None) -> int:
+        """
+        Clear token usage records.
+
+        Args:
+            before: If provided, only clear records before this time.
+                    If None, clear all records.
+
+        Returns:
+            Number of records deleted.
+        """
+        async with self._connection.cursor() as cursor:
+            if before:
+                await cursor.execute(
+                    "SELECT COUNT(*) FROM token_usage WHERE timestamp < ?",
+                    (before.isoformat(),),
+                )
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+                await cursor.execute(
+                    "DELETE FROM token_usage WHERE timestamp < ?",
+                    (before.isoformat(),),
+                )
+            else:
+                await cursor.execute("SELECT COUNT(*) FROM token_usage")
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+                await cursor.execute("DELETE FROM token_usage")
+            await self._connection.commit()
+            return count
+
+    def _row_to_token_usage(self, row: aiosqlite.Row) -> TokenUsage:
+        """Convert a database row to a TokenUsage object."""
+        return TokenUsage(
+            id=row["id"],
+            call_type=row["call_type"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            cached=bool(row["cached"]),
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            duration_ms=row["duration_ms"],
+            success=bool(row["success"]),
+            error=row["error"],
+        )
+
 
 # Synchronous wrapper for CLI usage
 class SyncDatabase:
@@ -2037,6 +2228,17 @@ class SyncDatabase:
 
     def get_ai_cache_stats(self) -> dict:
         return self._run(self._async_db.get_ai_cache_stats())
+
+    # Token Usage sync wrappers
+
+    def record_token_usage(self, usage: TokenUsage) -> TokenUsage:
+        return self._run(self._async_db.record_token_usage(usage))
+
+    def get_token_usage_stats(self, since: Optional[datetime] = None) -> dict:
+        return self._run(self._async_db.get_token_usage_stats(since))
+
+    def clear_token_usage(self, before: Optional[datetime] = None) -> int:
+        return self._run(self._async_db.clear_token_usage(before))
 
     def __enter__(self):
         self.connect()

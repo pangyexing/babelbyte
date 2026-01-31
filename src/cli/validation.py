@@ -1,6 +1,7 @@
 """Validation and optimization CLI commands."""
 
 import time
+from datetime import datetime
 
 import click
 from rich.panel import Panel
@@ -197,22 +198,33 @@ def validate(ctx, fix, verbose):
 
 
 @click.command("token-stats")
-@click.option("--reset", is_flag=True, help="Reset token tracking after display")
+@click.option("--reset", is_flag=True, help="Reset token tracking (clear all records)")
+@click.option("--days", type=int, default=None, help="Show stats for last N days only")
 @click.pass_context
-def token_stats(ctx, reset):
+def token_stats(ctx, reset, days):
     """Show token usage statistics.
 
     Displays token consumption by call type, cache hit rates,
-    and estimated costs for the current session.
+    and estimated costs from persistent database records.
 
     Examples:
         bb token-stats
+        bb token-stats --days 7
         bb token-stats --reset
     """
+    from datetime import timedelta
+
     from src.analytics.token_tracker import get_tracker
 
     tracker = get_tracker()
-    stats = tracker.get_session_summary()
+
+    # Calculate since date if days is specified
+    since = None
+    if days:
+        since = datetime.now() - timedelta(days=days)
+
+    # Get stats from database
+    stats = tracker.get_persistent_stats(since)
 
     console.print(Panel("[bold]Token Usage Statistics[/bold]"))
 
@@ -229,8 +241,20 @@ def token_stats(ctx, reset):
     table.add_row("Output Tokens", f"{stats.output_tokens:,}")
     table.add_row("Total Tokens", f"{stats.total_tokens:,}")
     table.add_row("", "")
-    table.add_row("Est. Cost (Haiku)", f"${tracker.estimate_cost('haiku'):.4f}")
-    table.add_row("Est. Cost (Sonnet)", f"${tracker.estimate_cost('sonnet'):.4f}")
+
+    # Calculate costs based on persistent stats
+    def estimate_cost(model: str) -> float:
+        pricing = {
+            "haiku": {"input": 0.25, "output": 1.25},
+            "sonnet": {"input": 3.00, "output": 15.00},
+        }
+        rates = pricing.get(model, pricing["haiku"])
+        input_cost = (stats.input_tokens / 1_000_000) * rates["input"]
+        output_cost = (stats.output_tokens / 1_000_000) * rates["output"]
+        return input_cost + output_cost
+
+    table.add_row("Est. Cost (Haiku)", f"${estimate_cost('haiku'):.4f}")
+    table.add_row("Est. Cost (Sonnet)", f"${estimate_cost('sonnet'):.4f}")
 
     console.print(table)
 
@@ -255,11 +279,15 @@ def token_stats(ctx, reset):
     if stats.errors > 0:
         console.print(f"\n[red]Errors: {stats.errors}[/red]")
 
-    console.print(f"\n[dim]Session started: {stats.start_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+    if days:
+        console.print(f"\n[dim]Showing stats for last {days} days[/dim]")
+    else:
+        console.print("\n[dim]Showing all-time stats[/dim]")
 
     if reset:
+        deleted = tracker.clear_persistent_stats()
         tracker.reset()
-        console.print("[yellow]Token tracking reset[/yellow]")
+        console.print(f"[yellow]Token tracking reset ({deleted} records deleted)[/yellow]")
 
 
 @click.command("cache-stats")

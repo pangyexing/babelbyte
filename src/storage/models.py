@@ -392,3 +392,23 @@ class Trigger:
     condition: str = ""  # e.g., "公司名=OpenAI AND 事件类型=融资"
     action: str = "notify"  # 'notify' / 'add_action'
     enabled: bool = True
+
+
+# ============================================
+# Token Usage Tracking Model
+# ============================================
+
+
+@dataclass
+class TokenUsage:
+    """Record of an AI call for token tracking."""
+
+    id: Optional[int] = None
+    call_type: str = ""  # AICallType value
+    timestamp: datetime = field(default_factory=datetime.now)
+    cached: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_ms: int = 0
+    success: bool = True
+    error: Optional[str] = None

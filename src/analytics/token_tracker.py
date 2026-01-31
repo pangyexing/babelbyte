@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from src.storage.models import TokenUsage
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,12 +168,40 @@ class TokenTracker:
         with self._call_lock:
             self._calls.append(call)
 
+        # Persist to database
+        self._persist_to_db(call)
+
         if cached:
             logger.debug(f"Token tracker: {call_type.value} (cache hit)")
         else:
             logger.debug(
                 f"Token tracker: {call_type.value} - {input_tokens}+{output_tokens} tokens"
             )
+
+    def _persist_to_db(self, call: AICall) -> None:
+        """Persist an AI call record to the database."""
+        try:
+            from src.storage.database import SyncDatabase
+
+            usage = TokenUsage(
+                call_type=call.call_type.value,
+                timestamp=call.timestamp,
+                cached=call.cached,
+                input_tokens=call.input_tokens,
+                output_tokens=call.output_tokens,
+                duration_ms=call.duration_ms,
+                success=call.success,
+                error=call.error,
+            )
+
+            db = SyncDatabase()
+            db.connect()
+            try:
+                db.record_token_usage(usage)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to persist token usage to database: {e}")
 
     def get_session_summary(self) -> SessionStats:
         """
@@ -244,6 +274,66 @@ class TokenTracker:
         """Get all calls since a specific time."""
         with self._call_lock:
             return [c for c in self._calls if c.timestamp >= since]
+
+    def get_persistent_stats(self, since: Optional[datetime] = None) -> SessionStats:
+        """
+        Get token usage statistics from the database.
+
+        Args:
+            since: Only count usage since this time. If None, count all.
+
+        Returns:
+            SessionStats with aggregated metrics from the database.
+        """
+        try:
+            from src.storage.database import SyncDatabase
+
+            db = SyncDatabase()
+            db.connect()
+            try:
+                db_stats = db.get_token_usage_stats(since)
+            finally:
+                db.close()
+
+            stats = SessionStats(
+                start_time=since or datetime.min,
+                total_calls=db_stats["total_calls"],
+                actual_ai_calls=db_stats["actual_ai_calls"],
+                cache_hits=db_stats["cache_hits"],
+                input_tokens=db_stats["input_tokens"],
+                output_tokens=db_stats["output_tokens"],
+                total_duration_ms=db_stats["total_duration_ms"],
+                calls_by_type=db_stats["calls_by_type"],
+                errors=db_stats["errors"],
+            )
+            return stats
+        except Exception as e:
+            logger.warning(f"Failed to get persistent stats from database: {e}")
+            return SessionStats()
+
+    def clear_persistent_stats(self, before: Optional[datetime] = None) -> int:
+        """
+        Clear token usage records from database.
+
+        Args:
+            before: If provided, only clear records before this time.
+                    If None, clear all records.
+
+        Returns:
+            Number of records deleted.
+        """
+        try:
+            from src.storage.database import SyncDatabase
+
+            db = SyncDatabase()
+            db.connect()
+            try:
+                return db.clear_token_usage(before)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to clear persistent stats: {e}")
+            return 0
 
     def format_summary(self) -> str:
         """Format session summary as a string for display."""
