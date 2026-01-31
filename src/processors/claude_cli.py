@@ -3,9 +3,11 @@
 import json
 import logging
 import subprocess
+import time
 from typing import TYPE_CHECKING, Optional
 
 from config.settings import get_settings
+from src.analytics.token_tracker import AICallType, record_ai_call
 from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
 
 if TYPE_CHECKING:
@@ -119,7 +121,18 @@ class ClaudeCLI(BaseAIProcessor):
             content_hash = self._get_content_hash(title, content)
             cached_json = self.db.get_ai_cache(content_hash)
             if cached_json:
-                logger.debug(f"Cache hit: {title[:30]}...")
+                logger.debug(f"AI cache hit: {title[:30]}...")
+                # Record cache hit for token tracking
+                call_type_map = {
+                    TaskType.CONTENT_HIGH: AICallType.CONTENT_HEAVY,
+                    TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
+                    TaskType.CONTENT_UNCERTAIN: AICallType.CONTENT_HEAVY,
+                }
+                record_ai_call(
+                    call_type=call_type_map.get(task_type, AICallType.CONTENT_HEAVY),
+                    cached=True,
+                    input_chars=len(title) + len(content),
+                )
                 return self._deserialize_result(cached_json)
 
         # Use light prompt for low importance content
@@ -128,10 +141,31 @@ class ClaudeCLI(BaseAIProcessor):
         else:
             prompt = self._build_prompt(title, content)
 
+        # Track timing for token tracking
+        start_time = time.time()
+
         try:
             result = self._run_cli(prompt, task_type)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Map task type to AI call type for tracking
+            call_type_map = {
+                TaskType.CONTENT_HIGH: AICallType.CONTENT_HEAVY,
+                TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
+                TaskType.CONTENT_UNCERTAIN: AICallType.CONTENT_HEAVY,
+            }
+            ai_call_type = call_type_map.get(task_type, AICallType.CONTENT_HEAVY)
 
             if result.returncode != 0:
+                record_ai_call(
+                    call_type=ai_call_type,
+                    cached=False,
+                    input_chars=len(prompt),
+                    output_chars=len(result.stderr),
+                    duration_ms=duration_ms,
+                    success=False,
+                    error=result.stderr[:100],
+                )
                 return ProcessingResult(
                     summary="",
                     category="其他",
@@ -142,6 +176,16 @@ class ClaudeCLI(BaseAIProcessor):
                 )
 
             processing_result = self._parse_json_response(result.stdout)
+
+            # Record successful AI call
+            record_ai_call(
+                call_type=ai_call_type,
+                cached=False,
+                input_chars=len(prompt),
+                output_chars=len(result.stdout),
+                duration_ms=duration_ms,
+                success=processing_result.success,
+            )
 
             # Store in cache if successful
             if processing_result.success and self.settings.ai.cache_enabled and self.db:
@@ -213,6 +257,12 @@ class ClaudeCLI(BaseAIProcessor):
                 if cached_json:
                     results[i] = self._deserialize_result(cached_json)
                     logger.debug(f"Batch cache hit: {title[:30]}...")
+                    # Record cache hit
+                    record_ai_call(
+                        call_type=AICallType.CONTENT_BATCH,
+                        cached=True,
+                        input_chars=len(title) + len(content),
+                    )
                 else:
                     items_to_process.append((i, orig_id, title, content))
                     cache_hashes[i] = content_hash
@@ -237,16 +287,41 @@ class ClaudeCLI(BaseAIProcessor):
         # Dynamic timeout: base + 15s per item (larger batches need more time)
         batch_timeout = self.timeout + (len(batch_input) * 15)
 
+        # Track timing
+        start_time = time.time()
+
         try:
             cli_result = self._run_cli(prompt, task_type, batch_timeout)
+            duration_ms = int((time.time() - start_time) * 1000)
 
             if cli_result.returncode != 0:
+                # Record failed batch call
+                record_ai_call(
+                    call_type=AICallType.CONTENT_BATCH,
+                    cached=False,
+                    input_chars=len(prompt),
+                    duration_ms=duration_ms,
+                    success=False,
+                    error="Batch processing failed",
+                )
                 # Fall back to individual processing (which uses cache internally)
                 for result_idx, orig_id, title, content in items_to_process:
                     results[result_idx] = self.process_content(title, content, task_type)
                 return results
 
             batch_results = self._parse_batch_response(cli_result.stdout, len(batch_input))
+
+            # Record successful batch call (one call for entire batch)
+            record_ai_call(
+                call_type=AICallType.CONTENT_BATCH,
+                cached=False,
+                input_chars=len(prompt),
+                output_chars=len(cli_result.stdout),
+                duration_ms=duration_ms,
+                success=True,
+                # Estimate tokens based on batch size
+                input_tokens=len(batch_input) * 215,  # Estimated per-item tokens
+            )
 
             # 3. Fill results and store in cache
             for (result_idx, _, title, _), proc_result in zip(items_to_process, batch_results):

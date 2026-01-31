@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from config.settings import get_settings
+from src.analytics.token_tracker import AICallType, record_ai_call
 from src.storage.database import SyncDatabase
 from src.storage.models import ContentItem, EventCluster, EventMember, EventTimeline
 
@@ -86,12 +87,70 @@ def _extract_keywords_cached(text: str) -> frozenset[str]:
     words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
     # Filter short words and stopwords
     stopwords = {
-        "的", "是", "在", "了", "和", "与", "我", "你", "他", "她", "它", "这", "那",
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-        "i", "you", "he", "she", "it", "we", "they", "my", "your", "his", "her",
-        "this", "that", "these", "those", "what", "which", "who", "how", "why",
-        "and", "or", "but", "if", "so", "just", "have", "has", "had", "do", "does",
+        "的",
+        "是",
+        "在",
+        "了",
+        "和",
+        "与",
+        "我",
+        "你",
+        "他",
+        "她",
+        "它",
+        "这",
+        "那",
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "my",
+        "your",
+        "his",
+        "her",
+        "this",
+        "that",
+        "these",
+        "those",
+        "what",
+        "which",
+        "who",
+        "how",
+        "why",
+        "and",
+        "or",
+        "but",
+        "if",
+        "so",
+        "just",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
     }
     return frozenset(w for w in words if len(w) > 1 and w not in stopwords)
 
@@ -174,11 +233,11 @@ class EventStreamProcessor:
         # Instance-level cache for AI confirmation: {(item_id, cluster_ids_tuple): result}
         self._ai_confirm_cache: dict[tuple, Optional[ClusterCandidate]] = {}
 
-    def _build_event_confirm_cache_key(self, item_id: int, candidates: list[ClusterCandidate]) -> str:
+    def _build_event_confirm_cache_key(
+        self, item_id: int, candidates: list[ClusterCandidate]
+    ) -> str:
         """Build a stable cache key for event confirmation results."""
-        signature = "|".join(
-            f"{c.cluster_id}:{c.cluster_title}" for c in candidates
-        )
+        signature = "|".join(f"{c.cluster_id}:{c.cluster_title}" for c in candidates)
         digest = hashlib.sha256(f"{item_id}|{signature}".encode("utf-8")).hexdigest()
         return f"event_confirm:{digest}"
 
@@ -354,6 +413,12 @@ class EventStreamProcessor:
         if item.id is not None:
             cache_hit, cached = self._get_persistent_event_confirm(item.id, candidates)
             if cache_hit:
+                logger.debug(f"Event confirmation cache hit for item {item.id}")
+                record_ai_call(
+                    call_type=AICallType.EVENT_CONFIRM,
+                    cached=True,
+                    input_chars=len(item.title),
+                )
                 return cached
 
         # Auto-accept high confidence matches without AI call
@@ -404,6 +469,8 @@ class EventStreamProcessor:
 
 只返回一个数字（1-{len(candidates)}表示属于该事件，0表示不属于任何事件）："""
 
+        start_time = time.time()
+
         try:
             cli_path = self.settings.claude.cli_path
             config = self.settings.ai.model_tiers
@@ -423,8 +490,21 @@ class EventStreamProcessor:
                 timeout=30,
             )
 
+            duration_ms = int((time.time() - start_time) * 1000)
+
             if result.returncode == 0:
                 response = result.stdout.strip()
+
+                # Record successful AI call
+                record_ai_call(
+                    call_type=AICallType.EVENT_CONFIRM,
+                    cached=False,
+                    input_chars=len(prompt),
+                    output_chars=len(response),
+                    duration_ms=duration_ms,
+                    success=True,
+                )
+
                 # Extract number from response
                 match = re.search(r"\d+", response)
                 if match:
@@ -435,9 +515,26 @@ class EventStreamProcessor:
                         if item.id is not None:
                             self._set_persistent_event_confirm(item.id, candidates, confirmed)
                         return confirmed
+            else:
+                # Record failed AI call
+                record_ai_call(
+                    call_type=AICallType.EVENT_CONFIRM,
+                    cached=False,
+                    input_chars=len(prompt),
+                    duration_ms=duration_ms,
+                    success=False,
+                    error=result.stderr[:100] if result.stderr else "Non-zero exit",
+                )
 
         except Exception as e:
             logger.warning(f"AI confirmation failed: {e}")
+            record_ai_call(
+                call_type=AICallType.EVENT_CONFIRM,
+                cached=False,
+                input_chars=len(prompt),
+                success=False,
+                error=str(e)[:100],
+            )
 
         # Fallback: accept moderately confident matches when AI fails
         if candidates[0].score >= 0.5:
@@ -572,8 +669,10 @@ class EventStreamProcessor:
         """Generate a concise event title from content item using light model."""
         # Use AI to generate a concise title if available
         if not self.use_mock:
+            prompt = f"用10个字以内概括这个事件的主题：{item.title}"
+            start_time = time.time()
+
             try:
-                prompt = f"用10个字以内概括这个事件的主题：{item.title}"
                 cli_path = self.settings.claude.cli_path
                 config = self.settings.ai.model_tiers
 
@@ -591,12 +690,37 @@ class EventStreamProcessor:
                     text=True,
                     timeout=15,
                 )
+
+                duration_ms = int((time.time() - start_time) * 1000)
+
                 if result.returncode == 0:
                     title = result.stdout.strip()
+                    record_ai_call(
+                        call_type=AICallType.EVENT_TITLE,
+                        cached=False,
+                        input_chars=len(prompt),
+                        output_chars=len(title),
+                        duration_ms=duration_ms,
+                        success=True,
+                    )
                     if 3 <= len(title) <= 30:
                         return title
-            except Exception:
-                pass
+                else:
+                    record_ai_call(
+                        call_type=AICallType.EVENT_TITLE,
+                        cached=False,
+                        input_chars=len(prompt),
+                        duration_ms=duration_ms,
+                        success=False,
+                    )
+            except Exception as e:
+                record_ai_call(
+                    call_type=AICallType.EVENT_TITLE,
+                    cached=False,
+                    input_chars=len(prompt),
+                    success=False,
+                    error=str(e)[:50],
+                )
 
         # Fallback: truncate original title
         title = item.title.split("：")[0].split(":")[0][:30]
@@ -606,12 +730,11 @@ class EventStreamProcessor:
         self, cluster: EventCluster, today_items: list[ContentItem], recent_items: list[ContentItem]
     ) -> tuple[str, str]:
         """Generate a timeline summary comparing today vs recent developments using light model."""
-        try:
-            # Build context from items
-            today_summaries = "\n".join([f"- {i.summary or i.title}" for i in today_items[:3]])
-            recent_summaries = "\n".join([f"- {i.summary or i.title}" for i in recent_items[:3]])
+        # Build context from items
+        today_summaries = "\n".join([f"- {i.summary or i.title}" for i in today_items[:3]])
+        recent_summaries = "\n".join([f"- {i.summary or i.title}" for i in recent_items[:3]])
 
-            prompt = f"""分析事件进展并总结今日变化：
+        prompt = f"""分析事件进展并总结今日变化：
 
 事件：{cluster.event_title}
 
@@ -624,6 +747,9 @@ class EventStreamProcessor:
 返回JSON格式：{{"summary": "50字总结今日进展", "consensus": "high/conflicted"}}
 high表示各来源一致，conflicted表示有分歧"""
 
+        start_time = time.time()
+
+        try:
             cli_path = self.settings.claude.cli_path
             config = self.settings.ai.model_tiers
 
@@ -642,16 +768,43 @@ high表示各来源一致，conflicted表示有分歧"""
                 timeout=30,
             )
 
+            duration_ms = int((time.time() - start_time) * 1000)
+
             if result.returncode == 0:
                 response = result.stdout.strip()
+
+                record_ai_call(
+                    call_type=AICallType.TIMELINE_SUMMARY,
+                    cached=False,
+                    input_chars=len(prompt),
+                    output_chars=len(response),
+                    duration_ms=duration_ms,
+                    success=True,
+                )
+
                 # Find JSON in response
                 json_match = re.search(r"\{.*\}", response, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group())
                     return data.get("summary", ""), data.get("consensus", "high")
+            else:
+                record_ai_call(
+                    call_type=AICallType.TIMELINE_SUMMARY,
+                    cached=False,
+                    input_chars=len(prompt),
+                    duration_ms=duration_ms,
+                    success=False,
+                )
 
         except Exception as e:
             logger.warning(f"Timeline summary generation failed: {e}")
+            record_ai_call(
+                call_type=AICallType.TIMELINE_SUMMARY,
+                cached=False,
+                input_chars=len(prompt),
+                success=False,
+                error=str(e)[:50],
+            )
 
         # Fallback
         return f"事件「{cluster.event_title}」今日有{len(today_items)}篇更新", "high"
@@ -768,9 +921,7 @@ def cluster_unprocessed_items_parallel(
     def get_thread_processor() -> EventStreamProcessor:
         """Get or create a processor for the current thread."""
         if not hasattr(thread_local, "processor"):
-            thread_local.processor = EventStreamProcessor(
-                db=get_thread_db(), use_mock=use_mock
-            )
+            thread_local.processor = EventStreamProcessor(db=get_thread_db(), use_mock=use_mock)
         return thread_local.processor
 
     def process_single_item(item: "ContentItem") -> bool:
@@ -823,8 +974,7 @@ def cluster_unprocessed_items_parallel(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             futures = {
-                executor.submit(process_single_item_with_registration, item): item
-                for item in items
+                executor.submit(process_single_item_with_registration, item): item for item in items
             }
 
             # Wait for completion (results are tracked via side effects)

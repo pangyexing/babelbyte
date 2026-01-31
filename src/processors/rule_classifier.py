@@ -55,6 +55,9 @@ class RuleClassifier:
         "codepen.io": ("编程", 5),
         "replit.com": ("编程", 5),
         "codesandbox.io": ("编程", 5),
+        "console.dev": ("编程", 6),
+        "infoq.com": ("编程", 6),
+        "dzone.com": ("编程", 5),
         # Science
         "arxiv.org": ("科学", 7),
         "nature.com": ("科学", 8),
@@ -63,7 +66,9 @@ class RuleClassifier:
         "pubmed.ncbi.nlm.nih.gov": ("科学", 7),
         "biorxiv.org": ("科学", 7),
         "medrxiv.org": ("科学", 7),
-        # AI
+        "pnas.org": ("科学", 7),
+        "cell.com": ("科学", 8),
+        # AI - Extended
         "openai.com": ("AI", 8),
         "anthropic.com": ("AI", 8),
         "deepmind.com": ("AI", 8),
@@ -71,6 +76,21 @@ class RuleClassifier:
         "replicate.com": ("AI", 6),
         "stability.ai": ("AI", 7),
         "midjourney.com": ("AI", 6),
+        "paperswithcode.com": ("AI", 7),
+        "the-decoder.com": ("AI", 7),
+        "together.ai": ("AI", 7),
+        "cohere.com": ("AI", 7),
+        "mistral.ai": ("AI", 8),
+        "perplexity.ai": ("AI", 7),
+        "runway.com": ("AI", 6),
+        "pika.art": ("AI", 6),
+        "suno.ai": ("AI", 6),
+        "claude.ai": ("AI", 8),
+        "chat.openai.com": ("AI", 7),
+        "gemini.google.com": ("AI", 7),
+        "labs.google": ("AI", 7),
+        "ai.meta.com": ("AI", 8),
+        "nvidia.com/en-us/ai": ("AI", 7),
         # Tech news
         "techcrunch.com": ("技术", 6),
         "theverge.com": ("技术", 5),
@@ -80,11 +100,17 @@ class RuleClassifier:
         "thenextweb.com": ("技术", 5),
         "zdnet.com": ("技术", 5),
         "cnet.com": ("技术", 5),
+        "9to5mac.com": ("技术", 5),
+        "9to5google.com": ("技术", 5),
+        "macrumors.com": ("技术", 5),
+        "tomshardware.com": ("技术", 5),
+        "anandtech.com": ("技术", 6),
         # Product
         "producthunt.com": ("产品", 6),
         "indiegogo.com": ("产品", 5),
         "kickstarter.com": ("产品", 5),
         "betalist.com": ("产品", 5),
+        "alternativeto.net": ("产品", 5),
         # Business/Startup
         "crunchbase.com": ("创业", 6),
         "ycombinator.com": ("创业", 7),
@@ -94,6 +120,16 @@ class RuleClassifier:
         "ft.com": ("商业", 6),
         "techcrunch.com/tag/funding": ("创业", 7),
         "venturebeat.com": ("创业", 6),
+        "pitchbook.com": ("创业", 6),
+        "sifted.eu": ("创业", 6),
+        "eu-startups.com": ("创业", 5),
+        # Chinese tech/AI sources
+        "36kr.com": ("创业", 6),
+        "geekpark.net": ("技术", 6),
+        "jiqizhixin.com": ("AI", 7),
+        "leiphone.com": ("AI", 6),
+        "sspai.com": ("产品", 5),
+        "ifanr.com": ("技术", 5),
     }
 
     # Title keyword patterns -> (category, importance_boost)

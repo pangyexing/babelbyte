@@ -1,6 +1,5 @@
 """CLI commands for BabelByte."""
 
-import sys
 from datetime import datetime
 
 import click
@@ -9,13 +8,12 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
-from config.settings import get_settings, reload_settings
+from config.settings import get_settings
 from src.delivery.email_sender import EmailSender
 from src.processors.digest_processor import DigestGenerator, create_digest_preview
 from src.scheduler.jobs import BabelByteScheduler, JobRunner
 from src.storage.database import SyncDatabase
 from src.storage.models import (
-    ActionItem,
     ActionStatus,
     ItemState,
     SourceType,
@@ -46,7 +44,7 @@ def cli(ctx, mock):
 @cli.command()
 @click.argument("source", type=click.Choice(["reddit", "twitter"]))
 @click.argument("name")
-@click.option("--user", "-u", is_flag=True, help="Subscribe to a user instead of subreddit (Reddit only)")
+@click.option("--user", "-u", is_flag=True, help="Subscribe to a user (Reddit only)")
 @click.pass_context
 def subscribe(ctx, source, name, user):
     """Subscribe to a content source.
@@ -167,9 +165,7 @@ def list_subs(ctx, show_all):
         for sub in subs:
             status = "[green]✓ Enabled[/green]" if sub.enabled else "[red]✗ Disabled[/red]"
             last_fetched = (
-                sub.last_fetched_at.strftime("%Y-%m-%d %H:%M")
-                if sub.last_fetched_at
-                else "Never"
+                sub.last_fetched_at.strftime("%Y-%m-%d %H:%M") if sub.last_fetched_at else "Never"
             )
             table.add_row(
                 str(sub.id),
@@ -226,11 +222,17 @@ def fetch(ctx):
 @click.option("--dry-run", is_flag=True, help="Preview digest without sending")
 @click.option("--min-importance", "-m", default=5, help="Minimum importance score (1-10)")
 @click.option("--max-items", "-n", default=30, help="Maximum items in digest")
-@click.option("--provider", "-p", type=click.Choice(["claude", "codex", "auto"]), default=None,
-              help="AI provider to use")
+@click.option(
+    "--provider",
+    "-p",
+    type=click.Choice(["claude", "codex", "auto"]),
+    default=None,
+    help="AI provider to use",
+)
 @click.option("--no-cluster", is_flag=True, help="Skip automatic event clustering")
-@click.option("--parallel/--no-parallel", default=True,
-              help="Use parallel clustering (default: enabled)")
+@click.option(
+    "--parallel/--no-parallel", default=True, help="Use parallel clustering (default: enabled)"
+)
 @click.option("--workers", "-w", default=4, help="Number of parallel clustering workers")
 @click.pass_context
 def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parallel, workers):
@@ -346,18 +348,18 @@ def config(ctx):
     console.print(Panel("[bold]BabelByte Configuration[/bold]"))
 
     # Database
-    console.print(f"\n[bold]Database:[/bold]")
+    console.print("\n[bold]Database:[/bold]")
     console.print(f"  Path: {settings.database.path}")
 
     # Twitter
-    console.print(f"\n[bold]Twitter:[/bold]")
+    console.print("\n[bold]Twitter:[/bold]")
     if settings.twitter.is_configured:
         console.print("  [green]✓ Configured[/green]")
     else:
         console.print("  [red]✗ Not configured (set TWITTER_BEARER_TOKEN)[/red]")
 
     # Email
-    console.print(f"\n[bold]Email:[/bold]")
+    console.print("\n[bold]Email:[/bold]")
     if settings.email.is_configured:
         console.print("  [green]✓ Configured[/green]")
         console.print(f"  Host: {settings.email.host}:{settings.email.port}")
@@ -367,20 +369,20 @@ def config(ctx):
         console.print("  [red]✗ Not configured (set SMTP settings in .env)[/red]")
 
     # Scheduler
-    console.print(f"\n[bold]Scheduler:[/bold]")
+    console.print("\n[bold]Scheduler:[/bold]")
     console.print(f"  Fetch interval: every {settings.scheduler.fetch_interval_hours} hours")
     console.print(f"  Digest time: {settings.scheduler.digest_send_time}")
 
     # AI Provider
-    console.print(f"\n[bold]AI Provider:[/bold]")
+    console.print("\n[bold]AI Provider:[/bold]")
     console.print(f"  Current: {settings.ai.provider}")
 
     # Claude CLI
-    console.print(f"\n[bold]Claude CLI:[/bold]")
+    console.print("\n[bold]Claude CLI:[/bold]")
     console.print(f"  Path: {settings.claude.cli_path}")
 
     # Codex CLI
-    console.print(f"\n[bold]Codex CLI:[/bold]")
+    console.print("\n[bold]Codex CLI:[/bold]")
     console.print(f"  Path: {settings.codex.cli_path}")
 
 
@@ -433,6 +435,7 @@ def run(ctx):
 
         # Keep running
         import time
+
         while True:
             time.sleep(1)
 
@@ -481,20 +484,31 @@ def search(ctx, query, category, from_date, to_date, min_importance, limit):
         console.print(f"[bold]Found {len(results)} results for '{query}':[/bold]\n")
 
         for item in results:
-            importance_color = "red" if item.importance_score and item.importance_score >= 8 else "yellow" if item.importance_score and item.importance_score >= 5 else "dim"
-            console.print(f"[{importance_color}][{item.importance_score or '-'}/10][/{importance_color}] ", end="")
+            importance_color = (
+                "red"
+                if item.importance_score and item.importance_score >= 8
+                else "yellow" if item.importance_score and item.importance_score >= 5 else "dim"
+            )
+            console.print(
+                f"[{importance_color}][{item.importance_score or '-'}/10][/{importance_color}] ",
+                end="",
+            )
             console.print(f"[cyan][{item.category or '未分类'}][/cyan] ", end="")
             console.print(f"[bold]{item.title[:60]}{'...' if len(item.title) > 60 else ''}[/bold]")
             if item.summary:
                 console.print(f"    {item.summary[:100]}{'...' if len(item.summary) > 100 else ''}")
-            console.print(f"    [dim]ID: {item.id} | {item.published_at.strftime('%Y-%m-%d')} | {item.url[:50]}...[/dim]\n")
+            console.print(
+                f"    [dim]ID: {item.id} | {item.published_at.strftime('%Y-%m-%d')} | {item.url[:50]}...[/dim]\n"
+            )
 
     finally:
         db.close()
 
 
 @cli.command()
-@click.option("--date", "-d", default="today", help="Date to browse (YYYY-MM-DD or 'today', 'yesterday')")
+@click.option(
+    "--date", "-d", default="today", help="Date to browse (YYYY-MM-DD or 'today', 'yesterday')"
+)
 @click.option("--category", "-c", help="Filter by category")
 @click.option("--limit", "-n", default=50, help="Maximum results")
 @click.pass_context
@@ -535,8 +549,16 @@ def browse(ctx, date, category, limit):
         for cat, items in sorted(by_category.items()):
             console.print(f"[cyan][{cat}] ({len(items)} items)[/cyan]")
             for item in items:
-                state_icon = {"unread": "", "read": "", "saved": "", "flagged": "", "archived": ""}.get(item.state.value, "")
-                console.print(f"  {state_icon} [{item.importance_score or '-'}/10] {item.title[:50]}{'...' if len(item.title) > 50 else ''} [dim](ID: {item.id})[/dim]")
+                state_icon = {
+                    "unread": "",
+                    "read": "",
+                    "saved": "",
+                    "flagged": "",
+                    "archived": "",
+                }.get(item.state.value, "")
+                console.print(
+                    f"  {state_icon} [{item.importance_score or '-'}/10] {item.title[:50]}{'...' if len(item.title) > 50 else ''} [dim](ID: {item.id})[/dim]"
+                )
             console.print()
 
     finally:
@@ -606,6 +628,7 @@ def item(ctx, item_id, open_url):
 
         if open_url and content.url:
             import webbrowser
+
             webbrowser.open(content.url)
             console.print("\n[green]Opened URL in browser[/green]")
 
@@ -696,7 +719,13 @@ def rebuild_index(ctx):
 
 
 @cli.command()
-@click.option("--status", "-s", type=click.Choice(["pending", "done", "dismissed"]), default="pending", help="Filter by status")
+@click.option(
+    "--status",
+    "-s",
+    type=click.Choice(["pending", "done", "dismissed"]),
+    default="pending",
+    help="Filter by status",
+)
 @click.option("--priority", "-p", type=click.Choice(["高", "中", "低"]), help="Filter by priority")
 @click.option("--limit", "-n", default=20, help="Maximum results")
 @click.pass_context
@@ -958,7 +987,9 @@ def report_week(ctx, weeks_ago):
 
 
 @report.command("month")
-@click.option("--months-ago", "-m", default=0, help="Generate report for N months ago (0 = current)")
+@click.option(
+    "--months-ago", "-m", default=0, help="Generate report for N months ago (0 = current)"
+)
 @click.pass_context
 def report_month(ctx, months_ago):
     """Generate a monthly report.
@@ -1077,7 +1108,9 @@ def event(ctx, event_id):
 
 @cli.command("cluster")
 @click.option("--limit", "-n", default=50, help="Maximum items to cluster")
-@click.option("--parallel/--no-parallel", default=True, help="Use parallel processing (default: enabled)")
+@click.option(
+    "--parallel/--no-parallel", default=True, help="Use parallel processing (default: enabled)"
+)
 @click.option("--workers", "-w", default=4, help="Number of parallel workers (default: 4)")
 @click.pass_context
 def cluster_content(ctx, limit, parallel, workers):
@@ -1131,6 +1164,233 @@ def cluster_content(ctx, limit, parallel, workers):
                 )
 
         console.print(f"[green]Clustered {clustered} items into events ({mode_str})[/green]")
+
+    finally:
+        db.close()
+
+
+# ============================================
+# Validation and Optimization Commands
+# ============================================
+
+
+@cli.command()
+@click.option("--fix", is_flag=True, help="Attempt to fix discovered issues")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed results")
+@click.pass_context
+def validate(ctx, fix, verbose):
+    """Validate data integrity.
+
+    Checks for:
+    - Orphan content items (invalid subscription_id)
+    - Duplicate external_id entries
+    - Processed items without summary
+    - Invalid importance scores
+    - Empty event clusters
+    - Mismatched cluster article counts
+    - Missing FTS index entries
+    - Expired cache entries
+
+    Examples:
+        bb validate
+        bb validate --verbose
+        bb validate --fix
+    """
+    from src.validation import DataValidator, CheckStatus
+
+    db = get_db()
+    try:
+        validator = DataValidator(db)
+
+        console.print("[bold]Running data validation checks...[/bold]\n")
+
+        result = validator.run_all_checks(verbose=verbose)
+
+        # Display results
+        table = Table(title="Validation Results")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status")
+        table.add_column("Message")
+        table.add_column("Count", justify="right")
+
+        for check in result.checks:
+            if check.status == CheckStatus.PASS:
+                status = "[green]PASS[/green]"
+            elif check.status == CheckStatus.FAIL:
+                status = "[red]FAIL[/red]"
+            elif check.status == CheckStatus.WARN:
+                status = "[yellow]WARN[/yellow]"
+            else:
+                status = "[dim]SKIP[/dim]"
+
+            table.add_row(
+                check.name,
+                status,
+                check.message[:50] + ("..." if len(check.message) > 50 else ""),
+                str(check.count) if check.count > 0 else "-",
+            )
+
+            # Show details if verbose
+            if verbose and check.details:
+                for detail in check.details[:5]:
+                    console.print(f"    [dim]{detail}[/dim]")
+
+        console.print(table)
+        console.print(f"\n[bold]Summary:[/bold] {result.summary}")
+
+        if result.total_issues > 0:
+            console.print(f"[red]Total issues: {result.total_issues}[/red]")
+
+            if fix:
+                console.print("\n[bold]Attempting to fix issues...[/bold]")
+                fixed = validator.fix_issues(result)
+                console.print(f"[green]Fixed {fixed} issues[/green]")
+        else:
+            console.print("[green]No issues found[/green]")
+
+        # Show stats
+        if verbose:
+            console.print("\n[bold]Database Statistics:[/bold]")
+            stats = validator.get_stats()
+            if "content" in stats:
+                console.print(
+                    f"  Content: {stats['content']['total']} total, "
+                    f"{stats['content']['processed']} processed, "
+                    f"{stats['content']['delivered']} delivered"
+                )
+            if "clusters" in stats:
+                console.print(
+                    f"  Clusters: {stats['clusters']['total']} total, "
+                    f"{stats['clusters']['total_members']} members"
+                )
+            if "cache" in stats:
+                console.print(
+                    f"  Cache: {stats['cache']['valid']} valid, "
+                    f"{stats['cache']['expired']} expired"
+                )
+
+    finally:
+        db.close()
+
+
+@cli.command("token-stats")
+@click.option("--reset", is_flag=True, help="Reset token tracking after display")
+@click.pass_context
+def token_stats(ctx, reset):
+    """Show token usage statistics.
+
+    Displays token consumption by call type, cache hit rates,
+    and estimated costs for the current session.
+
+    Examples:
+        bb token-stats
+        bb token-stats --reset
+    """
+    from src.analytics.token_tracker import get_tracker
+
+    tracker = get_tracker()
+    stats = tracker.get_session_summary()
+
+    console.print(Panel("[bold]Token Usage Statistics[/bold]"))
+
+    # Main stats table
+    table = Table(show_header=False, box=None)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Total Calls", str(stats.total_calls))
+    table.add_row("Actual AI Calls", str(stats.actual_ai_calls))
+    table.add_row("Cache Hits", str(stats.cache_hits))
+    table.add_row("Cache Hit Rate", f"{stats.cache_hit_rate:.1f}%")
+    table.add_row("", "")
+    table.add_row("Input Tokens", f"{stats.input_tokens:,}")
+    table.add_row("Output Tokens", f"{stats.output_tokens:,}")
+    table.add_row("Total Tokens", f"{stats.total_tokens:,}")
+    table.add_row("", "")
+    table.add_row("Est. Cost (Haiku)", f"${tracker.estimate_cost('haiku'):.4f}")
+    table.add_row("Est. Cost (Sonnet)", f"${tracker.estimate_cost('sonnet'):.4f}")
+
+    console.print(table)
+
+    # Breakdown by call type
+    if stats.calls_by_type:
+        console.print("\n[bold]By Call Type:[/bold]")
+        type_table = Table()
+        type_table.add_column("Type")
+        type_table.add_column("Total", justify="right")
+        type_table.add_column("Cached", justify="right")
+        type_table.add_column("Tokens", justify="right")
+
+        for call_type, data in sorted(stats.calls_by_type.items()):
+            type_table.add_row(
+                call_type,
+                str(data["total"]),
+                str(data["cached"]),
+                f"{data['tokens']:,}",
+            )
+
+        console.print(type_table)
+
+    if stats.errors > 0:
+        console.print(f"\n[red]Errors: {stats.errors}[/red]")
+
+    # Session info
+    console.print(f"\n[dim]Session started: {stats.start_time.strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+
+    if reset:
+        tracker.reset()
+        console.print("[yellow]Token tracking reset[/yellow]")
+
+
+@cli.command("cache-stats")
+@click.option("--cleanup", is_flag=True, help="Clean up expired cache entries")
+@click.pass_context
+def cache_stats(ctx, cleanup):
+    """Show AI cache statistics and optionally clean up.
+
+    Examples:
+        bb cache-stats
+        bb cache-stats --cleanup
+    """
+    from src.optimization import CacheOptimizer
+
+    db = get_db()
+    try:
+        optimizer = CacheOptimizer(db)
+
+        metrics = optimizer.get_cache_metrics()
+
+        console.print(Panel("[bold]AI Cache Status[/bold]"))
+
+        table = Table(show_header=False, box=None)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right")
+
+        table.add_row("Total Entries", str(metrics.total_entries))
+        table.add_row("Valid Entries", str(metrics.valid_entries))
+        table.add_row("Expired Entries", str(metrics.expired_entries))
+        table.add_row("Utilization", f"{metrics.utilization_rate:.1f}%")
+        table.add_row("Est. Size", f"{metrics.estimated_size_kb:.2f} KB")
+
+        console.print(table)
+
+        if metrics.oldest_entry:
+            console.print(f"\n[dim]Oldest entry: {metrics.oldest_entry}[/dim]")
+        if metrics.newest_entry:
+            console.print(f"[dim]Newest entry: {metrics.newest_entry}[/dim]")
+
+        # Recommendations
+        efficiency = optimizer.analyze_cache_efficiency()
+        if efficiency.recommendations:
+            console.print("\n[bold]Recommendations:[/bold]")
+            for rec in efficiency.recommendations:
+                console.print(f"  - {rec}")
+
+        if cleanup:
+            console.print("\n[bold]Running cleanup...[/bold]")
+            result = optimizer.cleanup_and_optimize()
+            console.print(f"[green]Removed {result['expired_removed']} expired entries[/green]")
+            console.print(f"[green]Freed ~{result['space_freed_kb']:.2f} KB[/green]")
 
     finally:
         db.close()
