@@ -15,27 +15,28 @@ logger = logging.getLogger(__name__)
 class AICallType(Enum):
     """Types of AI calls with estimated token usage."""
 
-    CONTENT_HEAVY = "content_heavy"  # Full processing with all fields (~825 tokens/item)
-    CONTENT_LIGHT = "content_light"  # Light processing (~615 tokens/item)
-    CONTENT_BATCH = "content_batch"  # Batch processing (~215 tokens/item)
+    CONTENT_HEAVY = "content_heavy"  # Full processing with all fields (~900 tokens/item)
+    CONTENT_LIGHT = "content_light"  # Light processing (~750 tokens/item)
+    CONTENT_BATCH = "content_batch"  # Batch processing (~300 tokens/item)
     EVENT_CONFIRM = "event_confirm"  # Event confirmation (~220 tokens/call)
-    EVENT_TITLE = "event_title"  # Title generation (~50 tokens/call)
+    EVENT_TITLE = "event_title"  # Title generation (~100 tokens/call)
     TIMELINE_SUMMARY = "timeline_summary"  # Timeline summary (~150 tokens/call)
-    DIGEST_GENERATE = "digest_generate"  # Digest generation (~500 tokens/call)
-    REPORT = "report"  # Report generation (~800 tokens/call)
+    DIGEST_GENERATE = "digest_generate"  # Digest generation (~600 tokens/call)
+    REPORT = "report"  # Report generation (~1000 tokens/call)
 
     @property
     def estimated_tokens(self) -> int:
         """Get estimated token count for this call type."""
+        # Token estimates adjusted based on observed usage patterns (Jan 2026)
         estimates = {
-            AICallType.CONTENT_HEAVY: 825,
-            AICallType.CONTENT_LIGHT: 615,
-            AICallType.CONTENT_BATCH: 215,
-            AICallType.EVENT_CONFIRM: 220,
-            AICallType.EVENT_TITLE: 50,
-            AICallType.TIMELINE_SUMMARY: 150,
-            AICallType.DIGEST_GENERATE: 500,
-            AICallType.REPORT: 800,
+            AICallType.CONTENT_HEAVY: 900,    # Was 825, +9%
+            AICallType.CONTENT_LIGHT: 750,    # Was 615, +22%
+            AICallType.CONTENT_BATCH: 300,    # Was 215, +40%
+            AICallType.EVENT_CONFIRM: 220,    # Unchanged
+            AICallType.EVENT_TITLE: 100,      # Was 50, +100%
+            AICallType.TIMELINE_SUMMARY: 150, # Unchanged
+            AICallType.DIGEST_GENERATE: 600,  # Was 500, +20%
+            AICallType.REPORT: 1000,          # Was 800, +25%
         }
         return estimates.get(self, 500)
 

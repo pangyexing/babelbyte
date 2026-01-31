@@ -326,17 +326,27 @@ def compute_hybrid_similarity(
     semantic_score: float,
     rule_weight: float = 0.4,
     semantic_weight: float = 0.6,
+    embeddings_available: bool = True,
 ) -> float:
     """
     Compute hybrid similarity combining rule-based and semantic scores.
+
+    When embeddings are not available (semantic_score is 0 and embeddings_available is False),
+    the function uses 100% rule-based scoring to avoid penalizing matches due to missing embeddings.
 
     Args:
         rule_score: Rule-based similarity (0-1)
         semantic_score: Semantic/embedding similarity (0-1)
         rule_weight: Weight for rule-based score (default 0.4)
         semantic_weight: Weight for semantic score (default 0.6)
+        embeddings_available: Whether embeddings were actually computed (default True)
 
     Returns:
         Combined similarity score (0-1)
     """
+    # Dynamic fallback: when embeddings unavailable, use 100% rule-based scoring
+    # This prevents the hybrid score from being artificially low (e.g., 0.4 * rule_score + 0.6 * 0)
+    if not embeddings_available and semantic_score == 0.0:
+        return rule_score
+
     return rule_weight * rule_score + semantic_weight * semantic_score

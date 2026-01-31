@@ -10,9 +10,16 @@ from typing import TYPE_CHECKING, Optional
 from config.settings import get_settings
 from src.analytics.token_tracker import AICallType, record_ai_call
 from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
+from src.processors.rule_classifier import (
+    should_skip_ai_processing,
+    create_skip_result,
+    try_rule_only_processing,
+    estimate_importance,
+)
 
 if TYPE_CHECKING:
     from src.storage.database import SyncDatabase
+    from src.storage.models import ContentItem
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +172,7 @@ class BaseCLIProcessor(BaseAIProcessor):
         call_type_map = {
             TaskType.CONTENT_HIGH: AICallType.CONTENT_HEAVY,
             TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
+            TaskType.CONTENT_MINIMAL: AICallType.CONTENT_LIGHT,
             TaskType.CONTENT_UNCERTAIN: AICallType.CONTENT_HEAVY,
         }
         return call_type_map.get(task_type, AICallType.CONTENT_HEAVY)
@@ -200,8 +208,10 @@ class BaseCLIProcessor(BaseAIProcessor):
                 )
                 return self._deserialize_result(cached_json)
 
-        # Use light prompt for low importance content
-        if task_type == TaskType.CONTENT_LOW:
+        # Select prompt based on task type
+        if task_type == TaskType.CONTENT_MINIMAL:
+            prompt = self._build_simple_prompt(title, content)
+        elif task_type == TaskType.CONTENT_LOW:
             prompt = self._build_light_prompt(title, content)
         else:
             prompt = self._build_prompt(title, content)
@@ -501,3 +511,197 @@ class BaseCLIProcessor(BaseAIProcessor):
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return False
+
+    def process_item(self, item: "ContentItem") -> ProcessingResult:
+        """
+        Process a ContentItem with optimized rule-first approach.
+
+        This method tries multiple optimization strategies before falling back to AI:
+        1. Skip processing for low-value content (spam, boilerplate, etc.)
+        2. Use rule-only processing for high-confidence matches
+        3. Select appropriate prompt complexity based on importance estimate
+        4. Fall back to AI processing with appropriate model tier
+
+        Args:
+            item: The ContentItem to process.
+
+        Returns:
+            ProcessingResult with summary, category, and importance score.
+        """
+        title = item.title or ""
+        content = item.content or ""
+
+        # Strategy 1: Skip low-value content entirely
+        should_skip, skip_reason = should_skip_ai_processing(item)
+        if should_skip:
+            summary, category, importance = create_skip_result(item, skip_reason)
+            logger.info(f"Skipped AI processing: {title[:40]}... ({skip_reason})")
+            record_ai_call(
+                call_type=AICallType.CONTENT_LIGHT,
+                cached=True,  # Count as "cached" since no AI call made
+                input_chars=len(title) + len(content),
+            )
+            return ProcessingResult(
+                summary=summary,
+                category=category,
+                importance_score=importance,
+                success=True,
+            )
+
+        # Strategy 2: Try rule-only processing for high-confidence matches
+        rule_result = try_rule_only_processing(item)
+        if rule_result:
+            logger.info(f"Rule-only processing: {title[:40]}... -> {rule_result.category}")
+            record_ai_call(
+                call_type=AICallType.CONTENT_LIGHT,
+                cached=True,  # Count as "cached" since no AI call made
+                input_chars=len(title) + len(content),
+            )
+            return rule_result
+
+        # Strategy 3: Estimate importance for model/prompt selection
+        importance_est = estimate_importance(item)
+        rule_settings = self.settings.rule_optimization
+
+        # Select task type based on importance estimate
+        # High confidence + high importance → full analysis
+        if importance_est.confidence >= 0.7 and importance_est.score >= 7:
+            task_type = TaskType.CONTENT_HIGH
+        # High confidence + very low importance → minimal analysis (if enabled)
+        elif (
+            rule_settings.minimal_prompt_enabled
+            and importance_est.confidence >= 0.7
+            and importance_est.score <= rule_settings.minimal_prompt_threshold
+        ):
+            task_type = TaskType.CONTENT_MINIMAL
+        # High confidence + low importance → light analysis
+        elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
+            task_type = TaskType.CONTENT_LOW
+        # Low confidence → use heavy model to ensure quality
+        elif importance_est.confidence < 0.5:
+            task_type = TaskType.CONTENT_UNCERTAIN
+        # Medium confidence, medium importance → light analysis
+        else:
+            task_type = TaskType.CONTENT_LOW
+
+        logger.debug(
+            f"Importance estimate: score={importance_est.score}, "
+            f"confidence={importance_est.confidence:.2f}, "
+            f"reason={importance_est.reason} -> {task_type.name}"
+        )
+
+        # Strategy 4: Fall back to AI processing
+        return self.process_content(title, content, task_type)
+
+    def process_items_batch(
+        self, items: list["ContentItem"], batch_size: int = 6
+    ) -> list[ProcessingResult]:
+        """
+        Process multiple ContentItems with optimized batching.
+
+        Groups items by processing strategy:
+        - Skip items: Handled immediately with no AI
+        - Rule-only items: Handled immediately with no AI
+        - AI items: Batched for efficient processing
+
+        Args:
+            items: List of ContentItems to process.
+            batch_size: Maximum items per AI batch.
+
+        Returns:
+            List of ProcessingResults in same order as input.
+        """
+        results: list[Optional[ProcessingResult]] = [None] * len(items)
+        ai_items: list[tuple[int, "ContentItem", TaskType]] = []
+
+        # First pass: handle skip and rule-only items
+        for i, item in enumerate(items):
+            title = item.title or ""
+            content = item.content or ""
+
+            # Check if should skip
+            should_skip, skip_reason = should_skip_ai_processing(item)
+            if should_skip:
+                summary, category, importance = create_skip_result(item, skip_reason)
+                results[i] = ProcessingResult(
+                    summary=summary,
+                    category=category,
+                    importance_score=importance,
+                    success=True,
+                )
+                record_ai_call(
+                    call_type=AICallType.CONTENT_LIGHT,
+                    cached=True,
+                    input_chars=len(title) + len(content),
+                )
+                continue
+
+            # Try rule-only processing
+            rule_result = try_rule_only_processing(item)
+            if rule_result:
+                results[i] = rule_result
+                record_ai_call(
+                    call_type=AICallType.CONTENT_LIGHT,
+                    cached=True,
+                    input_chars=len(title) + len(content),
+                )
+                continue
+
+            # Estimate importance for task type
+            importance_est = estimate_importance(item)
+            if importance_est.confidence >= 0.7 and importance_est.score >= 7:
+                task_type = TaskType.CONTENT_HIGH
+            elif importance_est.confidence >= 0.7 and importance_est.score <= 3:
+                task_type = TaskType.CONTENT_MINIMAL
+            elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
+                task_type = TaskType.CONTENT_LOW
+            elif importance_est.confidence < 0.5:
+                task_type = TaskType.CONTENT_UNCERTAIN
+            else:
+                task_type = TaskType.CONTENT_LOW
+
+            ai_items.append((i, item, task_type))
+
+        # Log optimization stats
+        skipped_count = len(items) - len(ai_items)
+        if skipped_count > 0:
+            logger.info(
+                f"Batch optimization: {skipped_count}/{len(items)} items handled without AI"
+            )
+
+        # Second pass: process AI items in batches
+        if ai_items:
+            # Group by task type for optimal batching
+            high_items = [(i, it) for i, it, tt in ai_items
+                          if tt in (TaskType.CONTENT_HIGH, TaskType.CONTENT_UNCERTAIN)]
+            low_items = [(i, it) for i, it, tt in ai_items if tt == TaskType.CONTENT_LOW]
+            minimal_items = [(i, it) for i, it, tt in ai_items if tt == TaskType.CONTENT_MINIMAL]
+
+            # Process each group with appropriate task type
+            groups = [
+                (high_items, TaskType.CONTENT_HIGH),
+                (low_items, TaskType.CONTENT_LOW),
+                (minimal_items, TaskType.CONTENT_MINIMAL),
+            ]
+
+            for group, task_type in groups:
+                if not group:
+                    continue
+
+                # Create batch input
+                batch_input = [
+                    (item.id or idx, item.title or "", item.content or "")
+                    for idx, (orig_idx, item) in enumerate(group)
+                ]
+
+                # Process in batches
+                for batch_start in range(0, len(batch_input), batch_size):
+                    batch = batch_input[batch_start:batch_start + batch_size]
+                    batch_results = self.process_batch(batch, task_type)
+
+                    # Map results back to original indices
+                    for j, result in enumerate(batch_results):
+                        orig_idx = group[batch_start + j][0]
+                        results[orig_idx] = result
+
+        return results

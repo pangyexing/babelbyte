@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from src.processors.base import ProcessingResult, KeyPointResult, ImpactResult
 from src.storage.models import ContentItem
 
 logger = logging.getLogger(__name__)
@@ -353,27 +354,109 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
     """
     Check if content should skip AI processing entirely.
 
+    Configuration (env vars):
+    - SKIP_ENABLED: Enable/disable skip processing (default: true)
+
     Returns:
         (should_skip, reason) tuple
     """
+    from config.settings import get_settings
+    settings = get_settings().rule_optimization
+
+    # Check if skip processing is enabled
+    if not settings.skip_enabled:
+        return False, ""
+
     content = item.content or ""
     title = item.title or ""
+    content_lower = content.lower()
+    title_lower = title.lower()
 
-    # Reddit link-posts with no real content
-    if len(content) < 100 and "[link]" in content.lower():
-        return True, "Reddit link-post with no content"
+    # Empty or whitespace-only content
+    if not content.strip():
+        return True, "Empty content"
 
     # Very short content (likely just a link or single sentence)
     if len(content) < 50 and len(title) < 30:
         return True, "Content too short (<50 chars)"
 
+    # Reddit link-posts with no real content
+    if len(content) < 100 and "[link]" in content_lower:
+        return True, "Reddit link-post with no content"
+
     # Content is just "submitted by" boilerplate
     if content.strip().startswith("submitted by") and len(content) < 150:
         return True, "Reddit submission boilerplate only"
 
-    # Empty or whitespace-only content
-    if not content.strip():
-        return True, "Empty content"
+    # Twitter/X retweet with no added content
+    if title_lower.startswith("rt @") and len(content) < 50:
+        return True, "Retweet with no added content"
+
+    # Job postings / hiring posts
+    job_patterns = [
+        r"\b(we.?re hiring|job opening|career opportunity|join our team)\b",
+        r"\b(招聘|招人|求职|职位|岗位空缺)\b",
+        r"\b(apply now|submit.*resume|send.*cv)\b",
+    ]
+    for pattern in job_patterns:
+        if re.search(pattern, content_lower, re.IGNORECASE):
+            return True, "Job posting"
+
+    # Promotional / spam patterns
+    spam_patterns = [
+        r"\b(click here|subscribe now|limited time|act now|don.?t miss)\b",
+        r"\b(免费领取|限时优惠|点击领取|扫码关注)\b",
+        r"(🔥|💰|🎁|💯){2,}",  # Multiple promotional emojis
+        r"\b(giveaway|airdrop|free.*tokens?)\b",
+    ]
+    for pattern in spam_patterns:
+        if re.search(pattern, content_lower, re.IGNORECASE):
+            return True, "Promotional/spam content"
+
+    # Duplicate/cross-post indicators
+    if re.search(r"(cross-?posted?|x-?post|originally posted)", content_lower):
+        return True, "Cross-post reference"
+
+    # Auto-generated bot content
+    bot_patterns = [
+        r"^(I am a bot|This is an automated|Auto-generated)",
+        r"\[bot\]|\[automated\]",
+        r"(This action was performed automatically)",
+    ]
+    for pattern in bot_patterns:
+        if re.search(pattern, content, re.IGNORECASE):
+            return True, "Bot-generated content"
+
+    # Social media follow/like requests
+    social_patterns = [
+        r"\b(follow me|like and subscribe|hit that.*button)\b",
+        r"\b(关注我|点赞|转发|求关注)\b",
+        r"(follow|subscribe|like).*(@|#)",
+    ]
+    for pattern in social_patterns:
+        if re.search(pattern, content_lower, re.IGNORECASE):
+            if len(content) < 200:  # Only skip if it's mostly just the request
+                return True, "Social media engagement request"
+
+    # Newsletter subscription prompts
+    if re.search(r"(subscribe.*newsletter|sign up.*updates|join.*mailing list)", content_lower):
+        if len(content) < 300:
+            return True, "Newsletter subscription prompt"
+
+    # Content that's just a list of links/references
+    url_count = len(re.findall(r"https?://\S+", content))
+    if url_count >= 5 and len(content) < 500:
+        # Mostly URLs with little actual content
+        non_url_content = re.sub(r"https?://\S+", "", content).strip()
+        if len(non_url_content) < 100:
+            return True, "Link aggregation with minimal content"
+
+    # Repetitive content (same phrases repeated)
+    words = content_lower.split()
+    if len(words) >= 20:
+        unique_ratio = len(set(words)) / len(words)
+        if unique_ratio < 0.3:  # Less than 30% unique words
+            return True, "Repetitive/spam content"
 
     return False, ""
 
@@ -394,3 +477,254 @@ def create_skip_result(item: ContentItem, reason: str) -> tuple[str, str, int]:
 def reload_classifications() -> None:
     """Force reload of classifications config."""
     _load_classifications.cache_clear()
+
+
+# High-confidence domains that can skip AI processing entirely
+HIGH_CONFIDENCE_DOMAINS = {
+    # Major AI companies - very predictable content structure
+    "openai.com": ("AI", 8),
+    "anthropic.com": ("AI", 8),
+    "deepmind.com": ("AI", 8),
+    "mistral.ai": ("AI", 8),
+    # Top science journals
+    "nature.com": ("科学", 8),
+    "science.org": ("科学", 8),
+    "arxiv.org": ("科学", 7),
+    # Official company blogs (predictable announcements)
+    "blog.google": ("技术", 7),
+    "engineering.fb.com": ("编程", 7),
+    "aws.amazon.com/blogs": ("技术", 7),
+}
+
+
+def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
+    """
+    Attempt to fully process content using rules only, skipping AI.
+
+    This is for high-confidence cases where:
+    1. Domain is well-known with predictable content
+    2. Strong keyword signals confirm the classification
+    3. We can generate a reasonable summary from title
+
+    Quality Protection:
+    - Requires keyword confirmation (prevents wrong category)
+    - Only works for content < max_content_length (configurable, default 1000)
+    - Returns metadata indicating rule-based processing for tracking
+
+    Configuration (env vars):
+    - RULE_ONLY_ENABLED: Enable/disable rule-only processing (default: true)
+    - RULE_ONLY_MAX_CONTENT: Max content length for rule-only (default: 1000)
+    - RULE_ONLY_MIN_BOOST: Min keyword boost required (default: 1)
+
+    Args:
+        item: ContentItem to process
+
+    Returns:
+        ProcessingResult if rules can handle it, None if AI is needed.
+    """
+    from config.settings import get_settings
+    settings = get_settings().rule_optimization
+
+    # Check if rule-only processing is enabled
+    if not settings.rule_only_enabled:
+        return None
+
+    if not item.url or not item.title:
+        return None
+
+    # Quality gate: Long content needs AI for proper analysis
+    content_len = len(item.content) if item.content else 0
+    if content_len > settings.rule_only_max_content_length:
+        logger.debug(f"Content too long for rule-only: {content_len} chars")
+        return None
+
+    # Check domain
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(item.url)
+        domain = parsed.netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+    except (ValueError, AttributeError):
+        return None
+
+    # Check high-confidence domains
+    domain_match = None
+    for known_domain, (category, importance) in HIGH_CONFIDENCE_DOMAINS.items():
+        if domain == known_domain or domain.endswith("." + known_domain):
+            domain_match = (category, importance)
+            break
+
+    if not domain_match:
+        return None
+
+    category, base_importance = domain_match
+
+    # Verify with keyword signals
+    text = f"{item.title} {item.content[:300] if item.content else ''}"
+    keyword_signals = _check_keyword_signals(text, category)
+
+    if not keyword_signals:
+        # Domain matched but no confirming keywords - let AI handle
+        return None
+
+    # Check minimum boost requirement
+    if keyword_signals.get("boost", 0) < settings.rule_only_min_keyword_boost:
+        logger.debug(f"Keyword boost too low: {keyword_signals.get('boost', 0)}")
+        return None
+
+    # Adjust importance based on keywords
+    importance = min(10, base_importance + keyword_signals.get("boost", 0))
+
+    # Generate summary from title (simple extraction)
+    summary = _generate_rule_summary(item.title, category)
+    one_liner = _generate_one_liner(item.title, category)
+
+    # Extract key points from title
+    key_points = _extract_key_points_from_title(item.title)
+
+    logger.info(
+        f"Rule-only processing: {item.title[:40]}... -> {category} "
+        f"(importance={importance}, domain={domain})"
+    )
+
+    return ProcessingResult(
+        summary=summary,
+        category=category,
+        importance_score=importance,
+        success=True,
+        one_liner=one_liner,
+        key_points=key_points,
+        impact_assessment=ImpactResult(
+            short_term="待观察",
+            long_term="待评估",
+            certainty="uncertain"
+        ),
+        actionable_items=[],
+    )
+
+
+def _check_keyword_signals(text: str, expected_category: str) -> Optional[dict]:
+    """Check if text contains confirming keyword signals for the category."""
+    category_keywords = {
+        "AI": [
+            (r"\b(GPT|Claude|Gemini|LLM|model|AI|机器学习)\b", 1),
+            (r"\b(launch|release|announce|发布|上线|更新)\b", 1),
+            (r"\b(研究|论文|paper|research)\b", 0),
+        ],
+        "科学": [
+            (r"\b(研究|论文|paper|study|research)\b", 1),
+            (r"\b(发现|breakthrough|discovery)\b", 2),
+            (r"\b(实验|experiment|trial)\b", 0),
+        ],
+        "技术": [
+            (r"\b(技术|tech|engineering|架构)\b", 0),
+            (r"\b(更新|update|release|版本)\b", 1),
+            (r"\b(开源|open.?source)\b", 1),
+        ],
+        "编程": [
+            (r"\b(code|coding|程序|开发|developer)\b", 0),
+            (r"\b(API|SDK|库|library|framework)\b", 1),
+            (r"\b(bug|fix|feature|PR|commit)\b", 0),
+        ],
+    }
+
+    patterns = category_keywords.get(expected_category, [])
+    if not patterns:
+        return None
+
+    total_boost = 0
+    matched = False
+    for pattern, boost in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            matched = True
+            total_boost += boost
+
+    if matched:
+        return {"boost": min(total_boost, 2)}  # Cap boost at 2
+    return None
+
+
+def _generate_rule_summary(title: str, category: str) -> str:
+    """Generate a simple summary from title for rule-based processing."""
+    # Clean title
+    title = re.sub(r"^(RT\s+)?@\w+[:\s]*", "", title)  # Remove RT and mentions
+    title = re.sub(r"https?://\S+", "", title)  # Remove URLs
+    title = title.strip()
+
+    if len(title) <= 50:
+        return title
+
+    # Truncate at sentence boundary
+    for sep in ["。", "！", "？", ".", "!", "?", "，", ",", " - ", " | "]:
+        pos = title.find(sep)
+        if 10 < pos < 50:
+            return title[:pos + 1].strip()
+
+    return title[:47] + "..."
+
+
+def _generate_one_liner(title: str, category: str) -> str:
+    """Generate a one-liner conclusion from title."""
+    category_prefixes = {
+        "AI": "AI动态",
+        "科学": "科研进展",
+        "技术": "技术更新",
+        "编程": "开发资讯",
+        "产品": "产品动态",
+        "创业": "创业动态",
+        "商业": "商业资讯",
+    }
+    prefix = category_prefixes.get(category, "资讯")
+
+    # Extract key subject from title
+    title_clean = re.sub(r"^(RT\s+)?@\w+[:\s]*", "", title)
+    title_clean = re.sub(r"https?://\S+", "", title_clean).strip()
+
+    if len(title_clean) <= 30:
+        return f"{prefix}：{title_clean}"
+
+    # Find key part
+    for sep in ["：", ":", " - ", " | "]:
+        if sep in title_clean:
+            parts = title_clean.split(sep)
+            return f"{prefix}：{parts[0].strip()[:30]}"
+
+    return f"{prefix}：{title_clean[:30]}..."
+
+
+def _extract_key_points_from_title(title: str) -> list[KeyPointResult]:
+    """Extract key points from title using patterns."""
+    key_points = []
+
+    # Extract entities (companies, products)
+    entity_patterns = [
+        (r"\b(OpenAI|Anthropic|Google|Meta|Microsoft|Apple|Nvidia)\b", "实体"),
+        (r"\b(GPT-?\d+|Claude|Gemini|Llama|ChatGPT)\b", "实体"),
+        (r"(阿里|腾讯|百度|字节跳动|华为|小米)", "实体"),
+    ]
+    for pattern, ptype in entity_patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match and len(key_points) < 3:
+            key_points.append(KeyPointResult(
+                type=ptype,
+                value=match.group(1) if match.lastindex else match.group(),
+                impact="相关主体"
+            ))
+
+    # Extract numbers (funding, metrics)
+    number_patterns = [
+        (r"\$(\d+(?:\.\d+)?[BMK]?)", "数字", "金额"),
+        (r"(\d+(?:\.\d+)?%)", "数字", "比例"),
+        (r"(\d+(?:,\d+)*)\s*(?:用户|users?|downloads?)", "数字", "规模"),
+    ]
+    for pattern, ptype, impact in number_patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match and len(key_points) < 3:
+            key_points.append(KeyPointResult(
+                type=ptype,
+                value=match.group(1) if match.lastindex else match.group(),
+                impact=impact
+            ))
+
+    return key_points[:3]  # Max 3 key points

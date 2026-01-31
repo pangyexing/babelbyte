@@ -523,11 +523,15 @@ class EventStreamProcessor:
             if use_embeddings:
                 semantic_score = self._compute_semantic_similarity(item, cluster)
                 from src.processors.embeddings import compute_hybrid_similarity
+                # Detect if embeddings are actually available (non-zero semantic score
+                # indicates embeddings were computed; zero might mean no centroids yet)
+                embeddings_actually_available = semantic_score > 0.0
                 final_score = compute_hybrid_similarity(
                     rule_score,
                     semantic_score,
                     self.settings.embedding.rule_weight,
                     self.settings.embedding.semantic_weight,
+                    embeddings_available=embeddings_actually_available,
                 )
                 if semantic_score > 0.7:
                     method = "semantic"
@@ -763,9 +767,10 @@ class EventStreamProcessor:
                 logger.info(f"Added item {item.id} to cluster '{confirmed.cluster_title}'")
                 return cluster
 
-        # Create new cluster for high-importance items
-        # Raised threshold from 6 to 7 to reduce cluster fragmentation
-        if item.importance_score and item.importance_score >= 7:
+        # Create new cluster for moderately important items
+        # Lowered threshold from 7 to 5 to enable more content to create clusters
+        # This is especially important when embeddings are not yet computed
+        if item.importance_score and item.importance_score >= 5:
             cluster = EventCluster(
                 event_title=self._generate_event_title(item),
                 category=item.category or "其他",
@@ -1019,9 +1024,10 @@ def cluster_unprocessed_items(
 
     # Get unclustered items only - this skips items already in clusters
     # for better performance (optimization: skip already-clustered items)
+    # Lowered min_importance from 6 to 4 to include more content in clustering
     retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
     items = db.get_unclustered_items(
-        min_importance=6,
+        min_importance=4,
         limit=limit,
         retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
     )
@@ -1071,9 +1077,10 @@ def cluster_unprocessed_items_parallel(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # Get unclustered items using the main db connection
+    # Lowered min_importance from 6 to 4 to include more content in clustering
     retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
     items = db.get_unclustered_items(
-        min_importance=6,
+        min_importance=4,
         limit=limit,
         retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
     )

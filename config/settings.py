@@ -228,6 +228,52 @@ class ModelTierConfig:
 
 
 @dataclass
+class RuleOptimizationConfig:
+    """Rule-based optimization configuration for token savings vs quality trade-off."""
+
+    # Enable rule-only processing (skip AI for high-confidence matches)
+    rule_only_enabled: bool = field(
+        default_factory=lambda: os.getenv("RULE_ONLY_ENABLED", "true").lower() == "true"
+    )
+
+    # Maximum content length for rule-only processing (longer content needs AI)
+    rule_only_max_content_length: int = field(
+        default_factory=lambda: int(os.getenv("RULE_ONLY_MAX_CONTENT", "1000"))
+    )
+
+    # Minimum keyword signals required for rule-only processing
+    rule_only_min_keyword_boost: int = field(
+        default_factory=lambda: int(os.getenv("RULE_ONLY_MIN_BOOST", "1"))
+    )
+
+    # Enable skip processing (spam, jobs, etc.)
+    skip_enabled: bool = field(
+        default_factory=lambda: os.getenv("SKIP_ENABLED", "true").lower() == "true"
+    )
+
+    # Enable minimal prompt for very low importance content
+    minimal_prompt_enabled: bool = field(
+        default_factory=lambda: os.getenv("MINIMAL_PROMPT_ENABLED", "true").lower() == "true"
+    )
+
+    # Importance threshold for minimal prompt (score <= this uses minimal)
+    minimal_prompt_threshold: int = field(
+        default_factory=lambda: int(os.getenv("MINIMAL_PROMPT_THRESHOLD", "3"))
+    )
+
+    def __post_init__(self):
+        """Validate rule optimization configuration."""
+        if self.rule_only_max_content_length < 100:
+            raise ValueError(
+                f"rule_only_max_content_length must be >= 100, got {self.rule_only_max_content_length}"
+            )
+        if not 1 <= self.minimal_prompt_threshold <= 5:
+            raise ValueError(
+                f"minimal_prompt_threshold must be 1-5, got {self.minimal_prompt_threshold}"
+            )
+
+
+@dataclass
 class EmbeddingConfig:
     """Embedding provider configuration."""
 
@@ -358,6 +404,7 @@ class Settings:
     codex: CodexConfig = field(default_factory=CodexConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    rule_optimization: RuleOptimizationConfig = field(default_factory=RuleOptimizationConfig)
 
 
 # Global settings instance

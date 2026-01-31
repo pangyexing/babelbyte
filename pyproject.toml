@@ -45,6 +45,14 @@ dev = [
 extract = [
     "trafilatura>=1.6.0",  # Better content extraction from web pages
 ]
+embeddings = [
+    "numpy>=1.21.0",
+    "sentence-transformers>=2.2.0",  # Local embedding models
+]
+openai = [
+    "numpy>=1.21.0",
+    "openai>=1.0.0",  # OpenAI embedding API
+]
 
 [project.scripts]
 bb = "src.cli.commands:cli"

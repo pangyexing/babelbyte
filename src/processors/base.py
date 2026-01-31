@@ -16,6 +16,7 @@ class TaskType(Enum):
 
     CONTENT_HIGH = auto()  # High importance content - full analysis
     CONTENT_LOW = auto()  # Low importance content - light analysis
+    CONTENT_MINIMAL = auto()  # Very low importance - minimal analysis (simple prompt)
     CONTENT_UNCERTAIN = auto()  # Low confidence content - use heavy model
     EVENT_CONFIRM = auto()  # Event clustering confirmation
     EVENT_TITLE = auto()  # Event title generation
@@ -349,6 +350,36 @@ key_points最多3个，actionable_items仅importance>=7时提取
             content = self._smart_truncate(content, max_length)
 
         return self.LIGHT_PROMPT.format(title=title, content=content)
+
+    def _build_simple_prompt(self, title: str, content: str, max_length: int = -1) -> str:
+        """
+        Build a minimal prompt for very low importance content.
+
+        Uses SIMPLE_PROMPT which only extracts summary, category, and importance.
+        No key_points, impact_assessment, or actionable_items.
+
+        Args:
+            title: Content title.
+            content: Content body.
+            max_length: Max content length. -1 uses 500 chars (shorter for simple).
+
+        Returns:
+            Formatted simple prompt string.
+        """
+        settings = get_settings()
+
+        # Apply title truncation (shorter for simple)
+        max_title = min(settings.ai.max_title_length, 100)
+        if max_title > 0 and len(title) > max_title:
+            title = self._smart_truncate(title, max_title)
+
+        # Apply content truncation (much shorter for simple content)
+        if max_length == -1:
+            max_length = 500  # Shorter default for simple prompt
+        if max_length > 0 and len(content) > max_length:
+            content = self._smart_truncate(content, max_length)
+
+        return self.SIMPLE_PROMPT.format(title=title, content=content)
 
     def _build_batch_prompt(self, items: list[tuple[int, str, str]], max_length: int = -1) -> str:
         """
