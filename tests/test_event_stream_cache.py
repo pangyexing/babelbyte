@@ -33,6 +33,8 @@ def mock_db():
     """Create a mock database."""
     db = MagicMock()
     db.get_recent_event_clusters = MagicMock(return_value=[])
+    db.is_item_in_cluster = MagicMock(return_value=False)  # Items not yet in any cluster
+    db.add_event_member = MagicMock(return_value=True)
     return db
 
 
@@ -339,9 +341,9 @@ class TestAIConfirmationCache:
             fetched_at=now,
         )
 
-        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
+        # Use score < 0.6 to avoid auto-accept optimization (which skips cache)
         candidates = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.6, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.5, method="entity"),
         ]
 
         # Calls for different items
@@ -353,12 +355,12 @@ class TestAIConfirmationCache:
 
     def test_ai_confirm_cache_different_candidates(self, processor, sample_content_item):
         """Test that different candidate lists have separate cache entries."""
-        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
+        # Use score < 0.6 to avoid auto-accept optimization (which skips cache)
         candidates1 = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.6, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.5, method="entity"),
         ]
         candidates2 = [
-            ClusterCandidate(cluster_id=2, cluster_title="Event 2", score=0.7, method="keyword"),
+            ClusterCandidate(cluster_id=2, cluster_title="Event 2", score=0.55, method="keyword"),
         ]
 
         # Calls with different candidates
@@ -437,9 +439,9 @@ class TestClearCache:
 
     def test_clear_cache_does_not_affect_instance_cache(self, processor, sample_content_item):
         """Test that clear_cache does not clear instance-level AI cache."""
-        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
+        # Use score < 0.6 to avoid auto-accept optimization (which skips cache)
         candidates = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event", score=0.6, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event", score=0.5, method="entity"),
         ]
 
         # Populate instance cache
@@ -628,6 +630,7 @@ class TestProgressCallback:
         # Use get_unclustered_items (the optimized method)
         mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
+        mock_db.is_item_in_cluster.return_value = False  # Items not yet in any cluster
 
         # Mock cluster creation
         cluster_counter = [0]
@@ -638,7 +641,7 @@ class TestProgressCallback:
             return cluster
 
         mock_db.create_event_cluster.side_effect = mock_create_cluster
-        mock_db.add_event_member.return_value = None
+        mock_db.add_event_member.return_value = True
 
         # Track progress calls
         progress_calls = []
@@ -719,6 +722,8 @@ class TestBatchClusteringCache:
         # Use get_unclustered_items (the optimized method)
         mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = [existing_cluster]
+        mock_db.is_item_in_cluster.return_value = False  # Items not yet in any cluster
+        mock_db.add_event_member.return_value = True
 
         # Clear cache and get initial state
         EventStreamProcessor.clear_cache()
@@ -763,6 +768,7 @@ class TestBatchClusteringCache:
         # Use get_unclustered_items (the optimized method)
         mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
+        mock_db.is_item_in_cluster.return_value = False  # Items not yet in any cluster
 
         cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
 
@@ -826,12 +832,13 @@ class TestBatchClusteringCache:
         # Use get_unclustered_items (the optimized method)
         mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
+        mock_db.is_item_in_cluster.return_value = False  # Items not yet in any cluster
 
         cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
 
-        # Should call database twice: once for AI, once for Tech
-        # Third item (AI) should use cached result
-        assert mock_db.get_recent_event_clusters.call_count == 2
+        # With cross-category clustering enabled, only one query is made (category=None)
+        # All items use the same cached result regardless of their category
+        assert mock_db.get_recent_event_clusters.call_count == 1
 
 
 # ============================================

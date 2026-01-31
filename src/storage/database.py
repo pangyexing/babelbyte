@@ -1,8 +1,7 @@
 """SQLite database operations for BabelByte."""
 
 import asyncio
-import json
-import sqlite3
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -14,7 +13,6 @@ from src.storage.models import (
     ActionItem,
     ActionStatus,
     ContentItem,
-    ContentTopic,
     EventCluster,
     EventMember,
     EventTimeline,
@@ -27,6 +25,8 @@ from src.storage.models import (
     Trigger,
     UserProfile,
 )
+
+logger = logging.getLogger(__name__)
 
 # SQL statements for table creation
 CREATE_SUBSCRIPTIONS_TABLE = """
@@ -89,12 +89,11 @@ CREATE TABLE IF NOT EXISTS event_clusters (
 CREATE_EVENT_MEMBERS_TABLE = """
 CREATE TABLE IF NOT EXISTS event_members (
     event_cluster_id INTEGER NOT NULL,
-    content_item_id INTEGER NOT NULL,
+    content_item_id INTEGER NOT NULL UNIQUE,
     similarity_score REAL DEFAULT 0.0,
     detection_method TEXT DEFAULT 'rule',
     FOREIGN KEY (event_cluster_id) REFERENCES event_clusters(id),
-    FOREIGN KEY (content_item_id) REFERENCES content_items(id),
-    UNIQUE(event_cluster_id, content_item_id)
+    FOREIGN KEY (content_item_id) REFERENCES content_items(id)
 )
 """
 
@@ -342,7 +341,84 @@ class Database:
                     "ALTER TABLE content_items ADD COLUMN cluster_attempted_at TEXT"
                 )
 
+            # Migrate event_members table to enforce UNIQUE content_item_id
+            # This prevents the same content item from being in multiple clusters
+            await self._migrate_event_members_unique_constraint(cursor)
+
             await self._connection.commit()
+
+    async def _migrate_event_members_unique_constraint(self, cursor) -> None:
+        """Migrate event_members table to enforce UNIQUE on content_item_id.
+
+        SQLite doesn't support adding constraints to existing tables, so we need to:
+        1. Check if migration is needed (old schema has composite unique constraint)
+        2. Create new table with correct schema
+        3. Copy data (keeping only one row per content_item_id with highest similarity_score)
+        4. Drop old table and rename new one
+        """
+        # Check current table schema
+        await cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='event_members'"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return  # Table doesn't exist, will be created with correct schema
+
+        table_sql = row[0]
+        # Check if migration is needed: old schema has UNIQUE(event_cluster_id, content_item_id)
+        # New schema has content_item_id INTEGER NOT NULL UNIQUE
+        if "UNIQUE(event_cluster_id, content_item_id)" not in table_sql:
+            return  # Already migrated or using new schema
+
+        logger.info("Migrating event_members table to enforce UNIQUE content_item_id...")
+
+        # Create new table with correct schema
+        await cursor.execute("""
+            CREATE TABLE IF NOT EXISTS event_members_new (
+                event_cluster_id INTEGER NOT NULL,
+                content_item_id INTEGER NOT NULL UNIQUE,
+                similarity_score REAL DEFAULT 0.0,
+                detection_method TEXT DEFAULT 'rule',
+                FOREIGN KEY (event_cluster_id) REFERENCES event_clusters(id),
+                FOREIGN KEY (content_item_id) REFERENCES content_items(id)
+            )
+        """)
+
+        # Copy data, keeping only the row with highest similarity_score for each content_item_id
+        await cursor.execute("""
+            INSERT OR IGNORE INTO event_members_new
+                (event_cluster_id, content_item_id, similarity_score, detection_method)
+            SELECT event_cluster_id, content_item_id, similarity_score, detection_method
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY content_item_id ORDER BY similarity_score DESC
+                ) as rn
+                FROM event_members
+            ) WHERE rn = 1
+        """)
+
+        # Drop old table and rename new one
+        await cursor.execute("DROP TABLE event_members")
+        await cursor.execute("ALTER TABLE event_members_new RENAME TO event_members")
+
+        # Recreate indexes
+        await cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_event_members_content_id
+            ON event_members(content_item_id)
+        """)
+        await cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_event_members_cluster_id
+            ON event_members(event_cluster_id)
+        """)
+
+        # Update all cluster article counts
+        await cursor.execute("""
+            UPDATE event_clusters SET article_count = (
+                SELECT COUNT(*) FROM event_members WHERE event_cluster_id = event_clusters.id
+            )
+        """)
+
+        logger.info("Migration completed: event_members table now enforces UNIQUE content_item_id")
 
     # Subscription operations
 
@@ -670,6 +746,88 @@ class Database:
                 (url, normalized_url),
             )
             return await cursor.fetchone() is not None
+
+    async def title_exists(self, title: str) -> bool:
+        """Check if content with exact same title already exists.
+
+        This helps detect duplicate content from different sources.
+        """
+        if not title or len(title) < 10:
+            return False
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT 1 FROM content_items WHERE title = ? LIMIT 1",
+                (title,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def find_similar_title(self, title: str, days: int = 7) -> Optional[int]:
+        """Find content item with very similar title (for deduplication).
+
+        Uses normalized title comparison to detect near-duplicates.
+
+        Args:
+            title: Title to search for
+            days: Look back this many days
+
+        Returns:
+            Content item ID if similar title found, None otherwise
+        """
+        if not title or len(title) < 10:
+            return None
+
+        # Normalize: remove RT prefix, @mentions, URLs, lowercase
+        import re
+        normalized = title.strip().lower()
+        normalized = re.sub(r"^rt\s+", "", normalized)
+        normalized = re.sub(r"@\w+[:\s]*", "", normalized)
+        normalized = re.sub(r"https?://\S+", "", normalized)
+        normalized = " ".join(normalized.split())
+
+        if len(normalized) < 10:
+            return None
+
+        async with self._connection.cursor() as cursor:
+            # Search for exact normalized match or very similar titles
+            from_date = (
+                datetime.now() - __import__("datetime").timedelta(days=days)
+            ).isoformat()
+
+            await cursor.execute(
+                """
+                SELECT id, title FROM content_items
+                WHERE published_at >= ? AND title IS NOT NULL
+                ORDER BY published_at DESC
+                LIMIT 500
+                """,
+                (from_date,),
+            )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                existing_title = row["title"]
+                if not existing_title:
+                    continue
+
+                # Normalize existing title
+                existing_norm = existing_title.strip().lower()
+                existing_norm = re.sub(r"^rt\s+", "", existing_norm)
+                existing_norm = re.sub(r"@\w+[:\s]*", "", existing_norm)
+                existing_norm = re.sub(r"https?://\S+", "", existing_norm)
+                existing_norm = " ".join(existing_norm.split())
+
+                # Exact match after normalization
+                if normalized == existing_norm:
+                    return row["id"]
+
+                # Check if one is prefix of other (common in truncated tweets)
+                if len(normalized) > 20 and len(existing_norm) > 20:
+                    if normalized.startswith(existing_norm[:50]):
+                        return row["id"]
+                    if existing_norm.startswith(normalized[:50]):
+                        return row["id"]
+
+            return None
 
     def _normalize_url(self, url: str) -> str:
         """Normalize URL for deduplication."""
@@ -1034,12 +1192,20 @@ class Database:
             rows = await cursor.fetchall()
             return [self._row_to_event_cluster(row) for row in rows]
 
-    async def add_event_member(self, member: EventMember) -> None:
-        """Add a content item to an event cluster."""
+    async def add_event_member(self, member: EventMember) -> bool:
+        """Add a content item to an event cluster.
+
+        Uses INSERT OR IGNORE to prevent duplicate cluster memberships.
+        Each content item can only belong to one cluster.
+
+        Returns:
+            True if the member was added, False if already in a cluster.
+        """
         async with self._connection.cursor() as cursor:
             await cursor.execute(
                 """
-                INSERT OR REPLACE INTO event_members (event_cluster_id, content_item_id, similarity_score, detection_method)
+                INSERT OR IGNORE INTO event_members
+                    (event_cluster_id, content_item_id, similarity_score, detection_method)
                 VALUES (?, ?, ?, ?)
                 """,
                 (
@@ -1049,17 +1215,22 @@ class Database:
                     member.detection_method,
                 ),
             )
-            # Update article count
-            await cursor.execute(
-                """
-                UPDATE event_clusters
-                SET article_count = (SELECT COUNT(*) FROM event_members WHERE event_cluster_id = ?),
-                    last_updated_at = ?
-                WHERE id = ?
-                """,
-                (member.event_cluster_id, datetime.now().isoformat(), member.event_cluster_id),
-            )
-            await self._connection.commit()
+            # Only update article count if insertion succeeded
+            if cursor.rowcount > 0:
+                await cursor.execute(
+                    """
+                    UPDATE event_clusters
+                    SET article_count = (
+                        SELECT COUNT(*) FROM event_members WHERE event_cluster_id = ?
+                    ),
+                        last_updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (member.event_cluster_id, datetime.now().isoformat(), member.event_cluster_id),
+                )
+                await self._connection.commit()
+                return True
+            return False
 
     async def get_event_members(self, cluster_id: int) -> list[ContentItem]:
         """Get all content items in an event cluster."""
@@ -1147,6 +1318,57 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [self._row_to_content_item(row) for row in rows]
+
+    async def is_item_in_cluster(self, item_id: int) -> bool:
+        """Check if a content item is already in any event cluster.
+
+        Args:
+            item_id: The content item ID to check.
+
+        Returns:
+            True if the item is in a cluster, False otherwise.
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                "SELECT 1 FROM event_members WHERE content_item_id = ? LIMIT 1",
+                (item_id,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def cleanup_duplicate_cluster_memberships(self) -> int:
+        """Remove duplicate cluster memberships, keeping the one with highest similarity score.
+
+        This is a cleanup utility for fixing data where items were added to multiple clusters.
+
+        Returns:
+            Number of duplicate memberships removed.
+        """
+        async with self._connection.cursor() as cursor:
+            # Delete duplicates, keeping the row with highest similarity_score
+            await cursor.execute("""
+                DELETE FROM event_members
+                WHERE rowid NOT IN (
+                    SELECT rowid FROM (
+                        SELECT rowid, content_item_id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY content_item_id
+                                   ORDER BY similarity_score DESC
+                               ) as rn
+                        FROM event_members
+                    ) WHERE rn = 1
+                )
+            """)
+            removed = cursor.rowcount
+
+            # Update all cluster article counts
+            await cursor.execute("""
+                UPDATE event_clusters SET article_count = (
+                    SELECT COUNT(*) FROM event_members
+                    WHERE event_cluster_id = event_clusters.id
+                )
+            """)
+            await self._connection.commit()
+            return removed
 
     async def add_event_timeline(self, timeline: EventTimeline) -> None:
         """Add a timeline entry for an event cluster."""
@@ -1654,6 +1876,12 @@ class SyncDatabase:
     def url_exists(self, url: str) -> bool:
         return self._run(self._async_db.url_exists(url))
 
+    def title_exists(self, title: str) -> bool:
+        return self._run(self._async_db.title_exists(title))
+
+    def find_similar_title(self, title: str, days: int = 7) -> Optional[int]:
+        return self._run(self._async_db.find_similar_title(title, days))
+
     def get_or_create_profile(self, email: str) -> UserProfile:
         return self._run(self._async_db.get_or_create_profile(email))
 
@@ -1709,8 +1937,14 @@ class SyncDatabase:
     ) -> list[EventCluster]:
         return self._run(self._async_db.get_recent_event_clusters(days, category, limit))
 
-    def add_event_member(self, member: EventMember) -> None:
-        self._run(self._async_db.add_event_member(member))
+    def add_event_member(self, member: EventMember) -> bool:
+        return self._run(self._async_db.add_event_member(member))
+
+    def is_item_in_cluster(self, item_id: int) -> bool:
+        return self._run(self._async_db.is_item_in_cluster(item_id))
+
+    def cleanup_duplicate_cluster_memberships(self) -> int:
+        return self._run(self._async_db.cleanup_duplicate_cluster_memberships())
 
     def get_event_members(self, cluster_id: int) -> list[ContentItem]:
         return self._run(self._async_db.get_event_members(cluster_id))
