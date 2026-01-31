@@ -169,6 +169,16 @@ CREATE TABLE IF NOT EXISTS triggers (
 )
 """
 
+# AI Cache table for storing processed results
+CREATE_AI_CACHE_TABLE = """
+CREATE TABLE IF NOT EXISTS ai_cache (
+    content_hash TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+)
+"""
+
 CREATE_USER_PROFILES_TABLE = """
 CREATE TABLE IF NOT EXISTS user_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +225,9 @@ CREATE INDEX IF NOT EXISTS idx_topics_name ON topics(name);
 -- Action items indexes
 CREATE INDEX IF NOT EXISTS idx_action_items_status ON action_items(status);
 CREATE INDEX IF NOT EXISTS idx_action_items_priority ON action_items(priority);
+
+-- AI cache indexes
+CREATE INDEX IF NOT EXISTS idx_ai_cache_expires ON ai_cache(expires_at);
 """
 
 # Full-text search virtual table for Phase 4: Knowledge Base
@@ -271,6 +284,9 @@ class Database:
             await cursor.execute(CREATE_ACTION_ITEMS_TABLE)
             await cursor.execute(CREATE_TRIGGERS_TABLE)
 
+            # AI Cache table
+            await cursor.execute(CREATE_AI_CACHE_TABLE)
+
             # Create performance indexes
             for statement in CREATE_INDEXES.strip().split(";"):
                 statement = statement.strip()
@@ -291,17 +307,11 @@ class Database:
             sub_columns = {row[1] for row in await cursor.fetchall()}
 
             if "twitter_user_id" not in sub_columns:
-                await cursor.execute(
-                    "ALTER TABLE subscriptions ADD COLUMN twitter_user_id TEXT"
-                )
+                await cursor.execute("ALTER TABLE subscriptions ADD COLUMN twitter_user_id TEXT")
             if "last_tweet_id" not in sub_columns:
-                await cursor.execute(
-                    "ALTER TABLE subscriptions ADD COLUMN last_tweet_id TEXT"
-                )
+                await cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_tweet_id TEXT")
             if "last_reddit_id" not in sub_columns:
-                await cursor.execute(
-                    "ALTER TABLE subscriptions ADD COLUMN last_reddit_id TEXT"
-                )
+                await cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_reddit_id TEXT")
 
             # Check content_items columns for Phase 1 & 4 enhancements
             await cursor.execute("PRAGMA table_info(content_items)")
@@ -309,21 +319,13 @@ class Database:
 
             # Phase 1: Enhanced digest fields
             if "one_liner" not in content_columns:
-                await cursor.execute(
-                    "ALTER TABLE content_items ADD COLUMN one_liner TEXT"
-                )
+                await cursor.execute("ALTER TABLE content_items ADD COLUMN one_liner TEXT")
             if "key_points" not in content_columns:
-                await cursor.execute(
-                    "ALTER TABLE content_items ADD COLUMN key_points TEXT"
-                )
+                await cursor.execute("ALTER TABLE content_items ADD COLUMN key_points TEXT")
             if "impact_assessment" not in content_columns:
-                await cursor.execute(
-                    "ALTER TABLE content_items ADD COLUMN impact_assessment TEXT"
-                )
+                await cursor.execute("ALTER TABLE content_items ADD COLUMN impact_assessment TEXT")
             if "actionable_items" not in content_columns:
-                await cursor.execute(
-                    "ALTER TABLE content_items ADD COLUMN actionable_items TEXT"
-                )
+                await cursor.execute("ALTER TABLE content_items ADD COLUMN actionable_items TEXT")
 
             # Phase 4: State management
             if "state" not in content_columns:
@@ -403,7 +405,11 @@ class Database:
                 """,
                 (
                     1 if subscription.enabled else 0,
-                    subscription.last_fetched_at.isoformat() if subscription.last_fetched_at else None,
+                    (
+                        subscription.last_fetched_at.isoformat()
+                        if subscription.last_fetched_at
+                        else None
+                    ),
                     subscription.twitter_user_id,
                     subscription.last_tweet_id,
                     subscription.last_reddit_id,
@@ -428,9 +434,7 @@ class Database:
             enabled=bool(row["enabled"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             last_fetched_at=(
-                datetime.fromisoformat(row["last_fetched_at"])
-                if row["last_fetched_at"]
-                else None
+                datetime.fromisoformat(row["last_fetched_at"]) if row["last_fetched_at"] else None
             ),
             twitter_user_id=row["twitter_user_id"] if "twitter_user_id" in row.keys() else None,
             last_tweet_id=row["last_tweet_id"] if "last_tweet_id" in row.keys() else None,
@@ -551,9 +555,7 @@ class Database:
         """Update FTS index for a content item."""
         async with self._connection.cursor() as cursor:
             # Delete existing entry
-            await cursor.execute(
-                "DELETE FROM content_fts WHERE content_id = ?", (item.id,)
-            )
+            await cursor.execute("DELETE FROM content_fts WHERE content_id = ?", (item.id,))
             # Insert new entry
             await cursor.execute(
                 """
@@ -611,18 +613,38 @@ class Database:
             return ""
         # Remove common tracking parameters
         from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
         try:
             parsed = urlparse(url)
             # Skip normalization for reddit/twitter URLs (use external_id instead)
             if any(domain in parsed.netloc for domain in ["reddit.com", "twitter.com", "x.com"]):
                 return ""
             # Remove tracking params
-            tracking_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "ref", "source"}
+            tracking_params = {
+                "utm_source",
+                "utm_medium",
+                "utm_campaign",
+                "utm_term",
+                "utm_content",
+                "ref",
+                "source",
+            }
             query_params = parse_qs(parsed.query)
-            filtered_params = {k: v for k, v in query_params.items() if k.lower() not in tracking_params}
+            filtered_params = {
+                k: v for k, v in query_params.items() if k.lower() not in tracking_params
+            }
             clean_query = urlencode(filtered_params, doseq=True)
             # Rebuild URL without tracking params and trailing slash
-            clean_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), parsed.params, clean_query, ""))
+            clean_url = urlunparse(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path.rstrip("/"),
+                    parsed.params,
+                    clean_query,
+                    "",
+                )
+            )
             return clean_url
         except Exception:
             return url
@@ -848,29 +870,25 @@ class Database:
     async def get_category_stats(self) -> dict[str, int]:
         """Get count of items per category."""
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 SELECT category, COUNT(*) as count
                 FROM content_items
                 WHERE category IS NOT NULL
                 GROUP BY category
                 ORDER BY count DESC
-                """
-            )
+                """)
             rows = await cursor.fetchall()
             return {row["category"]: row["count"] for row in rows}
 
     async def get_state_stats(self) -> dict[str, int]:
         """Get count of items per state."""
         async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 SELECT state, COUNT(*) as count
                 FROM content_items
                 GROUP BY state
                 ORDER BY count DESC
-                """
-            )
+                """)
             rows = await cursor.fetchall()
             return {row["state"]: row["count"] for row in rows}
 
@@ -881,14 +899,12 @@ class Database:
             await cursor.execute("DELETE FROM content_fts")
 
             # Rebuild from processed items
-            await cursor.execute(
-                """
+            await cursor.execute("""
                 INSERT INTO content_fts (title, content, summary, category, author, content_id)
                 SELECT title, content, summary, category, author, id
                 FROM content_items
                 WHERE processed_at IS NOT NULL
-                """
-            )
+                """)
             await self._connection.commit()
 
             # Get count
@@ -987,6 +1003,78 @@ class Database:
                 ORDER BY c.published_at DESC
                 """,
                 (cluster_id,),
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_content_item(row) for row in rows]
+
+    async def get_undelivered_clustered_items(
+        self, min_importance: int = 5, limit: int = 50
+    ) -> dict[int, list[ContentItem]]:
+        """
+        Get undelivered content items that belong to event clusters.
+
+        Returns items grouped by cluster_id, with members sorted by importance_score desc.
+
+        Args:
+            min_importance: Minimum importance score to include
+            limit: Maximum total items to return
+
+        Returns:
+            Dict mapping cluster_id to list of ContentItem
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT c.*, em.event_cluster_id
+                FROM content_items c
+                INNER JOIN event_members em ON c.id = em.content_item_id
+                WHERE c.processed_at IS NOT NULL
+                  AND c.delivered = 0
+                  AND c.importance_score >= ?
+                ORDER BY c.importance_score DESC, c.published_at DESC
+                LIMIT ?
+                """,
+                (min_importance, limit),
+            )
+            rows = await cursor.fetchall()
+
+            # Group by cluster_id
+            result: dict[int, list[ContentItem]] = {}
+            for row in rows:
+                cluster_id = row["event_cluster_id"]
+                item = self._row_to_content_item(row)
+                if cluster_id not in result:
+                    result[cluster_id] = []
+                result[cluster_id].append(item)
+
+            return result
+
+    async def get_undelivered_unclustered_items(
+        self, min_importance: int = 5, limit: int = 50
+    ) -> list[ContentItem]:
+        """
+        Get undelivered content items that do not belong to any event cluster.
+
+        Args:
+            min_importance: Minimum importance score to include
+            limit: Maximum items to return
+
+        Returns:
+            List of ContentItem not in any cluster
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT c.* FROM content_items c
+                LEFT JOIN event_members em ON c.id = em.content_item_id
+                WHERE c.processed_at IS NOT NULL
+                  AND c.delivered = 0
+                  AND c.importance_score >= ?
+                  AND em.content_item_id IS NULL
+                ORDER BY c.importance_score DESC, c.published_at DESC
+                LIMIT ?
+                """,
+                (min_importance, limit),
             )
             rows = await cursor.fetchall()
             return [self._row_to_content_item(row) for row in rows]
@@ -1126,9 +1214,7 @@ class Database:
             snapshot.id = cursor.lastrowid
             return snapshot
 
-    async def get_topic_snapshots(
-        self, topic_id: int, limit: int = 10
-    ) -> list[TopicSnapshot]:
+    async def get_topic_snapshots(self, topic_id: int, limit: int = 10) -> list[TopicSnapshot]:
         """Get recent snapshots for a topic."""
         async with self._connection.cursor() as cursor:
             await cursor.execute(
@@ -1217,9 +1303,7 @@ class Database:
             rows = await cursor.fetchall()
             return [self._row_to_action_item(row) for row in rows]
 
-    async def update_action_status(
-        self, action_id: int, status: ActionStatus
-    ) -> None:
+    async def update_action_status(self, action_id: int, status: ActionStatus) -> None:
         """Update action item status."""
         async with self._connection.cursor() as cursor:
             completed_at = datetime.now().isoformat() if status == ActionStatus.DONE else None
@@ -1246,7 +1330,9 @@ class Database:
             status=ActionStatus(row["status"]),
             due_date=row["due_date"],
             created_at=datetime.fromisoformat(row["created_at"]),
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            completed_at=(
+                datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None
+            ),
         )
 
     # Trigger operations
@@ -1290,6 +1376,131 @@ class Database:
             action=row["action"],
             enabled=bool(row["enabled"]),
         )
+
+    # ============================================
+    # AI Cache Operations
+    # ============================================
+
+    async def get_ai_cache(self, content_hash: str) -> Optional[str]:
+        """
+        Get cached AI processing result.
+
+        Args:
+            content_hash: SHA256 hash of content (16 chars).
+
+        Returns:
+            Cached result JSON string, or None if not found or expired.
+        """
+        async with self._connection.cursor() as cursor:
+            now = datetime.now().isoformat()
+            await cursor.execute(
+                """
+                SELECT result_json FROM ai_cache
+                WHERE content_hash = ? AND expires_at > ?
+                """,
+                (content_hash, now),
+            )
+            row = await cursor.fetchone()
+            return row["result_json"] if row else None
+
+    async def set_ai_cache(
+        self, content_hash: str, result_json: str, ttl_seconds: int = 86400
+    ) -> None:
+        """
+        Store AI processing result in cache.
+
+        Args:
+            content_hash: SHA256 hash of content (16 chars).
+            result_json: Serialized ProcessingResult JSON.
+            ttl_seconds: Time-to-live in seconds (default 24 hours).
+        """
+        from datetime import timedelta
+
+        now = datetime.now()
+        expires_at = now + timedelta(seconds=ttl_seconds)
+
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                INSERT OR REPLACE INTO ai_cache (content_hash, result_json, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (content_hash, result_json, now.isoformat(), expires_at.isoformat()),
+            )
+            await self._connection.commit()
+
+    async def clear_ai_cache(self) -> int:
+        """
+        Clear all AI cache entries.
+
+        Returns:
+            Number of entries deleted.
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute("SELECT COUNT(*) FROM ai_cache")
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            await cursor.execute("DELETE FROM ai_cache")
+            await self._connection.commit()
+            return count
+
+    async def cleanup_expired_cache(self) -> int:
+        """
+        Remove expired cache entries.
+
+        Returns:
+            Number of entries deleted.
+        """
+        async with self._connection.cursor() as cursor:
+            now = datetime.now().isoformat()
+            await cursor.execute("SELECT COUNT(*) FROM ai_cache WHERE expires_at <= ?", (now,))
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            await cursor.execute("DELETE FROM ai_cache WHERE expires_at <= ?", (now,))
+            await self._connection.commit()
+            return count
+
+    async def get_ai_cache_stats(self) -> dict:
+        """
+        Get AI cache statistics.
+
+        Returns:
+            Dict with total_entries, valid_entries, expired_entries, oldest_entry, newest_entry.
+        """
+        async with self._connection.cursor() as cursor:
+            now = datetime.now().isoformat()
+
+            # Total entries
+            await cursor.execute("SELECT COUNT(*) FROM ai_cache")
+            row = await cursor.fetchone()
+            total = row[0] if row else 0
+
+            # Valid (not expired) entries
+            await cursor.execute("SELECT COUNT(*) FROM ai_cache WHERE expires_at > ?", (now,))
+            row = await cursor.fetchone()
+            valid = row[0] if row else 0
+
+            # Oldest entry
+            await cursor.execute(
+                "SELECT MIN(created_at) FROM ai_cache WHERE expires_at > ?", (now,)
+            )
+            row = await cursor.fetchone()
+            oldest = row[0] if row and row[0] else None
+
+            # Newest entry
+            await cursor.execute(
+                "SELECT MAX(created_at) FROM ai_cache WHERE expires_at > ?", (now,)
+            )
+            row = await cursor.fetchone()
+            newest = row[0] if row and row[0] else None
+
+            return {
+                "total_entries": total,
+                "valid_entries": valid,
+                "expired_entries": total - valid,
+                "oldest_entry": oldest,
+                "newest_entry": newest,
+            }
 
 
 # Synchronous wrapper for CLI usage
@@ -1349,9 +1560,7 @@ class SyncDatabase:
     def get_unprocessed_items(self, limit: int = 100) -> list[ContentItem]:
         return self._run(self._async_db.get_unprocessed_items(limit))
 
-    def get_undelivered_items(
-        self, min_importance: int = 1, limit: int = 50
-    ) -> list[ContentItem]:
+    def get_undelivered_items(self, min_importance: int = 1, limit: int = 50) -> list[ContentItem]:
         return self._run(self._async_db.get_undelivered_items(min_importance, limit))
 
     def update_content_item(self, item: ContentItem) -> None:
@@ -1385,9 +1594,11 @@ class SyncDatabase:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ContentItem]:
-        return self._run(self._async_db.search_content(
-            query, category, min_importance, state, from_date, to_date, limit, offset
-        ))
+        return self._run(
+            self._async_db.search_content(
+                query, category, min_importance, state, from_date, to_date, limit, offset
+            )
+        )
 
     def browse_by_date(
         self, date: str, category: Optional[str] = None, limit: int = 100
@@ -1424,6 +1635,16 @@ class SyncDatabase:
 
     def get_event_members(self, cluster_id: int) -> list[ContentItem]:
         return self._run(self._async_db.get_event_members(cluster_id))
+
+    def get_undelivered_clustered_items(
+        self, min_importance: int = 5, limit: int = 50
+    ) -> dict[int, list[ContentItem]]:
+        return self._run(self._async_db.get_undelivered_clustered_items(min_importance, limit))
+
+    def get_undelivered_unclustered_items(
+        self, min_importance: int = 5, limit: int = 50
+    ) -> list[ContentItem]:
+        return self._run(self._async_db.get_undelivered_unclustered_items(min_importance, limit))
 
     def add_event_timeline(self, timeline: EventTimeline) -> None:
         self._run(self._async_db.add_event_timeline(timeline))
@@ -1486,6 +1707,23 @@ class SyncDatabase:
 
     def delete_trigger(self, trigger_id: int) -> None:
         self._run(self._async_db.delete_trigger(trigger_id))
+
+    # AI Cache sync wrappers
+
+    def get_ai_cache(self, content_hash: str) -> Optional[str]:
+        return self._run(self._async_db.get_ai_cache(content_hash))
+
+    def set_ai_cache(self, content_hash: str, result_json: str, ttl_seconds: int = 86400) -> None:
+        self._run(self._async_db.set_ai_cache(content_hash, result_json, ttl_seconds))
+
+    def clear_ai_cache(self) -> int:
+        return self._run(self._async_db.clear_ai_cache())
+
+    def cleanup_expired_cache(self) -> int:
+        return self._run(self._async_db.cleanup_expired_cache())
+
+    def get_ai_cache_stats(self) -> dict:
+        return self._run(self._async_db.get_ai_cache_stats())
 
     def __enter__(self):
         self.connect()

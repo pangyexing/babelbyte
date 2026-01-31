@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from config.settings import get_settings
 from src.processors.base import (
@@ -23,18 +23,25 @@ from src.processors.rule_classifier import (
     should_skip_ai_processing,
 )
 from src.storage.database import SyncDatabase
-from src.storage.models import ActionItem, ActionStatus, ContentItem, DigestItem
+from src.storage.models import ActionItem, ActionStatus, ContentItem, DigestItem, EventDigestItem
 
 logger = logging.getLogger(__name__)
 
+DigestItemType = Union[DigestItem, EventDigestItem]
 
-def get_ai_processor(provider: Optional[str] = None, use_mock: bool = False) -> BaseAIProcessor:
+
+def get_ai_processor(
+    provider: Optional[str] = None,
+    use_mock: bool = False,
+    db: Optional[SyncDatabase] = None,
+) -> BaseAIProcessor:
     """
     Get the appropriate AI processor based on configuration.
 
     Args:
         provider: Override provider ("claude", "codex", or "auto")
         use_mock: Use mock processor for testing
+        db: Optional database instance for cache support
 
     Returns:
         An AI processor instance
@@ -48,38 +55,66 @@ def get_ai_processor(provider: Optional[str] = None, use_mock: bool = False) -> 
     if provider == "codex":
         from src.processors.openai_cli import CodexCLI
 
-        return CodexCLI()
+        return CodexCLI(db=db)
 
     if provider == "claude" or provider == "auto":
         from src.processors.claude_cli import ClaudeCLI
 
-        return ClaudeCLI()
+        return ClaudeCLI(db=db)
 
     # Default fallback
     from src.processors.claude_cli import ClaudeCLI
 
-    return ClaudeCLI()
+    return ClaudeCLI(db=db)
 
 
 @dataclass
 class DigestResult:
     """Result of digest generation."""
 
-    items: list[DigestItem] = field(default_factory=list)
+    items: list[DigestItem] = field(default_factory=list)  # Unclustered items
+    events: list[EventDigestItem] = field(default_factory=list)  # Event clusters
     total_processed: int = 0
     successful: int = 0
     failed: int = 0
     generated_at: datetime = field(default_factory=datetime.now)
 
     @property
-    def by_category(self) -> dict[str, list[DigestItem]]:
-        """Group items by category."""
-        result: dict[str, list[DigestItem]] = {}
+    def by_category(self) -> dict[str, list[DigestItemType]]:
+        """Group items and events by category, mixed together."""
+        result: dict[str, list[DigestItemType]] = {}
+
+        # Add events first (they are more important groupings)
+        for event in self.events:
+            if event.category not in result:
+                result[event.category] = []
+            result[event.category].append(event)
+
+        # Add regular items
         for item in self.items:
             if item.category not in result:
                 result[item.category] = []
             result[item.category].append(item)
+
+        # Sort each category by importance score
+        for category in result:
+            result[category].sort(key=lambda x: x.importance_score, reverse=True)
+
         return result
+
+    @property
+    def total_items(self) -> int:
+        """Total count including event members."""
+        event_member_count = sum(len(e.members) for e in self.events)
+        return len(self.items) + event_member_count
+
+    @property
+    def all_content_ids(self) -> list[int]:
+        """Get all content item IDs for marking as delivered."""
+        ids = [item.content_item.id for item in self.items if item.content_item.id]
+        for event in self.events:
+            ids.extend([m.id for m in event.members if m.id])
+        return ids
 
 
 class DigestProcessor:
@@ -90,8 +125,9 @@ class DigestProcessor:
         ai_processor: Optional[BaseAIProcessor] = None,
         provider: Optional[str] = None,
         use_mock: bool = False,
+        db: Optional[SyncDatabase] = None,
     ):
-        self.ai = ai_processor or get_ai_processor(provider=provider, use_mock=use_mock)
+        self.ai = ai_processor or get_ai_processor(provider=provider, use_mock=use_mock, db=db)
         self.rule_classifier = RuleClassifier()
 
     def process_item(self, item: ContentItem) -> ProcessingResult:
@@ -138,7 +174,7 @@ class DigestGenerator:
         use_mock: bool = False,
     ):
         self.db = db
-        self.processor = processor or DigestProcessor(provider=provider, use_mock=use_mock)
+        self.processor = processor or DigestProcessor(provider=provider, use_mock=use_mock, db=db)
 
     def process_unprocessed_items(
         self,
@@ -648,29 +684,65 @@ class DigestGenerator:
         min_importance: int = 5,
         max_items: int = 30,
         include_delivered: bool = False,
+        run_clustering: bool = True,
     ) -> DigestResult:
         """
-        Generate a digest from processed items.
+        Generate a digest from processed items, with event clustering support.
 
         Args:
             min_importance: Minimum importance score to include.
-            max_items: Maximum number of items in the digest.
+            max_items: Maximum number of items/events in the digest.
             include_delivered: Whether to include already delivered items.
+            run_clustering: Whether to run event clustering before generating digest.
 
         Returns:
-            DigestResult with the digest items.
+            DigestResult with digest items and event clusters.
         """
         if not self.db:
             raise ValueError("Database not configured")
 
-        # Get undelivered items
-        items = self.db.get_undelivered_items(
+        # Step 1: Run clustering if enabled
+        if run_clustering:
+            from src.processors.event_stream import cluster_unprocessed_items
+
+            use_mock = isinstance(self.processor.ai, MockAIProcessor)
+            clustered_count = cluster_unprocessed_items(
+                db=self.db, use_mock=use_mock, limit=100
+            )
+            if clustered_count > 0:
+                logger.info(f"Clustered {clustered_count} items into events")
+
+        # Step 2: Get clustered items grouped by cluster
+        clustered_data = self.db.get_undelivered_clustered_items(
+            min_importance=min_importance,
+            limit=max_items * 2,  # Get more to allow for grouping
+        )
+
+        # Step 3: Build EventDigestItem for each cluster
+        events: list[EventDigestItem] = []
+        for cluster_id, members in clustered_data.items():
+            cluster = self.db.get_event_cluster(cluster_id)
+            if cluster and members:
+                # Members are already sorted by importance desc from the query
+                events.append(
+                    EventDigestItem(
+                        event_cluster=cluster,
+                        members=members,
+                        representative_item=members[0],  # Highest importance
+                    )
+                )
+
+        # Sort events by importance
+        events.sort(key=lambda e: e.importance_score, reverse=True)
+
+        # Step 4: Get unclustered items
+        unclustered = self.db.get_undelivered_unclustered_items(
             min_importance=min_importance,
             limit=max_items,
         )
 
         digest_items = []
-        for item in items:
+        for item in unclustered:
             if item.summary and item.category and item.importance_score:
                 digest_items.append(
                     DigestItem(
@@ -684,22 +756,52 @@ class DigestGenerator:
         # Sort by importance (descending)
         digest_items.sort(key=lambda x: x.importance_score, reverse=True)
 
+        # Limit total count (events + items)
+        # Each event counts as 1 toward the limit
+        total_count = len(events) + len(digest_items)
+        if total_count > max_items:
+            # Prioritize by importance across both lists
+            all_items: list[tuple[int, bool, int]] = []
+            for i, e in enumerate(events):
+                all_items.append((e.importance_score, True, i))
+            for i, d in enumerate(digest_items):
+                all_items.append((d.importance_score, False, i))
+
+            all_items.sort(key=lambda x: x[0], reverse=True)
+            all_items = all_items[:max_items]
+
+            # Rebuild filtered lists
+            event_indices = {idx for score, is_event, idx in all_items if is_event}
+            item_indices = {idx for score, is_event, idx in all_items if not is_event}
+
+            events = [e for i, e in enumerate(events) if i in event_indices]
+            digest_items = [d for i, d in enumerate(digest_items) if i in item_indices]
+
+        total_processed = len(unclustered) + sum(len(e.members) for e in events)
+        successful = len(digest_items) + len(events)
+
         return DigestResult(
-            items=digest_items[:max_items],
-            total_processed=len(items),
-            successful=len(digest_items),
-            failed=len(items) - len(digest_items),
+            items=digest_items,
+            events=events,
+            total_processed=total_processed,
+            successful=successful,
+            failed=total_processed - successful,
         )
 
     def mark_digest_delivered(self, digest: DigestResult) -> None:
-        """Mark all items in a digest as delivered."""
+        """Mark all items in a digest as delivered, including event members."""
         if not self.db:
             raise ValueError("Database not configured")
 
-        item_ids = [item.content_item.id for item in digest.items if item.content_item.id]
+        item_ids = digest.all_content_ids
         if item_ids:
             self.db.mark_items_delivered(item_ids)
-            logger.info(f"Marked {len(item_ids)} items as delivered")
+            event_member_count = sum(len(e.members) for e in digest.events)
+            logger.info(
+                f"Marked {len(item_ids)} items as delivered "
+                f"({len(digest.items)} individual + {event_member_count} in "
+                f"{len(digest.events)} events)"
+            )
 
     def extract_action_items(self, digest: DigestResult) -> int:
         """
@@ -763,27 +865,44 @@ def create_digest_preview(digest: DigestResult) -> str:
     """
     lines = []
     lines.append("=" * 60)
-    lines.append("📧 BabelByte 每日摘要预览")
+    lines.append("BabelByte 每日摘要预览")
     lines.append(f"生成时间: {digest.generated_at.strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"共 {len(digest.items)} 条内容")
+    lines.append(f"共 {digest.total_items} 条内容")
+    if digest.events:
+        lines.append(f"其中 {len(digest.events)} 个事件, {len(digest.items)} 条独立内容")
     lines.append("=" * 60)
 
-    if not digest.items:
+    if not digest.items and not digest.events:
         lines.append("\n暂无新内容")
         return "\n".join(lines)
 
-    # Group by category
-    for category, items in sorted(digest.by_category.items()):
-        lines.append(f"\n📁 {category} ({len(items)}条)")
+    # Group by category (includes both events and items)
+    for category, category_items in sorted(digest.by_category.items()):
+        lines.append(f"\n[{category}] ({len(category_items)}条)")
         lines.append("-" * 40)
 
-        for item in items:
-            importance_stars = "⭐" * min(item.importance_score // 2, 5)
-            lines.append(f"\n{importance_stars} [{item.importance_score}/10]")
-            lines.append(f"📌 {item.content_item.title[:60]}")
-            lines.append(f"📝 {item.summary}")
-            lines.append(f"🔗 {item.content_item.url}")
-            lines.append(f"   来源: {item.source_display} | 作者: {item.content_item.author}")
+        for item in category_items:
+            importance_stars = "*" * min(item.importance_score // 2, 5)
+
+            if item.is_event:
+                # Event preview
+                lines.append(f"\n{importance_stars} [{item.importance_score}/10] [EVENT]")
+                lines.append(f"  {item.event_title}")
+                lines.append(f"  {item.summary}")
+                lines.append(f"  来源: {item.source_display}")
+                lines.append("  相关报道:")
+                for member in item.members[:3]:
+                    lines.append(f"    - {member.title[:50]}...")
+                    lines.append(f"      {member.url}")
+                if len(item.members) > 3:
+                    lines.append(f"    ...还有 {len(item.members) - 3} 篇报道")
+            else:
+                # Regular item preview
+                lines.append(f"\n{importance_stars} [{item.importance_score}/10]")
+                lines.append(f"  {item.content_item.title[:60]}")
+                lines.append(f"  {item.summary}")
+                lines.append(f"  {item.content_item.url}")
+                lines.append(f"  来源: {item.source_display} | 作者: {item.content_item.author}")
 
     lines.append("\n" + "=" * 60)
     return "\n".join(lines)

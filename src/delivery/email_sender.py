@@ -157,9 +157,11 @@ class EmailSender:
         template = self.jinja_env.get_template("email_digest.html")
         return template.render(
             date=digest.generated_at.strftime("%Y年%m月%d日"),
-            total_items=len(digest.items),
+            total_items=digest.total_items,
+            event_count=len(digest.events),
             category_count=len(digest.by_category),
             items=digest.items,
+            events=digest.events,
             items_by_category=digest.by_category,
         )
 
@@ -169,22 +171,37 @@ class EmailSender:
         lines.append("=" * 50)
         lines.append("BabelByte 每日摘要")
         lines.append(f"日期: {digest.generated_at.strftime('%Y年%m月%d日')}")
-        lines.append(f"共 {len(digest.items)} 条内容")
+        lines.append(f"共 {digest.total_items} 条内容")
+        if digest.events:
+            lines.append(f"其中 {len(digest.events)} 个事件")
         lines.append("=" * 50)
 
-        if not digest.items:
+        if not digest.items and not digest.events:
             lines.append("\n今日暂无新内容")
             return "\n".join(lines)
 
-        for category, items in sorted(digest.by_category.items()):
-            lines.append(f"\n【{category}】({len(items)}条)")
+        for category, category_items in sorted(digest.by_category.items()):
+            lines.append(f"\n【{category}】({len(category_items)}条)")
             lines.append("-" * 30)
 
-            for item in items:
-                lines.append(f"\n★ [{item.importance_score}/10] {item.content_item.title[:50]}")
-                lines.append(f"   {item.summary}")
-                lines.append(f"   来源: {item.source_display} | 作者: {item.content_item.author}")
-                lines.append(f"   链接: {item.content_item.url}")
+            for item in category_items:
+                if item.is_event:
+                    # Event rendering
+                    lines.append(f"\n[事件] ★ [{item.importance_score}/10] {item.event_title}")
+                    lines.append(f"   {item.summary}")
+                    lines.append(f"   来源: {item.source_display}")
+                    lines.append("   相关报道:")
+                    for member in item.members[:3]:
+                        lines.append(f"     - {member.title[:40]}...")
+                    if len(item.members) > 3:
+                        lines.append(f"     ...还有 {len(item.members) - 3} 篇")
+                else:
+                    # Regular item rendering
+                    title = item.content_item.title[:50]
+                    lines.append(f"\n★ [{item.importance_score}/10] {title}")
+                    lines.append(f"   {item.summary}")
+                    lines.append(f"   来源: {item.source_display} | 作者: {item.content_item.author}")
+                    lines.append(f"   链接: {item.content_item.url}")
 
         lines.append("\n" + "=" * 50)
         lines.append("由 BabelByte 自动生成")

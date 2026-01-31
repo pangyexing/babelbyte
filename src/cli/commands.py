@@ -227,8 +227,9 @@ def fetch(ctx):
 @click.option("--min-importance", "-m", default=5, help="Minimum importance score (1-10)")
 @click.option("--max-items", "-n", default=30, help="Maximum items in digest")
 @click.option("--provider", "-p", type=click.Choice(["claude", "codex", "auto"]), default=None, help="AI provider to use")
+@click.option("--no-cluster", is_flag=True, help="Skip automatic event clustering")
 @click.pass_context
-def digest(ctx, dry_run, min_importance, max_items, provider):
+def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
     """Generate and send the daily digest."""
     mock = ctx.obj.get("mock", False)
 
@@ -258,16 +259,28 @@ def digest(ctx, dry_run, min_importance, max_items, provider):
 
         console.print(f"[dim]Processed {processed} items[/dim]")
 
-        # Generate digest
-        console.print("[bold]Generating digest...[/bold]")
+        # Generate digest (with optional clustering)
+        if no_cluster:
+            console.print("[bold]Generating digest (clustering disabled)...[/bold]")
+        else:
+            console.print("[bold]Generating digest with event clustering...[/bold]")
+
         digest_result = generator.generate_digest(
             min_importance=min_importance,
             max_items=max_items,
+            run_clustering=not no_cluster,
         )
 
-        if not digest_result.items:
+        if not digest_result.items and not digest_result.events:
             console.print("[yellow]No items to include in digest[/yellow]")
             return
+
+        # Show stats
+        if digest_result.events:
+            console.print(
+                f"[dim]Found {len(digest_result.events)} events "
+                f"and {len(digest_result.items)} individual items[/dim]"
+            )
 
         # Show preview
         preview = create_digest_preview(digest_result)

@@ -218,6 +218,59 @@
             background-color: #1da1f2;
             color: white;
         }
+        .source-multi {
+            background-color: #6c5ce7;
+            color: white;
+        }
+        /* Event-specific styles */
+        .event-item {
+            background-color: #f8f9ff;
+            border-left: 4px solid #4a90d9;
+        }
+        .event-badge {
+            display: inline-block;
+            background: #4a90d9;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .event-sources {
+            margin-top: 12px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 4px;
+        }
+        .event-sources-label {
+            font-size: 12px;
+            color: #666;
+            font-weight: bold;
+            margin-bottom: 6px;
+        }
+        .event-source-link {
+            display: block;
+            font-size: 12px;
+            color: #4a90d9;
+            text-decoration: none;
+            padding: 4px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .event-source-link:last-child {
+            border-bottom: none;
+        }
+        .event-source-link:hover {
+            text-decoration: underline;
+        }
+        .event-sources-more {
+            display: block;
+            font-size: 11px;
+            color: #888;
+            font-style: italic;
+            padding-top: 4px;
+        }
         .footer {
             text-align: center;
             margin-top: 30px;
@@ -254,10 +307,13 @@
 
         <div class="summary-stats">
             <span>共 <strong>{{ total_items }}</strong> 条内容</span>
+            {% if event_count > 0 %}
+            <span><strong>{{ event_count }}</strong> 个事件</span>
+            {% endif %}
             <span>涵盖 <strong>{{ category_count }}</strong> 个分类</span>
         </div>
 
-        {% if items %}
+        {% if items or events %}
             {% for category, category_items in items_by_category.items() %}
             <div class="category-section">
                 <div class="category-header">
@@ -265,6 +321,71 @@
                 </div>
                 <div class="category-content">
                     {% for item in category_items %}
+                    {% if item.is_event %}
+                    {# Event cluster rendering #}
+                    <div class="item event-item">
+                        <div class="item-header">
+                            <div>
+                                <span class="event-badge">事件</span>
+                                <span class="item-title">{{ item.event_title }}</span>
+                            </div>
+                            <span class="importance {% if item.importance_score >= 8 %}high{% elif item.importance_score >= 5 %}medium{% else %}low{% endif %}">
+                                {{ item.importance_score }}/10
+                            </span>
+                        </div>
+
+                        {# One-liner from representative item #}
+                        {% if item.one_liner %}
+                        <div class="one-liner">
+                            {{ item.one_liner }}
+                        </div>
+                        {% endif %}
+
+                        <div class="item-summary">
+                            {{ item.summary }}
+                        </div>
+
+                        {# Key points from representative item #}
+                        {% if item.enhanced_data and item.enhanced_data.key_points %}
+                        <div class="key-points">
+                            {% for kp in item.enhanced_data.key_points %}
+                            <span class="key-point">
+                                <span class="type">{{ kp.type }}:</span>
+                                <span class="value">{{ kp.value }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        {# Impact assessment for high importance events #}
+                        {% if item.importance_score >= 7 and item.enhanced_data and item.enhanced_data.impact_assessment %}
+                        <div class="impact-section">
+                            {% if item.enhanced_data.impact_assessment.short_term %}
+                            <div><span class="label">短期影响:</span> {{ item.enhanced_data.impact_assessment.short_term }}</div>
+                            {% endif %}
+                            {% if item.enhanced_data.impact_assessment.long_term %}
+                            <div><span class="label">长期影响:</span> {{ item.enhanced_data.impact_assessment.long_term }}</div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {# Related sources - show up to 5 member articles #}
+                        <div class="event-sources">
+                            <div class="event-sources-label">相关报道:</div>
+                            {% for member in item.members[:5] %}
+                            <a href="{{ member.url }}" target="_blank" class="event-source-link">{{ member.title[:50] }}{% if member.title|length > 50 %}...{% endif %}</a>
+                            {% endfor %}
+                            {% if item.members|length > 5 %}
+                            <span class="event-sources-more">还有 {{ item.members|length - 5 }} 篇...</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="item-meta">
+                            <span class="source-badge source-multi">{{ item.source_display }}</span>
+                        </div>
+                    </div>
+                    {% else %}
+                    {# Regular item rendering #}
                     <div class="item">
                         <div class="item-header">
                             <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
@@ -332,6 +453,7 @@
                             <a href="{{ item.content_item.url }}" target="_blank">查看原文</a>
                         </div>
                     </div>
+                    {% endif %}
                     {% endfor %}
                 </div>
             </div>

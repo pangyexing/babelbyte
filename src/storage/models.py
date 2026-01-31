@@ -202,6 +202,71 @@ class DigestItem:
         """Get enhanced processing data."""
         return self.content_item.get_enhanced_data()
 
+    @property
+    def is_event(self) -> bool:
+        """Check if this is an event item (for template rendering)."""
+        return False
+
+
+@dataclass
+class EventDigestItem:
+    """An event cluster ready for the digest."""
+
+    event_cluster: "EventCluster"
+    members: list[ContentItem]  # Sorted by importance
+    representative_item: ContentItem  # Highest importance member
+
+    @property
+    def event_title(self) -> str:
+        """Display title with article count."""
+        return f"{self.event_cluster.event_title} ({len(self.members)}篇报道)"
+
+    @property
+    def category(self) -> str:
+        """Get event category."""
+        return self.event_cluster.category
+
+    @property
+    def importance_score(self) -> int:
+        """Get max importance score from members."""
+        return max((m.importance_score or 0) for m in self.members)
+
+    @property
+    def summary(self) -> str:
+        """Get summary from representative item."""
+        return self.representative_item.summary or ""
+
+    @property
+    def one_liner(self) -> Optional[str]:
+        """Get one-liner from representative item."""
+        return self.representative_item.one_liner
+
+    @property
+    def enhanced_data(self) -> Optional[EnhancedProcessingData]:
+        """Get enhanced data from representative item."""
+        return self.representative_item.get_enhanced_data()
+
+    @property
+    def content_item(self) -> ContentItem:
+        """For template compatibility - returns representative item."""
+        return self.representative_item
+
+    @property
+    def source_display(self) -> str:
+        """Display sources from all members."""
+        sources = set()
+        for m in self.members:
+            if m.source_type == SourceType.REDDIT:
+                sources.add("Reddit")
+            else:
+                sources.add("Twitter")
+        return "/".join(sorted(sources))
+
+    @property
+    def is_event(self) -> bool:
+        """Check if this is an event item (for template rendering)."""
+        return True
+
 
 # ============================================
 # Phase 2: Event Stream Models
