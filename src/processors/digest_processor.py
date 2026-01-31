@@ -252,10 +252,13 @@ class DigestGenerator:
                 item.one_liner = rule_only_result.one_liner
                 if rule_only_result.key_points:
                     import json
+
                     item.key_points = json.dumps(
-                        [{"type": kp.type, "value": kp.value, "impact": kp.impact}
-                         for kp in rule_only_result.key_points],
-                        ensure_ascii=False
+                        [
+                            {"type": kp.type, "value": kp.value, "impact": kp.impact}
+                            for kp in rule_only_result.key_points
+                        ],
+                        ensure_ascii=False,
                     )
                 item.processed_at = datetime.now()
                 self.db.update_content_item(item)
@@ -924,7 +927,19 @@ class DigestGenerator:
 
 def create_digest_preview(digest: DigestResult) -> str:
     """
-    Create a text preview of the digest.
+    Create an enhanced text preview of the digest with rich formatting.
+
+    Shows:
+    - Event/article title
+    - Importance score
+    - One-liner (key insight)
+    - Summary
+    - Key points
+    - Impact assessment (for high-importance items)
+    - Related articles (for events)
+    - Source info
+
+    Uses box-drawing characters for visual structure.
 
     Args:
         digest: The digest to preview.
@@ -947,31 +962,89 @@ def create_digest_preview(digest: DigestResult) -> str:
 
     # Group by category (includes both events and items)
     for category, category_items in sorted(digest.by_category.items()):
-        lines.append(f"\n[{category}] ({len(category_items)}条)")
-        lines.append("-" * 40)
+        lines.append(f"\n┌─ [{category}] ({len(category_items)}条) " + "─" * 30)
 
         for item in category_items:
-            importance_stars = "*" * min(item.importance_score // 2, 5)
+            lines.append("│")
 
             if item.is_event:
-                # Event preview
-                lines.append(f"\n{importance_stars} [{item.importance_score}/10] [EVENT]")
-                lines.append(f"  {item.event_title}")
-                lines.append(f"  {item.summary}")
-                lines.append(f"  来源: {item.source_display}")
-                lines.append("  相关报道:")
+                # Event preview with enhanced format
+                lines.append(f"│ 事件 | {item.event_cluster.event_title}")
+                lines.append(f"│ {item.importance_score}/10")
+
+                # One-liner (key insight)
+                one_liner = item.one_liner
+                if one_liner:
+                    lines.append(f"│ [核心] {one_liner}")
+
+                # Summary
+                if item.summary:
+                    lines.append(f"│ {item.summary}")
+
+                # Key points from representative item
+                enhanced = item.enhanced_data
+                if enhanced and enhanced.key_points:
+                    kp_str = " | ".join(
+                        [f"{kp.type}: {kp.value}" for kp in enhanced.key_points[:3]]
+                    )
+                    lines.append(f"│ 关键点: {kp_str}")
+
+                # Impact assessment for high importance
+                if item.importance_score >= 7 and enhanced and enhanced.impact_assessment:
+                    impact = enhanced.impact_assessment
+                    if impact.short_term:
+                        lines.append(f"│ 短期影响: {impact.short_term}")
+
+                # Related articles
+                lines.append("│ 相关报道:")
                 for member in item.members[:3]:
-                    lines.append(f"    - {member.title[:50]}...")
-                    lines.append(f"      {member.url}")
+                    title_display = member.title[:60]
+                    if len(member.title) > 60:
+                        title_display += "..."
+                    lines.append(f"│   - {title_display}")
+                    lines.append(f"│     {member.url}")
                 if len(item.members) > 3:
-                    lines.append(f"    ...还有 {len(item.members) - 3} 篇报道")
+                    lines.append(f"│   ...还有 {len(item.members) - 3} 篇报道")
+
+                lines.append(f"│ 来源: {item.source_display}")
+
             else:
-                # Regular item preview
-                lines.append(f"\n{importance_stars} [{item.importance_score}/10]")
-                lines.append(f"  {item.content_item.title[:60]}")
-                lines.append(f"  {item.summary}")
-                lines.append(f"  {item.content_item.url}")
-                lines.append(f"  来源: {item.source_display} | 作者: {item.content_item.author}")
+                # Regular item preview with enhanced format
+                title = item.content_item.title
+                title_display = title[:60] + "..." if len(title) > 60 else title
+                lines.append(f"│ 文章 | {title_display}")
+                lines.append(f"│ {item.importance_score}/10")
+
+                # One-liner
+                enhanced = item.content_item.get_enhanced_data()
+                one_liner = item.content_item.one_liner
+                if one_liner:
+                    lines.append(f"│ [核心] {one_liner}")
+
+                # Summary
+                if item.summary:
+                    lines.append(f"│ {item.summary}")
+
+                # Key points
+                if enhanced and enhanced.key_points:
+                    kp_str = " | ".join(
+                        [f"{kp.type}: {kp.value}" for kp in enhanced.key_points[:3]]
+                    )
+                    lines.append(f"│ 关键点: {kp_str}")
+
+                # Impact assessment for high importance
+                if item.importance_score >= 7 and enhanced and enhanced.impact_assessment:
+                    impact = enhanced.impact_assessment
+                    if impact.short_term:
+                        lines.append(f"│ 短期影响: {impact.short_term}")
+
+                lines.append(f"│ {item.content_item.url}")
+                author = item.content_item.author or "未知"
+                lines.append(f"│ 来源: {item.source_display} | 作者: {author}")
+
+            lines.append("│" + "─" * 50)
+
+        lines.append("└" + "─" * 50)
 
     lines.append("\n" + "=" * 60)
     return "\n".join(lines)

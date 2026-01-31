@@ -372,9 +372,11 @@ class JobRunner:
                     db.save_content_embedding(
                         content_id=item.id,
                         embedding=embedding_bytes,
-                        model=settings.embedding.sentence_transformers_model
-                        if settings.embedding.provider == "sentence-transformers"
-                        else settings.embedding.openai_model,
+                        model=(
+                            settings.embedding.sentence_transformers_model
+                            if settings.embedding.provider == "sentence-transformers"
+                            else settings.embedding.openai_model
+                        ),
                         dimension=manager.dimension,
                     )
                     stats["computed"] += 1
@@ -390,7 +392,9 @@ class JobRunner:
         return stats
 
     def discover_topics(
-        self, days: int = DEFAULT_TOPIC_DISCOVER_DAYS, min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY
+        self,
+        days: int = DEFAULT_TOPIC_DISCOVER_DAYS,
+        min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY,
     ) -> dict:
         """
         Discover topics from recent content using frequency analysis.
@@ -429,7 +433,9 @@ class JobRunner:
 
                 stats["saved"] = saved
 
-            logger.info(f"Topic discovery completed: {stats['discovered']} discovered, {stats['saved']} saved")
+            logger.info(
+                f"Topic discovery completed: {stats['discovered']} discovered, {stats['saved']} saved"
+            )
 
         except (ImportError, RuntimeError) as e:
             logger.error(f"Topic discovery failed: {e}")
@@ -491,11 +497,11 @@ class JobRunner:
         # First, process any unprocessed items
         self.process_content()
 
-        # Run preprocessing tasks (embeddings + topic discovery + clustering)
+        # Run preprocessing tasks (embeddings + clustering)
+        # Note: topic discovery is available via `bb topic discover` but not run automatically
         if run_preprocessing:
             logger.info("Running preprocessing tasks...")
             self.compute_embeddings()
-            self.discover_topics()
             self.run_clustering()
 
         # Generate digest
@@ -600,7 +606,9 @@ class BabelByteScheduler:
         return self.runner.compute_embeddings(limit=limit)
 
     def run_topic_discovery_now(
-        self, days: int = DEFAULT_TOPIC_DISCOVER_DAYS, min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY
+        self,
+        days: int = DEFAULT_TOPIC_DISCOVER_DAYS,
+        min_frequency: int = DEFAULT_TOPIC_MIN_FREQUENCY,
     ) -> dict:
         """Run topic discovery immediately."""
         return self.runner.discover_topics(days=days, min_frequency=min_frequency)

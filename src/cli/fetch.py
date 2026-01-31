@@ -169,9 +169,10 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parall
 def daily(ctx, dry_run, skip_fetch):
     """Run the complete daily pipeline in one command.
 
-    Executes: fetch → embeddings → process → topics → cluster → digest
+    Executes: fetch → embeddings → process → cluster → digest
 
     Perfect for manual daily runs when you can't keep a daemon running.
+    Topic discovery is available separately via `bb topic discover`.
 
     Examples:
         bb daily              # Full pipeline, send email
@@ -184,7 +185,7 @@ def daily(ctx, dry_run, skip_fetch):
     try:
         # Step 1: Fetch
         if not skip_fetch:
-            console.print("\n[bold cyan]Step 1/6: Fetching content...[/bold cyan]")
+            console.print("\n[bold cyan]Step 1/5: Fetching content...[/bold cyan]")
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -205,10 +206,10 @@ def daily(ctx, dry_run, skip_fetch):
                 f"{fetch_stats['new_items']} new items"
             )
         else:
-            console.print("\n[bold cyan]Step 1/6: Fetch skipped[/bold cyan]")
+            console.print("\n[bold cyan]Step 1/5: Fetch skipped[/bold cyan]")
 
         # Step 2: Compute embeddings (free, local) - before AI to enable dedup
-        console.print("\n[bold cyan]Step 2/6: Computing embeddings...[/bold cyan]")
+        console.print("\n[bold cyan]Step 2/5: Computing embeddings...[/bold cyan]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -226,7 +227,7 @@ def daily(ctx, dry_run, skip_fetch):
             console.print(f"  [green]✓[/green] Computed {emb_stats['computed']} embeddings")
 
         # Step 3: Process content with AI (can leverage embeddings for dedup)
-        console.print("\n[bold cyan]Step 3/6: Processing with AI...[/bold cyan]")
+        console.print("\n[bold cyan]Step 3/5: Processing with AI...[/bold cyan]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -238,27 +239,8 @@ def daily(ctx, dry_run, skip_fetch):
 
         console.print(f"  [green]✓[/green] Processed {processed} items")
 
-        # Step 4: Discover topics (free, statistics only)
-        console.print("\n[bold cyan]Step 4/6: Discovering topics...[/bold cyan]")
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Analyzing topics...", total=None)
-            topic_stats = runner.discover_topics()
-
-        if topic_stats.get("error"):
-            console.print(f"  [yellow]Warning: {topic_stats['error']}[/yellow]")
-        else:
-            console.print(
-                f"  [green]✓[/green] Discovered {topic_stats['discovered']} topics, "
-                f"saved {topic_stats['saved']}"
-            )
-
-        # Step 5: Run clustering
-        console.print("\n[bold cyan]Step 5/6: Clustering events...[/bold cyan]")
+        # Step 4: Run clustering
+        console.print("\n[bold cyan]Step 4/5: Clustering events...[/bold cyan]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -273,8 +255,8 @@ def daily(ctx, dry_run, skip_fetch):
         else:
             console.print(f"  [green]✓[/green] Clustered {cluster_stats['clustered']} items")
 
-        # Step 6: Generate and send digest
-        console.print("\n[bold cyan]Step 6/6: Generating digest...[/bold cyan]")
+        # Step 5: Generate and send digest
+        console.print("\n[bold cyan]Step 5/5: Generating digest...[/bold cyan]")
 
         db = get_db()
         try:
