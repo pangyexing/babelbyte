@@ -2271,6 +2271,7 @@ class Database:
                 item = ContentItem(
                     id=row["id"],
                     subscription_id=row["subscription_id"],
+                    source_type=SourceType(row["source_type"]),
                     external_id=row["external_id"],
                     title=row["title"],
                     content=row["content"],
@@ -2279,9 +2280,9 @@ class Database:
                     published_at=datetime.fromisoformat(row["published_at"])
                     if row["published_at"]
                     else None,
-                    created_at=datetime.fromisoformat(row["created_at"])
-                    if row["created_at"]
-                    else None,
+                    fetched_at=datetime.fromisoformat(row["fetched_at"])
+                    if row["fetched_at"]
+                    else datetime.now(),
                     processed_at=datetime.fromisoformat(row["processed_at"])
                     if row["processed_at"]
                     else None,
