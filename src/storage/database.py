@@ -226,6 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_topics_name ON topics(name);
 CREATE INDEX IF NOT EXISTS idx_action_items_status ON action_items(status);
 CREATE INDEX IF NOT EXISTS idx_action_items_priority ON action_items(priority);
 
+-- Event members indexes (for cluster performance optimization)
+CREATE INDEX IF NOT EXISTS idx_event_members_content_id ON event_members(content_item_id);
+CREATE INDEX IF NOT EXISTS idx_event_members_cluster_id ON event_members(event_cluster_id);
+
 -- AI cache indexes
 CREATE INDEX IF NOT EXISTS idx_ai_cache_expires ON ai_cache(expires_at);
 """
@@ -512,6 +516,38 @@ class Database:
                 AND delivered = 0
                 AND importance_score >= ?
                 ORDER BY importance_score DESC, published_at DESC
+                LIMIT ?
+                """,
+                (min_importance, limit),
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_content_item(row) for row in rows]
+
+    async def get_unclustered_items(
+        self, min_importance: int = 5, limit: int = 100
+    ) -> list[ContentItem]:
+        """Get processed items not yet assigned to any cluster.
+
+        This is an optimization for clustering - it skips items that are already
+        in a cluster, avoiding redundant processing.
+
+        Args:
+            min_importance: Minimum importance score to include
+            limit: Maximum items to return
+
+        Returns:
+            List of ContentItem not in any cluster
+        """
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT c.* FROM content_items c
+                LEFT JOIN event_members em ON c.id = em.content_item_id
+                WHERE c.processed_at IS NOT NULL
+                  AND c.delivered = 0
+                  AND c.importance_score >= ?
+                  AND em.content_item_id IS NULL
+                ORDER BY c.importance_score DESC, c.published_at DESC
                 LIMIT ?
                 """,
                 (min_importance, limit),
@@ -1562,6 +1598,9 @@ class SyncDatabase:
 
     def get_undelivered_items(self, min_importance: int = 1, limit: int = 50) -> list[ContentItem]:
         return self._run(self._async_db.get_undelivered_items(min_importance, limit))
+
+    def get_unclustered_items(self, min_importance: int = 5, limit: int = 100) -> list[ContentItem]:
+        return self._run(self._async_db.get_unclustered_items(min_importance, limit))
 
     def update_content_item(self, item: ContentItem) -> None:
         self._run(self._async_db.update_content_item(item))

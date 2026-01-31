@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from config.settings import get_settings
@@ -197,6 +198,16 @@ class EventStreamProcessor:
         """
         if not candidates:
             return None
+
+        # Auto-accept very high confidence matches without AI call
+        # This is a performance optimization - score >= 0.8 indicates strong
+        # entity/keyword overlap that doesn't need AI confirmation
+        if candidates[0].score >= 0.8:
+            logger.info(
+                f"Auto-accepting high-confidence match (score={candidates[0].score:.2f}) "
+                f"for item {item.id} -> cluster '{candidates[0].cluster_title}'"
+            )
+            return candidates[0]
 
         # Check cache first
         cache_key = (item.id, tuple(c.cluster_id for c in candidates))
@@ -468,7 +479,7 @@ def cluster_unprocessed_items(
     progress_callback: Optional[callable] = None,
 ) -> int:
     """
-    Cluster all processed but unclustered items.
+    Cluster all processed but unclustered items (sequential version).
 
     Args:
         db: Database connection
@@ -481,9 +492,9 @@ def cluster_unprocessed_items(
     """
     processor = EventStreamProcessor(db=db, use_mock=use_mock)
 
-    # Get processed items that might need clustering
-    # (high importance items from the last few days)
-    items = db.get_undelivered_items(min_importance=6, limit=limit)
+    # Get unclustered items only - this skips items already in clusters
+    # for better performance (optimization: skip already-clustered items)
+    items = db.get_unclustered_items(min_importance=6, limit=limit)
 
     clustered = 0
     total = len(items)
@@ -497,4 +508,125 @@ def cluster_unprocessed_items(
             progress_callback(i + 1, total, clustered)
 
     logger.info(f"Clustered {clustered}/{total} items into events")
+    return clustered
+
+
+def cluster_unprocessed_items_parallel(
+    db: SyncDatabase,
+    use_mock: bool = False,
+    limit: int = 100,
+    max_workers: int = 4,
+    progress_callback: Optional[callable] = None,
+) -> int:
+    """
+    Cluster items using parallel AI processing with ThreadPoolExecutor.
+
+    This is significantly faster than sequential processing when AI calls are needed,
+    as multiple subprocess calls can run concurrently.
+
+    Note: Each worker thread gets its own database connection to avoid
+    event loop conflicts with asyncio.
+
+    Args:
+        db: Database connection (used for initial query only)
+        use_mock: Use mock mode
+        limit: Maximum items to process
+        max_workers: Number of parallel workers (default 4)
+        progress_callback: Optional callback(current, total, clustered) for progress updates
+
+    Returns:
+        Number of items clustered
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Get unclustered items using the main db connection
+    items = db.get_unclustered_items(min_importance=6, limit=limit)
+
+    if not items:
+        logger.info("No unclustered items to process")
+        return 0
+
+    total = len(items)
+    clustered = 0
+    completed = 0
+    lock = threading.Lock()
+
+    # Thread-local storage for per-thread database connections
+    thread_local = threading.local()
+
+    def get_thread_db() -> SyncDatabase:
+        """Get or create a database connection for the current thread."""
+        if not hasattr(thread_local, "db"):
+            # Check if db has a valid db_path (not a MagicMock or missing)
+            db_path = getattr(db, "db_path", None)
+            if db_path is None or not isinstance(db_path, (str, Path)):
+                # In mock/test mode, just reuse the original mock db
+                thread_local.db = db
+            else:
+                # Each thread gets its own SyncDatabase instance
+                # This ensures each thread has its own event loop
+                thread_local.db = SyncDatabase(db_path)
+                thread_local.db.connect()
+        return thread_local.db
+
+    def get_thread_processor() -> EventStreamProcessor:
+        """Get or create a processor for the current thread."""
+        if not hasattr(thread_local, "processor"):
+            thread_local.processor = EventStreamProcessor(
+                db=get_thread_db(), use_mock=use_mock
+            )
+        return thread_local.processor
+
+    def process_single_item(item: "ContentItem") -> bool:
+        """Process a single item for clustering (thread-safe)."""
+        nonlocal clustered, completed
+
+        try:
+            processor = get_thread_processor()
+            result = processor.process_item_for_clustering(item)
+
+            with lock:
+                completed += 1
+                if result:
+                    clustered += 1
+                current_clustered = clustered
+                current_completed = completed
+
+            if progress_callback:
+                progress_callback(current_completed, total, current_clustered)
+
+            return result is not None
+        except Exception as e:
+            with lock:
+                completed += 1
+                current_completed = completed
+
+            if progress_callback:
+                progress_callback(current_completed, total, clustered)
+
+            raise e
+
+    # Process items in parallel
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            futures = {executor.submit(process_single_item, item): item for item in items}
+
+            # Wait for completion (results are tracked via side effects)
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    item = futures[future]
+                    logger.warning(f"Error processing item {item.id}: {e}")
+    finally:
+        # Clean up thread-local database connections
+        # Note: ThreadPoolExecutor reuses threads, so we can't easily close
+        # connections here. They will be closed when the threads are destroyed.
+        pass
+
+    logger.info(
+        f"Clustered {clustered}/{total} items into events (parallel, {max_workers} workers)"
+    )
     return clustered

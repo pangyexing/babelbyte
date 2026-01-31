@@ -686,6 +686,8 @@ class DigestGenerator:
         include_delivered: bool = False,
         run_clustering: bool = True,
         clustering_progress_callback: Optional[callable] = None,
+        parallel_clustering: bool = True,
+        clustering_workers: int = 4,
     ) -> DigestResult:
         """
         Generate a digest from processed items, with event clustering support.
@@ -697,6 +699,8 @@ class DigestGenerator:
             run_clustering: Whether to run event clustering before generating digest.
             clustering_progress_callback: Optional callback(current, total, clustered) for
                 clustering progress updates.
+            parallel_clustering: Use parallel processing for clustering (default: True).
+            clustering_workers: Number of parallel workers for clustering (default: 4).
 
         Returns:
             DigestResult with digest items and event clusters.
@@ -706,15 +710,28 @@ class DigestGenerator:
 
         # Step 1: Run clustering if enabled
         if run_clustering:
-            from src.processors.event_stream import cluster_unprocessed_items
+            from src.processors.event_stream import (
+                cluster_unprocessed_items,
+                cluster_unprocessed_items_parallel,
+            )
 
             use_mock = isinstance(self.processor.ai, MockAIProcessor)
-            clustered_count = cluster_unprocessed_items(
-                db=self.db,
-                use_mock=use_mock,
-                limit=100,
-                progress_callback=clustering_progress_callback,
-            )
+
+            if parallel_clustering:
+                clustered_count = cluster_unprocessed_items_parallel(
+                    db=self.db,
+                    use_mock=use_mock,
+                    limit=100,
+                    max_workers=clustering_workers,
+                    progress_callback=clustering_progress_callback,
+                )
+            else:
+                clustered_count = cluster_unprocessed_items(
+                    db=self.db,
+                    use_mock=use_mock,
+                    limit=100,
+                    progress_callback=clustering_progress_callback,
+                )
             if clustered_count > 0:
                 logger.info(f"Clustered {clustered_count} items into events")
 

@@ -226,10 +226,14 @@ def fetch(ctx):
 @click.option("--dry-run", is_flag=True, help="Preview digest without sending")
 @click.option("--min-importance", "-m", default=5, help="Minimum importance score (1-10)")
 @click.option("--max-items", "-n", default=30, help="Maximum items in digest")
-@click.option("--provider", "-p", type=click.Choice(["claude", "codex", "auto"]), default=None, help="AI provider to use")
+@click.option("--provider", "-p", type=click.Choice(["claude", "codex", "auto"]), default=None,
+              help="AI provider to use")
 @click.option("--no-cluster", is_flag=True, help="Skip automatic event clustering")
+@click.option("--parallel/--no-parallel", default=True,
+              help="Use parallel clustering (default: enabled)")
+@click.option("--workers", "-w", default=4, help="Number of parallel clustering workers")
 @click.pass_context
-def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
+def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parallel, workers):
     """Generate and send the daily digest."""
     mock = ctx.obj.get("mock", False)
 
@@ -269,6 +273,7 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
             )
         else:
             # Run clustering with progress bar
+            mode_str = f"parallel, {workers} workers" if parallel else "sequential"
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -278,7 +283,9 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
                 console=console,
                 transient=True,
             ) as progress:
-                task = progress.add_task("[bold]Clustering events...[/bold]", total=None, clustered=0)
+                task = progress.add_task(
+                    f"[bold]Clustering events ({mode_str})...[/bold]", total=None, clustered=0
+                )
 
                 def on_cluster_progress(current, total, clustered):
                     progress.update(task, total=total, completed=current, clustered=clustered)
@@ -288,6 +295,8 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster):
                     max_items=max_items,
                     run_clustering=True,
                     clustering_progress_callback=on_cluster_progress,
+                    parallel_clustering=parallel,
+                    clustering_workers=workers,
                 )
 
         if not digest_result.items and not digest_result.events:
@@ -1068,19 +1077,31 @@ def event(ctx, event_id):
 
 @cli.command("cluster")
 @click.option("--limit", "-n", default=50, help="Maximum items to cluster")
+@click.option("--parallel/--no-parallel", default=True, help="Use parallel processing (default: enabled)")
+@click.option("--workers", "-w", default=4, help="Number of parallel workers (default: 4)")
 @click.pass_context
-def cluster_content(ctx, limit):
+def cluster_content(ctx, limit, parallel, workers):
     """Run event clustering on recent content.
+
+    Uses parallel processing by default for faster execution.
+    Each item may trigger an AI subprocess call, so parallel processing
+    can provide significant speedup (3-4x with 4 workers).
 
     Examples:
         babelbyte cluster
         babelbyte cluster --limit 100
+        babelbyte cluster --limit 100 --workers 8
+        babelbyte cluster --no-parallel
     """
     mock = ctx.obj.get("mock", False)
     db = get_db()
     try:
-        from src.processors.event_stream import cluster_unprocessed_items
+        from src.processors.event_stream import (
+            cluster_unprocessed_items,
+            cluster_unprocessed_items_parallel,
+        )
 
+        mode_str = f"parallel ({workers} workers)" if parallel else "sequential"
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -1089,16 +1110,27 @@ def cluster_content(ctx, limit):
             TextColumn("[green]{task.fields[clustered]} clustered[/green]"),
             console=console,
         ) as progress:
-            task = progress.add_task("[bold]Clustering...[/bold]", total=None, clustered=0)
+            task = progress.add_task(
+                f"[bold]Clustering ({mode_str})...[/bold]", total=None, clustered=0
+            )
 
             def on_progress(current, total, clustered):
                 progress.update(task, total=total, completed=current, clustered=clustered)
 
-            clustered = cluster_unprocessed_items(
-                db=db, use_mock=mock, limit=limit, progress_callback=on_progress
-            )
+            if parallel:
+                clustered = cluster_unprocessed_items_parallel(
+                    db=db,
+                    use_mock=mock,
+                    limit=limit,
+                    max_workers=workers,
+                    progress_callback=on_progress,
+                )
+            else:
+                clustered = cluster_unprocessed_items(
+                    db=db, use_mock=mock, limit=limit, progress_callback=on_progress
+                )
 
-        console.print(f"[green]Clustered {clustered} items into events[/green]")
+        console.print(f"[green]Clustered {clustered} items into events ({mode_str})[/green]")
 
     finally:
         db.close()

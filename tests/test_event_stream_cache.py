@@ -339,8 +339,9 @@ class TestAIConfirmationCache:
             fetched_at=now,
         )
 
+        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
         candidates = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.8, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.6, method="entity"),
         ]
 
         # Calls for different items
@@ -352,8 +353,9 @@ class TestAIConfirmationCache:
 
     def test_ai_confirm_cache_different_candidates(self, processor, sample_content_item):
         """Test that different candidate lists have separate cache entries."""
+        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
         candidates1 = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.8, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event 1", score=0.6, method="entity"),
         ]
         candidates2 = [
             ClusterCandidate(cluster_id=2, cluster_title="Event 2", score=0.7, method="keyword"),
@@ -435,8 +437,9 @@ class TestClearCache:
 
     def test_clear_cache_does_not_affect_instance_cache(self, processor, sample_content_item):
         """Test that clear_cache does not clear instance-level AI cache."""
+        # Use score < 0.8 to avoid auto-accept optimization (which skips cache)
         candidates = [
-            ClusterCandidate(cluster_id=1, cluster_title="Event", score=0.8, method="entity"),
+            ClusterCandidate(cluster_id=1, cluster_title="Event", score=0.6, method="entity"),
         ]
 
         # Populate instance cache
@@ -575,7 +578,8 @@ class TestProgressCallback:
             for i in range(1, 4)
         ]
 
-        mock_db.get_undelivered_items.return_value = items
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
 
         # Track progress calls
@@ -621,7 +625,8 @@ class TestProgressCallback:
             for i in range(1, 4)
         ]
 
-        mock_db.get_undelivered_items.return_value = items
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
 
         # Mock cluster creation
@@ -659,7 +664,8 @@ class TestProgressCallback:
         from src.processors.event_stream import cluster_unprocessed_items
 
         mock_db = MagicMock()
-        mock_db.get_undelivered_items.return_value = []
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = []
 
         # Should not raise error
         result = cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
@@ -710,7 +716,8 @@ class TestBatchClusteringCache:
             article_count=2,
         )
 
-        mock_db.get_undelivered_items.return_value = items
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = [existing_cluster]
 
         # Clear cache and get initial state
@@ -753,7 +760,8 @@ class TestBatchClusteringCache:
             for i in range(1, 6)
         ]
 
-        mock_db.get_undelivered_items.return_value = items
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
 
         cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
@@ -815,7 +823,8 @@ class TestBatchClusteringCache:
             ),
         ]
 
-        mock_db.get_undelivered_items.return_value = items
+        # Use get_unclustered_items (the optimized method)
+        mock_db.get_unclustered_items.return_value = items
         mock_db.get_recent_event_clusters.return_value = []
 
         cluster_unprocessed_items(db=mock_db, use_mock=True, limit=10)
