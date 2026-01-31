@@ -48,7 +48,7 @@ extract = [
 ]
 
 [project.scripts]
-babelbyte = "src.cli.commands:cli"
+bb = "src.cli.commands:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
