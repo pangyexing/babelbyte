@@ -100,22 +100,34 @@ ruff check . --select E,F,W,I              # Lint
 ## Architecture
 
 ```
-CLI (Click) → Scheduler (APScheduler)
-                    ↓
-    ┌───────────────┼───────────────┐
-    ↓               ↓               ↓
-Fetchers      Event Stream    Topic Radar
-(Reddit/Twitter)    ↓               ↓
-    ↓          Clustering      Matching
-    └──────→ SQLite + FTS5 ←───────┘
-                    ↓
-            AI Processors
-         (Claude/Codex CLI)
-                    ↓
-         ┌─────────┼─────────┐
-         ↓         ↓         ↓
-    Digest    Actions    Reports
-    Email     Extract    Weekly/Monthly
+                        CLI (Click)
+                            ↓
+                   Scheduler (APScheduler)
+                            ↓
+┌───────────────────────────┼───────────────────────────┐
+↓                           ↓                           ↓
+Fetchers               Rule Classifier            Embeddings
+(Reddit/Twitter/       (40+ 域名模式              (SentenceTransformers
+ HN/RSS)                预分类/跳过)               本地/OpenAI)
+↓                           ↓                           ↓
+└───────────────→ SQLite + FTS5 ←───────────────────────┘
+                            ↓
+                    AI Processors ←─── Token Tracker
+                 (Claude/Codex CLI)     (8类调用追踪)
+                            ↓
+        ┌───────────────────┼───────────────────┐
+        ↓                   ↓                   ↓
+  Event Stream         Topic Radar        Topic Discovery
+  (混合聚类:            (关键词匹配         (实体频率/
+   40%规则+60%语义       趋势检测)           趋势突增)
+   +AI确认)
+        ↓                   ↓                   ↓
+        └─────────┬─────────┴─────────┬─────────┘
+                  ↓                   ↓
+    ┌─────────────┼─────────────┬─────┴─────┐
+    ↓             ↓             ↓           ↓
+ Digest       Actions       Reports    Validation
+ Email        Extract      Week/Month  (12项检查)
 ```
 
 **Key modules:**
