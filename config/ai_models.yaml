@@ -12,7 +12,7 @@ model_tiers:
     light: haiku
 
   codex:
-    heavy: gpt-5.1-codex
+    heavy: gpt-5.2-codex
     light: gpt-5.1-codex-mini
 
 # Quality Protection Strategy
