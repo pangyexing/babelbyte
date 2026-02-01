@@ -18,7 +18,7 @@ AI 驱动的**个人情报产品**，从 Reddit 和 Twitter 抓取内容，通�
 ## 功能特性
 
 - **多平台支持**: Reddit、Twitter、Hacker News、通用 RSS/Atom
-- **AI 智能处理**: 通过 Claude/Codex CLI 生成结构化分析
+- **AI 智能处理**: 通过 Claude/Codex CLI 或 Ollama 本地模型生成结构化分析
 - **结构化输出**: 摘要、关键点、短期/长期影响、行动项
 - **语义聚类**: 混合相似度 (40% 规则 + 60% Embedding) 智能合并
 - **自动主题发现**: 基于实体频率、关键词共现、趋势突增自动发现主题
@@ -35,7 +35,7 @@ AI 驱动的**个人情报产品**，从 Reddit 和 Twitter 抓取内容，通�
 ### 环境要求
 
 - Python 3.10+
-- Claude Code CLI 或 Codex CLI (已安装并登录)
+- Claude Code CLI、Codex CLI 或 Ollama (三选一)
 
 ### 安装步骤
 
@@ -66,8 +66,13 @@ cp .env.example .env
 ### 2. 编辑 `.env` 文件
 
 ```bash
-# AI 提供商配置 (claude / codex / auto)
+# AI 提供商配置 (claude / codex / ollama / auto)
 AI_PROVIDER=auto
+
+# Ollama 本地模型配置 (当 AI_PROVIDER=ollama 时使用)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:32b
+OLLAMA_TIMEOUT=120
 
 # Twitter API (TwitterAPI.io)
 TWITTERAPI_IO_KEY=your_key
@@ -344,7 +349,7 @@ Fetchers                                         Rule Classifier
                  (SentenceTransformers)
                             ↓
                     AI Processors ←─── Token Tracker
-                 (Claude/Codex CLI)     (8类调用追踪)
+              (Claude/Codex/Ollama)     (8类调用追踪)
                  (跳过相似内容:92%阈值)
                             ↓
         ┌───────────────────┼───────────────────┐
@@ -395,6 +400,7 @@ babelbyte/
 │   │   ├── base.py             # 基类 + 增强结果
 │   │   ├── claude_cli.py       # Claude CLI
 │   │   ├── openai_cli.py       # Codex CLI
+│   │   ├── ollama_api.py       # Ollama 本地模型
 │   │   ├── digest_processor.py # 摘要 + 行动提取
 │   │   ├── event_stream.py     # 事件聚类 + 混合相似度
 │   │   ├── embeddings.py       # Embedding 提供者 + 管理器
@@ -543,6 +549,29 @@ triggers          # 触发器 (自动化规则)
 2. 设置 → POP3/SMTP 服务 → 开启
 3. 获取授权码
 4. 配置到 `.env` 文件
+
+### Ollama (本地模型)
+
+使用 Ollama 运行本地大模型:
+
+1. 安装 Ollama: https://ollama.com/download
+2. 拉取模型: `ollama pull qwen3:32b`
+3. 启动服务: `ollama serve`
+4. 配置 `.env`:
+   ```bash
+   AI_PROVIDER=ollama
+   OLLAMA_MODEL=qwen3:32b
+   ```
+
+**RTX 4090 (24GB) 推荐模型:**
+
+| 模型 | VRAM 占用 | 速度 | 说明 |
+|------|----------|------|------|
+| `qwen3:32b` | ~20GB | ~20 tok/s | 中文优化，摘要/结构化强，**默认** |
+| `deepseek-r1:32b` | ~20GB | ~22 tok/s | 数学推理更准，速度略快 |
+| `llama4:8b` | ~6GB | ~68 tok/s | 快速轻量 |
+
+**注意:** Ollama 使用统一模型，不做 heavy/light 切换，避免模型加载开销。
 
 ## 许可证
 

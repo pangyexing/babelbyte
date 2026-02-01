@@ -41,7 +41,7 @@ def get_ai_processor(
     Get the appropriate AI processor based on configuration.
 
     Args:
-        provider: Override provider ("claude", "codex", or "auto")
+        provider: Override provider ("claude", "codex", "ollama", or "auto")
         use_mock: Use mock processor for testing
         db: Optional database instance for cache support
 
@@ -53,6 +53,11 @@ def get_ai_processor(
 
     settings = get_settings()
     provider = provider or settings.ai.get_provider()
+
+    if provider == "ollama":
+        from src.processors.ollama_api import OllamaAPI
+
+        return OllamaAPI(db=db)
 
     if provider == "codex":
         from src.processors.openai_cli import CodexCLI

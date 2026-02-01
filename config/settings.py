@@ -145,6 +145,23 @@ class CodexConfig:
 
 
 @dataclass
+class OllamaConfig:
+    """Ollama API configuration for local LLM processing.
+
+    Ollama uses a single model (no heavy/light switching) to avoid model loading overhead.
+    Default timeout is 120 seconds to accommodate slower local inference.
+    """
+
+    base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:32b"))
+    timeout: int = field(default_factory=lambda: int(os.getenv("OLLAMA_TIMEOUT", "120")))
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.base_url)
+
+
+@dataclass
 class QualityGuardConfig:
     """Quality protection configuration for model tier selection."""
 
@@ -353,7 +370,7 @@ class EmbeddingConfig:
 class AIConfig:
     """AI provider configuration."""
 
-    # Provider: "claude", "codex", or "auto"
+    # Provider: "claude", "codex", "ollama", or "auto"
     provider: str = field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
 
     # Content length limits for token optimization
@@ -382,7 +399,7 @@ class AIConfig:
     def __post_init__(self):
         """Validate AI configuration and load model tier config from YAML."""
         # Validate provider
-        valid_providers = {"claude", "codex", "auto"}
+        valid_providers = {"claude", "codex", "ollama", "auto"}
         if self.provider not in valid_providers:
             raise ValueError(f"provider must be one of {valid_providers}, got '{self.provider}'")
 
@@ -417,9 +434,13 @@ class AIConfig:
                 pass  # Ignore YAML errors, use defaults
 
     def get_provider(self) -> str:
-        """Get the actual provider to use."""
+        """Get the actual provider to use.
+
+        For "auto" mode, prefers Claude, then Codex (Ollama requires explicit selection).
+        """
         if self.provider == "auto":
             # Auto-detect: prefer Claude if available, fallback to Codex
+            # Ollama requires explicit selection since it's a local model
             return "claude"
         return self.provider
 
@@ -451,6 +472,7 @@ class Settings:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     rule_optimization: RuleOptimizationConfig = field(default_factory=RuleOptimizationConfig)

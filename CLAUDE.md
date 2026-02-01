@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-BabelByte is an AI-powered **personal intelligence product** that fetches content from Reddit, Twitter, Hacker News, and RSS feeds, processes it with AI (Claude CLI or Codex CLI), and delivers structured intelligence briefings via email. It supports event tracking with semantic clustering, automatic topic discovery, knowledge base search, and periodic reports.
+BabelByte is an AI-powered **personal intelligence product** that fetches content from Reddit, Twitter, Hacker News, and RSS feeds, processes it with AI (Claude CLI, Codex CLI, or Ollama local models), and delivers structured intelligence briefings via email. It supports event tracking with semantic clustering, automatic topic discovery, knowledge base search, and periodic reports.
 
 ## Commands
 
@@ -115,7 +115,7 @@ Fetchers                                         Rule Classifier
                  (SentenceTransformers)
                             ↓
                     AI Processors ←─── Token Tracker
-                 (Claude/Codex CLI)     (8类调用追踪)
+              (Claude/Codex/Ollama)     (8类调用追踪)
                  (跳过相似内容:92%阈值)
                             ↓
         ┌───────────────────┼───────────────────┐
@@ -142,6 +142,7 @@ Fetchers                                         Rule Classifier
 - `src/processors/` - AI processing with enhanced JSON output (summary, key_points, impact, actions)
   - `base.py` - `ProcessingResult` with enhanced fields, prompt templates
   - `claude_cli.py` / `openai_cli.py` - CLI wrappers with batch processing
+  - `ollama_api.py` - Ollama HTTP API for local LLM processing
   - `digest_processor.py` - Digest generation + action extraction
   - `event_stream.py` - Event clustering (hybrid: rule-based + semantic + AI confirmation)
   - `embeddings.py` - Embedding providers (sentence-transformers, OpenAI) + manager
@@ -300,7 +301,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 ## Key Patterns
 
 - **Enhanced AI output:** ProcessingResult includes `one_liner`, `key_points`, `impact_assessment`, `actionable_items`
-- **Dual AI providers:** `AI_PROVIDER` env var controls Claude vs Codex CLI selection
+- **Triple AI providers:** `AI_PROVIDER` env var controls Claude CLI, Codex CLI, or Ollama selection
 - **Async/sync mix:** Fetchers are async, processors use sync subprocess, database has both interfaces
 - **Mock mode:** `--mock` flag enables `MockAIProcessor` and `MockTwitterFetcher` for testing
 - **JSON AI responses:** Processors parse JSON from CLI output, handle markdown code blocks, fallback to defaults
@@ -346,11 +347,14 @@ actionable_items: list[ActionResult]
 ## Configuration
 
 Copy `.env.example` to `.env`. Key settings:
-- `AI_PROVIDER` - "claude", "codex", or "auto"
+- `AI_PROVIDER` - "claude", "codex", "ollama", or "auto"
 - `CLAUDE_MODEL_HEAVY` - Claude heavy model (default: sonnet)
 - `CLAUDE_MODEL_LIGHT` - Claude light model (default: haiku)
 - `CODEX_MODEL_HEAVY` - Codex heavy model (default: gpt-5.2-codex)
 - `CODEX_MODEL_LIGHT` - Codex light model (default: gpt-5.1-codex-mini)
+- `OLLAMA_BASE_URL` - Ollama API URL (default: http://localhost:11434)
+- `OLLAMA_MODEL` - Ollama model name (default: qwen3:32b)
+- `OLLAMA_TIMEOUT` - Ollama request timeout in seconds (default: 120)
 - `MODEL_TIER_ENABLED` - Enable model tier selection (default: true)
 - `MODEL_TIER_HEAVY_THRESHOLD` - Importance threshold for heavy model (default: 7)
 - `MODEL_TIER_CONFIDENCE_CUTOFF` - Confidence threshold for heavy model (default: 0.5)
