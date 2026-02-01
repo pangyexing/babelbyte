@@ -377,8 +377,8 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
         return True, "Empty content"
 
     # Very short content (likely just a link or single sentence)
-    if len(content) < 50 and len(title) < 30:
-        return True, "Content too short (<50 chars)"
+    if len(content) < 100 and len(title) < 50:
+        return True, "Content too short"
 
     # Reddit link-posts with no real content
     if len(content) < 100 and "[link]" in content_lower:
@@ -388,9 +388,19 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
     if content.strip().startswith("submitted by") and len(content) < 150:
         return True, "Reddit submission boilerplate only"
 
-    # Twitter/X retweet with no added content
-    if title_lower.startswith("rt @") and len(content) < 50:
+    # Twitter/X retweet with no added content (avg RT imp only 4.8, safe to skip up to 500 chars)
+    if title_lower.startswith("rt @") and len(content) < 500:
         return True, "Retweet with no added content"
+
+    # Art posts - typically low value for tech intelligence (title patterns like "medium, year")
+    art_patterns = [
+        r",\s*(digital|oil|acrylic|watercolor|charcoal|graphite|mixed media)\s*,?\s*\d{4}",
+        r"\[OC\]\s*$",
+        r",\s*\d+\s*x\s*\d+\s*(cm|in|px|mm)?",
+    ]
+    for pattern in art_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True, "Art post"
 
     # Job postings / hiring posts
     job_patterns = [
@@ -486,6 +496,8 @@ HIGH_CONFIDENCE_DOMAINS = {
     "anthropic.com": ("AI", 8),
     "deepmind.com": ("AI", 8),
     "mistral.ai": ("AI", 8),
+    "huggingface.co": ("AI", 7),
+    "developer.nvidia.com": ("AI", 7),
     # Top science journals
     "nature.com": ("科学", 8),
     "science.org": ("科学", 8),
@@ -494,6 +506,11 @@ HIGH_CONFIDENCE_DOMAINS = {
     "blog.google": ("技术", 7),
     "engineering.fb.com": ("编程", 7),
     "aws.amazon.com/blogs": ("技术", 7),
+    # Programming language official sites
+    "pytorch.org": ("编程", 7),
+    "tensorflow.org": ("编程", 7),
+    "rust-lang.org": ("编程", 6),
+    "python.org": ("编程", 6),
 }
 
 

@@ -281,8 +281,9 @@ class RuleOptimizationConfig:
     )
 
     # Importance threshold for minimal prompt (score <= this uses minimal)
+    # Increased from 3 to 4 to expand SIMPLE_PROMPT usage for token savings
     minimal_prompt_threshold: int = field(
-        default_factory=lambda: int(os.getenv("MINIMAL_PROMPT_THRESHOLD", "3"))
+        default_factory=lambda: int(os.getenv("MINIMAL_PROMPT_THRESHOLD", "4"))
     )
 
     def __post_init__(self):
@@ -291,9 +292,9 @@ class RuleOptimizationConfig:
             raise ValueError(
                 f"rule_only_max_content_length must be >= 100, got {self.rule_only_max_content_length}"
             )
-        if not 1 <= self.minimal_prompt_threshold <= 5:
+        if not 1 <= self.minimal_prompt_threshold <= 6:
             raise ValueError(
-                f"minimal_prompt_threshold must be 1-5, got {self.minimal_prompt_threshold}"
+                f"minimal_prompt_threshold must be 1-6, got {self.minimal_prompt_threshold}"
             )
 
 

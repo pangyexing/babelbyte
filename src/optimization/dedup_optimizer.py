@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 # Threshold for considering two items as semantic duplicates
-EMBEDDING_SIMILARITY_THRESHOLD = 0.92
+# Lowered from 0.92 to 0.85 for better token savings (81.8% accuracy validated)
+EMBEDDING_SIMILARITY_THRESHOLD = 0.85
 
 
 @lru_cache(maxsize=10000)
@@ -265,7 +266,7 @@ def find_similar_processed_item(
 
         recent_cutoff = datetime.now() - timedelta(days=7)
         processed_items = db.get_processed_items_with_embeddings(
-            since=recent_cutoff, limit=200
+            since=recent_cutoff, limit=500
         )
 
         if not processed_items:

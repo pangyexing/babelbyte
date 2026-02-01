@@ -649,9 +649,14 @@ class BaseCLIProcessor(BaseAIProcessor):
 
             # Estimate importance for task type
             importance_est = estimate_importance(item)
+            rule_settings = self.settings.rule_optimization
             if importance_est.confidence >= 0.7 and importance_est.score >= 7:
                 task_type = TaskType.CONTENT_HIGH
-            elif importance_est.confidence >= 0.7 and importance_est.score <= 3:
+            elif (
+                rule_settings.minimal_prompt_enabled
+                and importance_est.confidence >= 0.7
+                and importance_est.score <= rule_settings.minimal_prompt_threshold
+            ):
                 task_type = TaskType.CONTENT_MINIMAL
             elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
                 task_type = TaskType.CONTENT_LOW
