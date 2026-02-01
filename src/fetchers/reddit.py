@@ -26,8 +26,9 @@ class RedditFetcher(BaseFetcher):
     SUBREDDIT_RSS_URL = "https://www.reddit.com/r/{name}/.rss"
     USER_RSS_URL = "https://www.reddit.com/user/{name}/.rss"
 
-    # Custom User-Agent to avoid being blocked
-    USER_AGENT = "BabelByte/1.0 (Content Aggregator)"
+    # Custom User-Agent following Reddit's bot guidelines
+    # Format: platform:app_id:version (by /u/username or contact)
+    USER_AGENT = "python:BabelByte:1.0 (by /u/babelbyte_bot, https://github.com/babelbyte)"
 
     # Pattern to detect link-post (no real content)
     LINK_POST_PATTERN = re.compile(r"^\s*submitted by\s+/u/\S+\s*\[link\]\s*\[comments\]\s*$", re.I)

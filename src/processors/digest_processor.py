@@ -289,24 +289,7 @@ class DigestGenerator:
                 )
                 continue
 
-            # Fallback: Try basic rule classification (category/importance only)
-            rule_result = self.processor.rule_classifier.classify(item)
-            if rule_result:
-                # Basic classification - just category and importance
-                item.summary = f"{item.title[:50]}" if len(item.title) > 50 else item.title
-                item.category = rule_result.category
-                item.importance_score = rule_result.importance_score
-                item.processed_at = datetime.now()
-                self.db.update_content_item(item)
-                rule_classified_count += 1
-                processed_count += 1
-                logger.debug(
-                    f"Rule classified: {item.title[:40]}... -> {rule_result.category} "
-                    f"({rule_result.reason})"
-                )
-                continue
-
-            # Needs AI processing
+            # Needs AI processing (removed basic rule classification to ensure complete enhanced fields)
             items_for_ai.append(item)
 
         prefilter_count = skipped_count + rule_classified_count
