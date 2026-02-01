@@ -594,8 +594,10 @@ class EventStreamProcessor:
             else:
                 final_score = rule_score
 
-            # Threshold: 0.35 (raised from 0.2 to reduce false positives)
-            if final_score >= 0.35:
+            # Threshold: 0.40 (raised from 0.35 to reduce false positives)
+            # For keyword-only matches, require higher threshold to reduce low-quality matches
+            threshold = 0.50 if method == "keyword" else 0.40
+            if final_score >= threshold:
                 candidates.append(
                     ClusterCandidate(
                         cluster_id=cluster.id,
@@ -769,7 +771,7 @@ class EventStreamProcessor:
             )
 
         # Fallback: accept moderately confident matches when AI fails
-        if candidates[0].score >= 0.5:
+        if candidates[0].score >= 0.55:
             result = candidates[0]
             self._ai_confirm_cache[cache_key] = result
             if item.id is not None:
@@ -823,10 +825,9 @@ class EventStreamProcessor:
                 logger.info(f"Added item {item.id} to cluster '{confirmed.cluster_title}'")
                 return cluster
 
-        # Create new cluster for moderately important items
-        # Lowered threshold from 7 to 5 to enable more content to create clusters
-        # This is especially important when embeddings are not yet computed
-        if item.importance_score and item.importance_score >= 5:
+        # Create new cluster for important items
+        # Threshold 6 balances coverage vs single-member cluster proliferation
+        if item.importance_score and item.importance_score >= 6:
             cluster = EventCluster(
                 event_title=self._generate_event_title(item),
                 category=item.category or "其他",
@@ -1050,10 +1051,10 @@ def cluster_unprocessed_items(
 
     # Get unclustered items only - this skips items already in clusters
     # for better performance (optimization: skip already-clustered items)
-    # Lowered min_importance from 6 to 4 to include more content in clustering
+    # min_importance=5 allows matching to existing clusters; creating new requires >= 6
     retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
     items = db.get_unclustered_items(
-        min_importance=4,
+        min_importance=5,
         limit=limit,
         retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
     )
@@ -1103,10 +1104,10 @@ def cluster_unprocessed_items_parallel(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # Get unclustered items using the main db connection
-    # Lowered min_importance from 6 to 4 to include more content in clustering
+    # min_importance=5 allows matching to existing clusters; creating new requires >= 6
     retry_after_hours = int(os.environ.get("CLUSTER_RETRY_HOURS", "24"))
     items = db.get_unclustered_items(
-        min_importance=4,
+        min_importance=5,
         limit=limit,
         retry_after_hours=retry_after_hours if retry_after_hours > 0 else None,
     )

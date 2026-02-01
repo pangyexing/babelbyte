@@ -110,7 +110,7 @@ class TestSkipAlreadyClusteredItems:
         cluster_unprocessed_items(db=mock_db, use_mock=True, limit=50)
 
         mock_db.get_unclustered_items.assert_called_once_with(
-            min_importance=4, limit=50, retry_after_hours=24
+            min_importance=5, limit=50, retry_after_hours=24
         )
 
     def test_cluster_parallel_uses_unclustered_query(self, mock_db):
@@ -120,7 +120,7 @@ class TestSkipAlreadyClusteredItems:
         cluster_unprocessed_items_parallel(db=mock_db, use_mock=True, limit=50, max_workers=2)
 
         mock_db.get_unclustered_items.assert_called_once_with(
-            min_importance=4, limit=50, retry_after_hours=24
+            min_importance=5, limit=50, retry_after_hours=24
         )
 
 
