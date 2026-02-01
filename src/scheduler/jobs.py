@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 # Default limits for automated jobs
-DEFAULT_EMBEDDING_LIMIT = 200
+DEFAULT_EMBEDDING_LIMIT = 500
 DEFAULT_TOPIC_DISCOVER_DAYS = 14
 DEFAULT_TOPIC_MIN_FREQUENCY = 3
 DEFAULT_CLUSTER_LIMIT = 50
@@ -298,7 +298,7 @@ class JobRunner:
 
         return list(results)
 
-    def process_content(self, limit: int = 50) -> int:
+    def process_content(self, limit: int = 500) -> int:
         """
         Process unprocessed content with AI.
 

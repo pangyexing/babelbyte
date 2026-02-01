@@ -165,8 +165,9 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parall
 @click.command()
 @click.option("--dry-run", is_flag=True, help="Preview digest without sending email")
 @click.option("--skip-fetch", is_flag=True, help="Skip fetching new content")
+@click.option("--min-importance", default=3, help="Minimum importance score to include (default: 3)")
 @click.pass_context
-def daily(ctx, dry_run, skip_fetch):
+def daily(ctx, dry_run, skip_fetch, min_importance):
     """Run the complete daily pipeline in one command.
 
     Executes: fetch → embeddings → process → cluster → digest
@@ -235,7 +236,7 @@ def daily(ctx, dry_run, skip_fetch):
             transient=True,
         ) as progress:
             task = progress.add_task("Processing...", total=None)
-            processed = runner.process_content(limit=100)
+            processed = runner.process_content(limit=500)
 
         console.print(f"  [green]✓[/green] Processed {processed} items")
 
@@ -262,7 +263,7 @@ def daily(ctx, dry_run, skip_fetch):
         try:
             generator = DigestGenerator(db=db, use_mock=mock)
             digest_result = generator.generate_digest(
-                min_importance=5,
+                min_importance=min_importance,
                 max_items=30,
                 run_clustering=False,  # Already clustered above
             )
