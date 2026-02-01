@@ -11,10 +11,10 @@ from config.settings import get_settings
 from src.analytics.token_tracker import AICallType, record_ai_call
 from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
 from src.processors.rule_classifier import (
-    should_skip_ai_processing,
     create_skip_result,
-    try_rule_only_processing,
     estimate_importance,
+    should_skip_ai_processing,
+    try_rule_only_processing,
 )
 
 if TYPE_CHECKING:
