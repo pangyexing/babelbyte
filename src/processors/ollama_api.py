@@ -125,6 +125,7 @@ class OllamaAPI(BaseAIProcessor):
             "model": self._model,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": "5m",  # Keep model loaded for 5 minutes between requests
             "options": {
                 "temperature": 0.3,
                 "num_predict": 2048,
