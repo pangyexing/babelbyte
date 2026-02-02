@@ -1,8 +1,10 @@
 """Ollama API wrapper for local LLM processing.
 
 Uses Ollama's HTTP API (default: http://localhost:11434) for content processing
-with locally running models. Ollama uses a single model configuration to avoid
-the overhead of switching models during processing.
+with locally running models.
+
+Supports dual-model mode: set OLLAMA_MODEL_LIGHT for simpler tasks (e.g., 14b),
+while OLLAMA_MODEL handles complex tasks (e.g., 32b).
 """
 
 import json
@@ -36,14 +38,16 @@ class OllamaAPI(BaseAIProcessor):
     with the Ollama server. This provides structured JSON responses and
     better error handling.
 
-    Ollama uses a single model (configured via OLLAMA_MODEL) without
-    heavy/light tier switching to avoid model loading overhead.
+    Supports dual-model mode when OLLAMA_MODEL_LIGHT is configured:
+    - Heavy model (OLLAMA_MODEL): complex tasks, high importance content
+    - Light model (OLLAMA_MODEL_LIGHT): simple tasks, low importance content
     """
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        model_light: Optional[str] = None,
         timeout: Optional[int] = None,
         db: Optional["SyncDatabase"] = None,
     ):
@@ -51,7 +55,8 @@ class OllamaAPI(BaseAIProcessor):
 
         Args:
             base_url: Ollama API base URL. Defaults to config or http://localhost:11434.
-            model: Model name to use. Defaults to config or qwen3:32b.
+            model: Heavy model name. Defaults to config or qwen3:32b.
+            model_light: Light model name. Defaults to config (empty = single model mode).
             timeout: Request timeout in seconds. Defaults to config or 120.
             db: Optional database instance for cache support.
         """
@@ -61,6 +66,7 @@ class OllamaAPI(BaseAIProcessor):
         settings = self.settings
         self._base_url = base_url or settings.ollama.base_url
         self._model = model or settings.ollama.model
+        self._model_light = model_light or settings.ollama.model_light
         self._timeout = timeout or settings.ollama.timeout
 
     @property
@@ -99,33 +105,42 @@ class OllamaAPI(BaseAIProcessor):
             return False
 
     def get_model(self, task_type: Optional[TaskType] = None) -> str:
-        """Get the model name to use.
+        """Get the model name based on task type.
 
-        Ollama uses a single model for all tasks to avoid model loading overhead.
+        If OLLAMA_MODEL_LIGHT is configured, uses light model for simple tasks.
+        Otherwise falls back to single model mode.
 
         Args:
-            task_type: Ignored - Ollama doesn't switch models.
+            task_type: Task type for model selection.
 
         Returns:
-            The configured model name.
+            The appropriate model name.
         """
+        if not self._model_light:
+            return self._model
+
+        if task_type in (TaskType.CONTENT_LOW, TaskType.CONTENT_MINIMAL):
+            return self._model_light
+
         return self._model
 
-    def _call_api(self, prompt: str) -> tuple[bool, str, Optional[str]]:
+    def _call_api(self, prompt: str, model: Optional[str] = None) -> tuple[bool, str, Optional[str]]:
         """Send a request to Ollama's generate API.
 
         Args:
             prompt: The prompt to send.
+            model: Model to use. Defaults to heavy model.
 
         Returns:
             Tuple of (success, response_text, error_message).
         """
+        use_model = model or self._model
         url = f"{self.base_url}/api/generate"
         payload = {
-            "model": self._model,
+            "model": use_model,
             "prompt": prompt,
             "stream": False,
-            "keep_alive": "5m",  # Keep model loaded for 5 minutes between requests
+            "keep_alive": "10m",  # Keep model loaded for 10 minutes (longer for dual-model)
             "options": {
                 "temperature": 0.3,
                 "num_predict": 2048,
@@ -158,11 +173,7 @@ class OllamaAPI(BaseAIProcessor):
             return False, "", f"Network error: {e}"
 
     def _get_ai_call_type(self, task_type: TaskType) -> AICallType:
-        """Map task type to AI call type for tracking.
-
-        Ollama uses CONTENT_HEAVY for all calls since it's a single model.
-        """
-        # Ollama uses a single model, but we still track by task type
+        """Map task type to AI call type for tracking."""
         call_type_map = {
             TaskType.CONTENT_HIGH: AICallType.CONTENT_HEAVY,
             TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
@@ -201,7 +212,7 @@ class OllamaAPI(BaseAIProcessor):
                 )
                 return self._deserialize_result(cached_json)
 
-        # Select prompt based on task type
+        # Select prompt and model based on task type
         if task_type == TaskType.CONTENT_MINIMAL:
             prompt = self._build_simple_prompt(title, content)
         elif task_type == TaskType.CONTENT_LOW:
@@ -209,8 +220,9 @@ class OllamaAPI(BaseAIProcessor):
         else:
             prompt = self._build_prompt(title, content)
 
+        model = self.get_model(task_type)
         start_time = time.time()
-        success, response_text, error = self._call_api(prompt)
+        success, response_text, error = self._call_api(prompt, model=model)
         duration_ms = int((time.time() - start_time) * 1000)
         ai_call_type = self._get_ai_call_type(task_type)
 
@@ -306,19 +318,26 @@ class OllamaAPI(BaseAIProcessor):
         # Strategy 3: Estimate importance for prompt selection
         importance_est = estimate_importance(item)
         rule_settings = self.settings.rule_optimization
+        min_conf = rule_settings.minimal_prompt_min_confidence
 
         # Select task type based on importance estimate
-        if importance_est.confidence >= 0.7 and importance_est.score >= 7:
+        # High importance → heavy model
+        if importance_est.score >= 7:
             task_type = TaskType.CONTENT_HIGH
+        # Quality sources (reddit/twitter/hn) → LIGHT_PROMPT (keeps key_points)
+        elif importance_est.reason.startswith("source:"):
+            task_type = TaskType.CONTENT_LOW
+        # Low importance with sufficient confidence → minimal prompt
         elif (
             rule_settings.minimal_prompt_enabled
-            and importance_est.confidence >= 0.7
+            and importance_est.confidence >= min_conf
             and importance_est.score <= rule_settings.minimal_prompt_threshold
         ):
             task_type = TaskType.CONTENT_MINIMAL
-        elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
+        elif importance_est.confidence >= min_conf and importance_est.score <= 5:
             task_type = TaskType.CONTENT_LOW
-        elif importance_est.confidence < 0.5:
+        # Low confidence → conservative (heavy model)
+        elif importance_est.confidence < min_conf:
             task_type = TaskType.CONTENT_UNCERTAIN
         else:
             task_type = TaskType.CONTENT_LOW

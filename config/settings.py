@@ -148,13 +148,20 @@ class CodexConfig:
 class OllamaConfig:
     """Ollama API configuration for local LLM processing.
 
-    Ollama uses a single model (no heavy/light switching) to avoid model loading overhead.
-    Default timeout is 120 seconds to accommodate slower local inference.
+    Supports heavy/light model switching for task-based optimization.
+    Set OLLAMA_MODEL_LIGHT to enable dual-model mode (e.g., 14b for simple tasks).
+    If OLLAMA_MODEL_LIGHT is not set, falls back to single model mode.
     """
 
     base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:32b"))
+    model_light: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_LIGHT", ""))
     timeout: int = field(default_factory=lambda: int(os.getenv("OLLAMA_TIMEOUT", "120")))
+
+    @property
+    def dual_model_enabled(self) -> bool:
+        """Check if dual model mode is enabled (light model configured)."""
+        return bool(self.model_light and self.model_light != self.model)
 
     @property
     def is_configured(self) -> bool:
@@ -298,9 +305,14 @@ class RuleOptimizationConfig:
     )
 
     # Importance threshold for minimal prompt (score <= this uses minimal)
-    # Increased from 3 to 4 to expand SIMPLE_PROMPT usage for token savings
     minimal_prompt_threshold: int = field(
-        default_factory=lambda: int(os.getenv("MINIMAL_PROMPT_THRESHOLD", "4"))
+        default_factory=lambda: int(os.getenv("MINIMAL_PROMPT_THRESHOLD", "5"))
+    )
+
+    # Minimum confidence for minimal prompt (lower = more items use light model)
+    # Default 0.3 matches rule classifier's default, effectively ignoring confidence
+    minimal_prompt_min_confidence: float = field(
+        default_factory=lambda: float(os.getenv("MINIMAL_PROMPT_MIN_CONFIDENCE", "0.3"))
     )
 
     def __post_init__(self):

@@ -343,9 +343,21 @@ def estimate_importance(item: ContentItem) -> ImportanceEstimate:
                 confidence = conf
                 reason = f"weak_keyword:{pattern[:20]}"
 
-    # 4. Unknown domain + no keyword matches - low confidence
+    # 4. Source-based confidence boost (for unmatched content)
+    # Quality sources get higher confidence to use LIGHT_PROMPT instead of SIMPLE_PROMPT
     if confidence < 0.4:
-        reason = "unknown"
+        source_confidence = {
+            "reddit": (0.5, "source:reddit"),      # Medium confidence → LIGHT_PROMPT
+            "twitter": (0.5, "source:twitter"),
+            "hackernews": (0.6, "source:hackernews"),
+        }
+        source_type = getattr(item, "source_type", None)
+        if source_type in source_confidence:
+            conf_boost, src_reason = source_confidence[source_type]
+            confidence = conf_boost
+            reason = src_reason
+        else:
+            reason = "unknown"
 
     return ImportanceEstimate(score, confidence, reason)
 

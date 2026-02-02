@@ -562,23 +562,27 @@ class BaseCLIProcessor(BaseAIProcessor):
         # Strategy 3: Estimate importance for model/prompt selection
         importance_est = estimate_importance(item)
         rule_settings = self.settings.rule_optimization
+        min_conf = rule_settings.minimal_prompt_min_confidence
 
         # Select task type based on importance estimate
-        # High confidence + high importance → full analysis
-        if importance_est.confidence >= 0.7 and importance_est.score >= 7:
+        # High importance → full analysis (heavy model)
+        if importance_est.score >= 7:
             task_type = TaskType.CONTENT_HIGH
-        # High confidence + very low importance → minimal analysis (if enabled)
+        # Quality sources (reddit/twitter/hn) → LIGHT_PROMPT (keeps key_points)
+        elif importance_est.reason.startswith("source:"):
+            task_type = TaskType.CONTENT_LOW
+        # Low importance with sufficient confidence → minimal analysis (if enabled)
         elif (
             rule_settings.minimal_prompt_enabled
-            and importance_est.confidence >= 0.7
+            and importance_est.confidence >= min_conf
             and importance_est.score <= rule_settings.minimal_prompt_threshold
         ):
             task_type = TaskType.CONTENT_MINIMAL
-        # High confidence + low importance → light analysis
-        elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
+        # Low importance with sufficient confidence → light analysis
+        elif importance_est.confidence >= min_conf and importance_est.score <= 5:
             task_type = TaskType.CONTENT_LOW
         # Low confidence → use heavy model to ensure quality
-        elif importance_est.confidence < 0.5:
+        elif importance_est.confidence < min_conf:
             task_type = TaskType.CONTENT_UNCERTAIN
         # Medium confidence, medium importance → light analysis
         else:
@@ -650,17 +654,20 @@ class BaseCLIProcessor(BaseAIProcessor):
             # Estimate importance for task type
             importance_est = estimate_importance(item)
             rule_settings = self.settings.rule_optimization
-            if importance_est.confidence >= 0.7 and importance_est.score >= 7:
+            min_conf = rule_settings.minimal_prompt_min_confidence
+            if importance_est.score >= 7:
                 task_type = TaskType.CONTENT_HIGH
+            elif importance_est.reason.startswith("source:"):
+                task_type = TaskType.CONTENT_LOW
             elif (
                 rule_settings.minimal_prompt_enabled
-                and importance_est.confidence >= 0.7
+                and importance_est.confidence >= min_conf
                 and importance_est.score <= rule_settings.minimal_prompt_threshold
             ):
                 task_type = TaskType.CONTENT_MINIMAL
-            elif importance_est.confidence >= 0.7 and importance_est.score <= 5:
+            elif importance_est.confidence >= min_conf and importance_est.score <= 5:
                 task_type = TaskType.CONTENT_LOW
-            elif importance_est.confidence < 0.5:
+            elif importance_est.confidence < min_conf:
                 task_type = TaskType.CONTENT_UNCERTAIN
             else:
                 task_type = TaskType.CONTENT_LOW

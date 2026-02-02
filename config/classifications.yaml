@@ -211,7 +211,7 @@ domain_categories:
     importance: 6
   ycombinator.com:
     category: "创业"
-    importance: 7
+    importance: 6
   techstars.com:
     category: "创业"
     importance: 6

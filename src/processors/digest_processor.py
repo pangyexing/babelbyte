@@ -379,24 +379,9 @@ class DigestGenerator:
             processed_count = 0
             total_items = len(items)
             items_done = 0
+            reprocess_items = []
 
-            # Process heavy items
-            if heavy_items:
-                heavy_content_items = [item for item, _ in heavy_items]
-                heavy_processed, heavy_done, _ = self._process_batch_group_tiered(
-                    heavy_content_items,
-                    short_batch_size,
-                    long_batch_size,
-                    TaskType.CONTENT_HIGH,
-                    "heavy",
-                    progress_callback,
-                    items_done,
-                    total_items,
-                )
-                processed_count += heavy_processed
-                items_done += heavy_done
-
-            # Process light items
+            # Process light items FIRST (avoids model switching: light -> heavy)
             if light_items:
                 light_content_items = [item for item, _ in light_items]
                 light_processed, light_done, reprocess_items = self._process_batch_group_tiered(
@@ -414,20 +399,29 @@ class DigestGenerator:
                 processed_count += light_processed
                 items_done += light_done
 
-                # Quality guard: reprocess items that got unexpectedly high scores
-                if reprocess_items:
-                    logger.info(
-                        f"Quality guard: reprocessing {len(reprocess_items)} items with heavy model"
-                    )
-                    for item in reprocess_items:
-                        result = self.processor.ai.process_content(
-                            item.title, item.content, TaskType.CONTENT_HIGH
-                        )
-                        if result.success:
-                            self._update_item_with_result(item, result)
-                            logger.debug(
-                                f"Reprocessed: {item.title[:40]}... -> {result.importance_score}"
-                            )
+            # Combine heavy items with reprocess items (both use heavy model)
+            heavy_content_items = [item for item, _ in heavy_items]
+            if reprocess_items:
+                logger.info(
+                    f"Quality guard: {len(reprocess_items)} items need reprocessing, "
+                    f"combining with {len(heavy_content_items)} heavy items"
+                )
+                heavy_content_items.extend(reprocess_items)
+
+            # Process heavy items (including reprocess) AFTER light
+            if heavy_content_items:
+                heavy_processed, heavy_done, _ = self._process_batch_group_tiered(
+                    heavy_content_items,
+                    short_batch_size,
+                    long_batch_size,
+                    TaskType.CONTENT_HIGH,
+                    "heavy",
+                    progress_callback,
+                    items_done,
+                    total_items,
+                )
+                processed_count += heavy_processed
+                items_done += heavy_done
 
             return processed_count
 
