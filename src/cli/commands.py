@@ -4,9 +4,27 @@ This module serves as the entry point for the CLI and registers
 all command groups from their respective modules.
 """
 
+import logging
+
 import click
 
 from src.cli import actions, embeddings, events, fetch, reports, search, subscribe, topics, validation
+
+
+def setup_logging():
+    """Setup logging configuration."""
+    from config.settings import get_settings
+
+    settings = get_settings()
+
+    logging.basicConfig(
+        level=getattr(logging, settings.logging.level.upper()),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(settings.logging.path, encoding="utf-8"),
+        ],
+    )
 
 
 @click.group()
@@ -14,6 +32,7 @@ from src.cli import actions, embeddings, events, fetch, reports, search, subscri
 @click.pass_context
 def cli(ctx, mock):
     """BabelByte - AI Content Subscription System"""
+    setup_logging()
     ctx.ensure_object(dict)
     ctx.obj["mock"] = mock
 
