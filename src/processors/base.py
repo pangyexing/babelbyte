@@ -77,7 +77,7 @@ class BaseAIProcessor(ABC):
     PROCESS_PROMPT = """分析内容，返回JSON（仅JSON，无其他文字）：
 {{
   "summary": "50字中文摘要",
-  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
   "importance": 1-10,
   "one_liner": "一句话结论：这条信息对读者意味着什么",
   "key_points": [
@@ -93,7 +93,7 @@ class BaseAIProcessor(ABC):
   ]
 }}
 
-评分标准：9-10重大突破/行业变革，7-8重要更新/值得关注，5-6一般信息，1-4低价值/噪音
+评分:9-10重大发布/突破性论文,7-8官宣/重要开源/融资,5-6教程/一般研究,3-4普通讨论,1-2招聘/水帖
 key_points：提取最多3个关键点（数字/时间/实体/事实）
 actionable_items：仅当importance>=7时提取行动项，否则为空数组
 
@@ -103,8 +103,8 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
 
     # Simple prompt for low-value or pre-filtered content (uses less tokens)
     # fmt: off
-    SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/编程/产品/技术/创业/科学/商业/其他","importance":1-10}}
-评分：9-10重大突破，7-8重要更新，5-6一般，1-4低价值
+    SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/机器学习/编程/技术/创业/研究/设计/其他","importance":1-10}}
+评分:9-10重大发布,7-8重要更新,5-6一般,1-4低价值
 
 标题：{title}
 正文：{content}"""  # noqa: E501
@@ -114,12 +114,12 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
     # fmt: off
     LIGHT_PROMPT = """返回JSON：{{
   "summary": "50字中文摘要",
-  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
   "importance": 1-10,
   "one_liner": "一句话结论",
   "key_points": [{{"type": "数字/时间/实体/事实", "value": "关键值", "impact": "影响"}}]
 }}
-评分：9-10重大，7-8重要，5-6一般，1-4低价值
+评分:9-10重大,7-8重要,5-6一般,1-4低价值
 key_points：最多3个关键点
 
 标题：{title}
@@ -132,7 +132,7 @@ key_points：最多3个关键点
 {{
   "id": 序号,
   "summary": "50字中文摘要",
-  "category": "AI/编程/产品/技术/创业/科学/商业/其他",
+  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
   "importance": 1-10,
   "one_liner": "一句话结论",
   "key_points": [{{"type": "类型", "value": "值", "impact": "影响"}}],
@@ -140,7 +140,7 @@ key_points：最多3个关键点
   "actionable_items": [{{"type": "类型", "description": "描述", "priority": "高/中/低"}}]
 }}
 
-评分：9-10重大突破，7-8重要，5-6一般，1-4低价值
+评分:9-10重大发布/突破,7-8官宣/开源/融资,5-6教程/研究,3-4讨论,1-2招聘/水帖
 key_points最多3个，actionable_items仅importance>=7时提取
 
 {items}"""  # noqa: E501

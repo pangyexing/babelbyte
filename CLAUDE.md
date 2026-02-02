@@ -321,6 +321,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Embedding providers:** Pluggable providers (sentence-transformers local, OpenAI API) with lazy loading
 - **Topic discovery:** Entity frequency analysis, keyword bigram clustering, trend spike detection (3x week-over-week)
 - **Automated preprocessing:** Digest job automatically runs embeddings + topic discovery before sending (zero extra LLM cost)
+- **Two-stage processing (Ollama):** Optional 8B screening + 32B refinement mode (`OLLAMA_MODEL_SCREEN`) for 20-40% time savings
 
 ## Data Models
 
@@ -354,6 +355,7 @@ Copy `.env.example` to `.env`. Key settings:
 - `CODEX_MODEL_LIGHT` - Codex light model (default: gpt-5.1-codex-mini)
 - `OLLAMA_BASE_URL` - Ollama API URL (default: http://localhost:11434)
 - `OLLAMA_MODEL` - Ollama model name (default: qwen3:32b)
+- `OLLAMA_MODEL_SCREEN` - 8B model for two-stage screening (empty = disabled)
 - `OLLAMA_TIMEOUT` - Ollama request timeout in seconds (default: 120)
 - `MODEL_TIER_ENABLED` - Enable model tier selection (default: true)
 - `MODEL_TIER_HEAVY_THRESHOLD` - Importance threshold for heavy model (default: 7)

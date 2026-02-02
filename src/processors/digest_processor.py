@@ -211,10 +211,32 @@ class DigestGenerator:
         if not self.db:
             raise ValueError("Database not configured")
 
-        items = self.db.get_unprocessed_items(limit=limit)
-        if not items:
+        # Get more items than limit, then sort by estimated importance
+        # This ensures high-priority items are processed first
+        fetch_limit = min(limit * 2, 1000)  # Fetch up to 2x limit for better prioritization
+        all_items = self.db.get_unprocessed_items(limit=fetch_limit)
+        if not all_items:
             logger.info("No unprocessed items found")
             return 0
+
+        # Sort by estimated importance (descending)
+        items_with_estimates = []
+        for item in all_items:
+            est = estimate_importance(item)
+            items_with_estimates.append((item, est.score, est.confidence))
+
+        # Sort by: importance score (desc), then confidence (desc)
+        items_with_estimates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+
+        # Take top 'limit' items
+        items = [item for item, _, _ in items_with_estimates[:limit]]
+
+        if len(all_items) > limit:
+            top_scores = [s for _, s, _ in items_with_estimates[:5]]
+            logger.info(
+                f"Prioritized {limit}/{len(all_items)} items by estimated importance "
+                f"(top 5 scores: {top_scores})"
+            )
 
         total_start = time.time()
         processed_count = 0
@@ -336,6 +358,10 @@ class DigestGenerator:
         2. Low importance with high confidence -> Light model
         3. Quality guard: reprocess if light model returns unexpectedly high score
 
+        Two-stage processing (Ollama only):
+        When OLLAMA_MODEL_SCREEN is configured, uses 8B model for initial screening,
+        then refines high-importance/uncertain items with 32B model.
+
         Args:
             items: Items to process with AI.
             base_batch_size: Legacy parameter, overridden by config.
@@ -347,6 +373,10 @@ class DigestGenerator:
         settings = get_settings()
         config = settings.ai.model_tiers
         guard = config.quality_guard
+
+        # Check if two-stage processing is available (Ollama with screen model)
+        if settings.ai.get_provider() == "ollama" and settings.ollama.two_stage_enabled:
+            return self._process_items_two_stage(items, progress_callback)
 
         # Get batch sizes from config
         short_batch_size = settings.ai.batch_size_short
@@ -445,6 +475,72 @@ class DigestGenerator:
                 long_items, long_batch_size, "long", progress_callback, items_done, total_items
             )
             processed_count += long_processed
+
+        return processed_count
+
+    def _process_items_two_stage(
+        self,
+        items: list[ContentItem],
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> int:
+        """
+        Process items using Ollama two-stage processing (8B screen + 32B refine).
+
+        This method delegates to OllamaAPI.process_items_two_stage() which handles:
+        1. Rule-based filtering (zero cost)
+        2. 8B screening for importance/category
+        3. 32B refinement for high-importance/uncertain items
+
+        Args:
+            items: Items to process with AI.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Number of items successfully processed.
+        """
+        import time
+        from datetime import datetime
+
+        from src.processors.ollama_api import OllamaAPI
+
+        if not items:
+            return 0
+
+        # Ensure we have an OllamaAPI instance
+        if not isinstance(self.processor.ai, OllamaAPI):
+            logger.warning("Two-stage processing requires OllamaAPI, falling back to standard")
+            # Fall through to standard processing (handled by caller)
+            return 0
+
+        ollama_api: OllamaAPI = self.processor.ai
+        total_items = len(items)
+        start_time = time.time()
+
+        logger.info(f"Starting two-stage processing for {total_items} items...")
+
+        # Update progress at start
+        if progress_callback:
+            progress_callback("Two-stage processing", 0, total_items)
+
+        # Process all items through two-stage pipeline
+        results = ollama_api.process_items_two_stage(items)
+
+        # Update items with results
+        processed_count = 0
+        for item, result in zip(items, results):
+            if result and result.success:
+                self._update_item_with_result(item, result)
+                processed_count += 1
+
+            # Update progress periodically
+            if progress_callback:
+                progress_callback("Two-stage processing", processed_count, total_items)
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"Two-stage processing complete: {processed_count}/{total_items} items "
+            f"in {elapsed:.1f}s ({elapsed/total_items:.2f}s/item avg)"
+        )
 
         return processed_count
 

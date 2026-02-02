@@ -151,17 +151,28 @@ class OllamaConfig:
     Supports heavy/light model switching for task-based optimization.
     Set OLLAMA_MODEL_LIGHT to enable dual-model mode (e.g., 14b for simple tasks).
     If OLLAMA_MODEL_LIGHT is not set, falls back to single model mode.
+
+    Two-stage processing:
+    Set OLLAMA_MODEL_SCREEN to enable 8B screening + 32B refinement mode.
+    When configured, content is first screened with the 8B model, then items
+    with importance >= 7 or category="不确定" are refined with the 32B model.
     """
 
     base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:32b"))
     model_light: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_LIGHT", ""))
+    model_screen: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_SCREEN", ""))
     timeout: int = field(default_factory=lambda: int(os.getenv("OLLAMA_TIMEOUT", "120")))
 
     @property
     def dual_model_enabled(self) -> bool:
         """Check if dual model mode is enabled (light model configured)."""
         return bool(self.model_light and self.model_light != self.model)
+
+    @property
+    def two_stage_enabled(self) -> bool:
+        """Check if two-stage processing is enabled (screen model configured)."""
+        return bool(self.model_screen and self.model_screen != self.model)
 
     @property
     def is_configured(self) -> bool:
