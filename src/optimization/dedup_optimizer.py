@@ -13,9 +13,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Threshold for considering two items as semantic duplicates
+# Default threshold for considering two items as semantic duplicates
+# Can be overridden via EMBEDDING_DEDUP_THRESHOLD env var
 # Lowered from 0.92 to 0.85 for better token savings (81.8% accuracy validated)
-EMBEDDING_SIMILARITY_THRESHOLD = 0.85
+DEFAULT_EMBEDDING_SIMILARITY_THRESHOLD = 0.85
+
+# Default search limit for deduplication
+# Can be overridden via EMBEDDING_DEDUP_SEARCH_LIMIT env var
+DEFAULT_DEDUP_SEARCH_LIMIT = 5000
 
 
 @lru_cache(maxsize=10000)
@@ -228,7 +233,7 @@ class SimilarItemResult:
 def find_similar_processed_item(
     item: "ContentItem",
     db,
-    threshold: float = EMBEDDING_SIMILARITY_THRESHOLD,
+    threshold: Optional[float] = None,
 ) -> Optional[SimilarItemResult]:
     """
     Find a similar already-processed item using embedding similarity.
@@ -236,10 +241,14 @@ def find_similar_processed_item(
     This allows reusing AI results for semantically similar content,
     saving LLM tokens.
 
+    Configuration (env vars):
+    - EMBEDDING_DEDUP_THRESHOLD: Similarity threshold (default: 0.85)
+    - EMBEDDING_DEDUP_SEARCH_LIMIT: Max items to search (default: 5000)
+
     Args:
         item: The unprocessed item to find similar content for.
         db: Database instance.
-        threshold: Minimum similarity threshold (0-1).
+        threshold: Minimum similarity threshold (0-1). If None, uses config value.
 
     Returns:
         SimilarItemResult if a similar processed item is found, None otherwise.
@@ -251,6 +260,11 @@ def find_similar_processed_item(
         settings = get_settings()
         if not settings.embedding.enabled:
             return None
+
+        # Use configurable threshold and search limit
+        if threshold is None:
+            threshold = settings.embedding.dedup_threshold
+        search_limit = settings.embedding.dedup_search_limit
 
         # Get embedding for the current item
         item_embedding_data = db.get_content_embedding(item.id)
@@ -266,7 +280,7 @@ def find_similar_processed_item(
 
         recent_cutoff = datetime.now() - timedelta(days=7)
         processed_items = db.get_processed_items_with_embeddings(
-            since=recent_cutoff, limit=500
+            since=recent_cutoff, limit=search_limit
         )
 
         if not processed_items:

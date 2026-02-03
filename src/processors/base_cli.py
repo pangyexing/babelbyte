@@ -14,7 +14,6 @@ from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
     should_skip_ai_processing,
-    try_rule_only_processing,
 )
 
 if TYPE_CHECKING:
@@ -548,18 +547,7 @@ class BaseCLIProcessor(BaseAIProcessor):
                 success=True,
             )
 
-        # Strategy 2: Try rule-only processing for high-confidence matches
-        rule_result = try_rule_only_processing(item)
-        if rule_result:
-            logger.info(f"Rule-only processing: {title[:40]}... -> {rule_result.category}")
-            record_ai_call(
-                call_type=AICallType.CONTENT_LIGHT,
-                cached=True,  # Count as "cached" since no AI call made
-                input_chars=len(title) + len(content),
-            )
-            return rule_result
-
-        # Strategy 3: Estimate importance for model/prompt selection
+        # Strategy 2: Estimate importance for model/prompt selection
         importance_est = estimate_importance(item)
         rule_settings = self.settings.rule_optimization
         min_conf = rule_settings.minimal_prompt_min_confidence
@@ -633,17 +621,6 @@ class BaseCLIProcessor(BaseAIProcessor):
                     importance_score=importance,
                     success=True,
                 )
-                record_ai_call(
-                    call_type=AICallType.CONTENT_LIGHT,
-                    cached=True,
-                    input_chars=len(title) + len(content),
-                )
-                continue
-
-            # Try rule-only processing
-            rule_result = try_rule_only_processing(item)
-            if rule_result:
-                results[i] = rule_result
                 record_ai_call(
                     call_type=AICallType.CONTENT_LIGHT,
                     cached=True,

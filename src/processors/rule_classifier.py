@@ -368,6 +368,9 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
 
     Configuration (env vars):
     - SKIP_ENABLED: Enable/disable skip processing (default: true)
+    - SKIP_LOW_IMPORTANCE_ENABLED: Skip low importance content (default: true)
+    - SKIP_LOW_IMPORTANCE_THRESHOLD: Threshold for low importance (default: 3)
+    - SKIP_SHORT_CONTENT_THRESHOLD: Min content length threshold (default: 150)
 
     Returns:
         (should_skip, reason) tuple
@@ -388,9 +391,48 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
     if not content.strip():
         return True, "Empty content"
 
-    # Very short content (likely just a link or single sentence)
-    if len(content) < 100 and len(title) < 50:
-        return True, "Content too short"
+    # Very short content (configurable threshold)
+    short_threshold = settings.skip_short_content_threshold
+    if len(content) < short_threshold and len(title) < 50:
+        return True, f"Content too short (<{short_threshold} chars)"
+
+    # Discussion/Ask posts (Q&A format, typically low value for intelligence)
+    discussion_patterns = [
+        r"^\[Discussion\]",
+        r"^Ask HN:",
+        r"^Ask Reddit:",
+        r"^\[?AskReddit\]?:",
+    ]
+    for pattern in discussion_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True, "Discussion/Ask post"
+
+    # Poll posts (voting, no intelligence value)
+    poll_patterns = [
+        r"^\[Poll\]",
+        r"^Vote:",
+        r"^Poll:",
+        r"^\[Voting\]",
+    ]
+    for pattern in poll_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True, "Poll/voting post"
+
+    # Periodic/recurring posts (daily/weekly threads)
+    periodic_patterns = [
+        r"^(Daily|Weekly|Monthly)\s+(Thread|Discussion|Megathread)",
+        r"^(Daily|Weekly)\s+\w+\s+Thread",
+        r"^\[?(Weekly|Daily)\]?\s*-?\s*\w+\s*(Thread|Discussion)",
+    ]
+    for pattern in periodic_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True, "Periodic thread"
+
+    # Low importance content (pre-estimate and skip if very low)
+    if settings.skip_low_importance_enabled:
+        estimate = estimate_importance(item)
+        if estimate.score <= settings.skip_low_importance_threshold and estimate.confidence >= 0.5:
+            return True, f"Low importance (score={estimate.score}, conf={estimate.confidence:.2f})"
 
     # Twitter/X short content without substantial value
     # Data shows: <200 chars avg score 2-4, not worth AI processing
@@ -568,11 +610,20 @@ HIGH_CONFIDENCE_DOMAINS = {
     "wired.com": ("技术", 5),
     "theverge.com": ("技术", 5),
     "venturebeat.com": ("AI", 6),
+    "thenewstack.io": ("编程", 6),
+    "infoworld.com": ("技术", 5),
+    "hackernoon.com": ("编程", 5),
+    # === AI 媒体 (AI media) ===
+    "the-decoder.com": ("AI", 7),
+    "aiweekly.co": ("AI", 6),
     # === 中文科技源 (Chinese tech sources) ===
     "jiqizhixin.com": ("AI", 7),
     "36kr.com": ("创业", 6),
     "infoq.cn": ("技术", 6),
     "sspai.com": ("技术", 5),
+    "oschina.net": ("编程", 5),
+    "segmentfault.com": ("编程", 5),
+    "juejin.cn": ("编程", 5),
     # === 金融/投资 (Finance/Investment) ===
     "bloomberg.com": ("金融", 7),
     "reuters.com": ("金融", 7),
@@ -596,6 +647,200 @@ DOMAINS_REQUIRE_AI = {
     "hnrss.org",             # HN RSS feed
 }
 
+# Reddit subreddit to category mapping
+# Base importance calibrated from AI processing history
+SUBREDDIT_CATEGORIES = {
+    # AI/ML - calibrated from AI avg scores
+    "machinelearning": ("AI", 5),      # AI avg: 4.9
+    "learnmachinelearning": ("AI", 5), # AI avg: 4.6
+    "localllama": ("AI", 6),           # AI avg: 6.5
+    "stablediffusion": ("AI", 5),      # AI avg: 4.8
+    "reinforcementlearning": ("AI", 6),# AI avg: 5.9
+    "artificial": ("AI", 6),           # AI avg: 6.2
+    "openai": ("AI", 6),
+    "claudeai": ("AI", 6),
+    "chatgpt": ("AI", 5),
+    "singularity": ("AI", 4),
+    "deeplearning": ("AI", 6),
+    "mlquestions": ("AI", 6),          # AI avg: 5.7
+    # Programming - calibrated
+    "python": ("编程", 6),             # AI avg: 6.1
+    "programming": ("编程", 7),        # AI avg: 6.9
+    "coding": ("编程", 5),
+    "learnprogramming": ("编程", 4),
+    "rust": ("编程", 6),
+    "golang": ("编程", 6),
+    "javascript": ("编程", 5),
+    "typescript": ("编程", 6),
+    "cpp": ("编程", 6),
+    "java": ("编程", 5),
+    "webdev": ("编程", 5),
+    "devops": ("编程", 6),
+    "creativecoding": ("编程", 2),     # AI avg: 2.3
+    # Tech - calibrated
+    "technology": ("技术", 7),         # AI avg: 6.9
+    "futurology": ("技术", 6),         # AI avg: 6.5
+    "gadgets": ("技术", 4),
+    "hardware": ("技术", 7),           # AI avg: 7.1
+    "linux": ("技术", 5),
+    "selfhosted": ("技术", 5),
+    # Startups/Business - calibrated
+    "entrepreneur": ("创业", 4),       # AI avg: 4.2
+    "startups": ("创业", 5),           # AI avg: 4.8
+    "sideproject": ("创业", 5),        # AI avg: 4.8
+    "smallbusiness": ("创业", 4),
+    "ycombinator": ("创业", 6),        # AI avg: 6.0
+    "indiehackers": ("创业", 6),       # AI avg: 5.9
+    # Research/Science - calibrated
+    "statistics": ("研究", 5),         # AI avg: 4.5
+    "datascience": ("研究", 6),        # AI avg: 5.8
+    "science": ("研究", 5),
+    "compsci": ("研究", 6),
+    # Design - calibrated
+    "design": ("设计", 3),             # AI avg: 2.7
+    "web_design": ("设计", 3),
+    "ui_design": ("设计", 3),
+    "userexperience": ("设计", 4),
+}
+
+
+def _try_rule_only_reddit(item: ContentItem) -> Optional[ProcessingResult]:
+    """
+    Rule-only processing for Reddit content based on subreddit.
+
+    Extracts subreddit from URL and maps to category.
+    """
+    if not item.url or "reddit.com" not in item.url:
+        return None
+
+    # Extract subreddit from URL: /r/{subreddit}/...
+    url = item.url.lower()
+    if "/r/" not in url:
+        return None
+
+    try:
+        subreddit = url.split("/r/")[1].split("/")[0]
+    except (IndexError, ValueError):
+        return None
+
+    if subreddit not in SUBREDDIT_CATEGORIES:
+        return None
+
+    category, base_importance = SUBREDDIT_CATEGORIES[subreddit]
+
+    # Verify with keyword signals for quality
+    text = f"{item.title} {item.content[:300] if item.content else ''}"
+    keyword_signals = _check_keyword_signals(text, category)
+
+    # Reddit needs keyword confirmation to avoid misclassification
+    if not keyword_signals:
+        return None
+
+    # Cap at 6: rule-only should not exceed 6, leave 7+ for AI processing
+    importance = min(6, base_importance + keyword_signals.get("boost", 0))
+
+    summary = _generate_rule_summary(item.title, category)
+    one_liner = _generate_one_liner(item.title, category)
+    key_points = _extract_key_points_from_title(item.title)
+
+    logger.info(
+        f"Rule-only (Reddit): {item.title[:40]}... -> {category} "
+        f"(importance={importance}, r/{subreddit})"
+    )
+
+    return ProcessingResult(
+        summary=summary,
+        category=category,
+        importance_score=importance,
+        success=True,
+        one_liner=one_liner,
+        key_points=key_points,
+        impact_assessment=ImpactResult(
+            short_term="待观察",
+            long_term="待评估",
+            certainty="uncertain"
+        ),
+        actionable_items=[],
+    )
+
+
+def _try_rule_only_arxiv(item: ContentItem) -> Optional[ProcessingResult]:
+    """
+    Rule-only processing for arxiv papers.
+
+    arxiv content is structured (abstract), so we can handle longer content.
+    Max content length: 3000 chars (vs default 1000).
+    """
+    if not item.url or "arxiv.org" not in item.url:
+        return None
+
+    content = item.content or ""
+    content_len = len(content)
+
+    # arxiv allows longer content (abstracts are structured)
+    if content_len > 3000:
+        return None
+
+    # Default category for arxiv (base: 5)
+    category = "研究"
+    base_importance = 5
+
+    # Boost importance for AI/ML papers (base: 6)
+    text = f"{item.title} {content[:500]}"
+    ai_patterns = [
+        # Core ML/DL terms
+        r"\b(machine learning|deep learning|neural network|transformer)\b",
+        r"\b(LLM|GPT|BERT|language model|large model)\b",
+        r"\b(reinforcement learning|computer vision|NLP)\b",
+        # Model architectures & techniques
+        r"\b(embedding|attention|diffusion|generative|autoencoder)\b",
+        r"\b(CNN|RNN|LSTM|GAN|VAE|ViT)\b",
+        # AI/ML applications
+        r"\b(classification|detection|segmentation|recognition)\b",
+        r"\b(translation|NMT|speech|image|vision)\b",
+        # Explicit AI mentions
+        r"\b(artificial intelligence|GenAI|AI model|AI system)\b",
+        r"\b(XAI|explainable|interpretable)\b",
+    ]
+    for pattern in ai_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            category = "AI"
+            base_importance = 6
+            break
+
+    # Cap at 6: rule-only should not exceed 6, leave 7+ for AI processing
+    base_importance = min(6, base_importance)
+
+    # Extract abstract as summary
+    if "Abstract:" in content:
+        abstract = content.split("Abstract:")[1].strip()
+        summary = abstract[:200] + "..." if len(abstract) > 200 else abstract
+    else:
+        summary = _generate_rule_summary(item.title, category)
+
+    one_liner = f"研究论文：{item.title[:50]}"
+    key_points = _extract_key_points_from_title(item.title)
+
+    logger.info(
+        f"Rule-only (arxiv): {item.title[:40]}... -> {category} "
+        f"(importance={base_importance})"
+    )
+
+    return ProcessingResult(
+        summary=summary,
+        category=category,
+        importance_score=base_importance,
+        success=True,
+        one_liner=one_liner,
+        key_points=key_points,
+        impact_assessment=ImpactResult(
+            short_term="学术研究进展",
+            long_term="待评估实际影响",
+            certainty="uncertain"
+        ),
+        actionable_items=[],
+    )
+
 
 def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
     """
@@ -610,6 +855,10 @@ def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
     - Requires keyword confirmation (prevents wrong category)
     - Only works for content < max_content_length (configurable, default 1000)
     - Returns metadata indicating rule-based processing for tracking
+
+    Special handling:
+    - Reddit: Maps subreddit to category (r/machinelearning -> AI)
+    - arxiv: Allows longer content (up to 3000 chars), extracts abstract
 
     Configuration (env vars):
     - RULE_ONLY_ENABLED: Enable/disable rule-only processing (default: true)
@@ -632,6 +881,18 @@ def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
     if not item.url or not item.title:
         return None
 
+    # Try special handlers first (before generic domain matching)
+    # 1. Reddit - subreddit-based classification
+    result = _try_rule_only_reddit(item)
+    if result:
+        return result
+
+    # 2. arxiv - structured academic content
+    result = _try_rule_only_arxiv(item)
+    if result:
+        return result
+
+    # Generic domain-based processing
     # Quality gate: Long content needs AI for proper analysis
     content_len = len(item.content) if item.content else 0
     if content_len > settings.rule_only_max_content_length:
@@ -679,7 +940,8 @@ def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
         return None
 
     # Adjust importance based on keywords
-    importance = min(10, base_importance + keyword_signals.get("boost", 0))
+    # Cap at 6: rule-only should not exceed 6, leave 7+ for AI processing
+    importance = min(6, base_importance + keyword_signals.get("boost", 0))
 
     # Generate summary from title (simple extraction)
     summary = _generate_rule_summary(item.title, category)

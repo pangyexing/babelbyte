@@ -8,7 +8,7 @@ import logging
 
 import click
 
-from src.cli import actions, embeddings, events, fetch, reports, search, subscribe, topics, validation
+from src.cli import actions, db, embeddings, events, fetch, reports, search, subscribe, topics, validation
 
 
 def setup_logging():
@@ -40,6 +40,7 @@ def cli(ctx, mock):
 # Register all command groups
 subscribe.register_commands(cli)
 fetch.register_commands(cli)
+db.register_commands(cli)
 search.register_commands(cli)
 events.register_commands(cli)
 topics.register_commands(cli)

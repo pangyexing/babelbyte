@@ -26,7 +26,6 @@ from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
     should_skip_ai_processing,
-    try_rule_only_processing,
 )
 
 if TYPE_CHECKING:
@@ -491,18 +490,7 @@ confidence规则:
                 success=True,
             )
 
-        # Strategy 2: Try rule-only processing for high-confidence matches
-        rule_result = try_rule_only_processing(item)
-        if rule_result:
-            logger.info(f"Rule-only processing: {title[:40]}... -> {rule_result.category}")
-            record_ai_call(
-                call_type=AICallType.CONTENT_LIGHT,
-                cached=True,
-                input_chars=len(title) + len(content),
-            )
-            return rule_result
-
-        # Strategy 3: Estimate importance for prompt selection
+        # Strategy 2: Estimate importance for prompt selection
         importance_est = estimate_importance(item)
         rule_settings = self.settings.rule_optimization
         min_conf = rule_settings.minimal_prompt_min_confidence
@@ -640,7 +628,6 @@ confidence规则:
         # externally in digest_processor.py before calling this method.
         # ========================================
         skipped_count = 0
-        rule_only_count = 0
 
         for i, item in enumerate(items):
             title = item.title or ""
@@ -664,25 +651,12 @@ confidence规则:
                 skipped_count += 1
                 continue
 
-            # Strategy 2: Rule-only processing for high-confidence matches
-            rule_result = try_rule_only_processing(item)
-            if rule_result:
-                results[i] = rule_result
-                record_ai_call(
-                    call_type=AICallType.CONTENT_LIGHT,
-                    cached=True,
-                    input_chars=len(title) + len(content),
-                )
-                rule_only_count += 1
-                continue
-
             # Needs AI screening
             to_screen.append((i, item))
 
-        if skipped_count > 0 or rule_only_count > 0:
+        if skipped_count > 0:
             logger.info(
-                f"Two-stage pre-filter: {skipped_count} skipped, {rule_only_count} rule-only, "
-                f"{len(to_screen)} to screen"
+                f"Two-stage pre-filter: {skipped_count} skipped, {len(to_screen)} to screen"
             )
 
         if not to_screen:

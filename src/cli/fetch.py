@@ -311,8 +311,102 @@ def daily(ctx, dry_run, skip_fetch, min_importance):
     console.print("\n[bold green]Daily pipeline completed![/bold green]")
 
 
+@click.command("prefilter-stats")
+@click.option("--limit", default=100, help="Number of unprocessed items to test")
+@click.pass_context
+def prefilter_stats(ctx, limit: int):
+    """
+    Test Phase 1 pre-filtering without AI processing.
+
+    Shows statistics on how many items would be:
+    - Skipped (spam, short, etc.)
+    - Dedup matched (similar to existing processed items)
+    - Sent to AI (need actual processing)
+
+    Examples:
+        bb prefilter-stats              # Test 100 items (default)
+        bb prefilter-stats --limit 200  # Test 200 items
+    """
+    from src.optimization.dedup_optimizer import find_similar_processed_item
+    from src.processors.rule_classifier import should_skip_ai_processing
+
+    db = get_db()
+
+    try:
+        items = db.get_unprocessed_items(limit=limit)
+        console.print(f"Testing {len(items)} unprocessed items...\n")
+
+        if not items:
+            console.print("[yellow]No unprocessed items found.[/yellow]")
+            return
+
+        stats = {
+            "total": len(items),
+            "skipped": 0,
+            "dedup": 0,
+            "need_ai": 0,
+            "skip_reasons": {},
+        }
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Analyzing...", total=len(items))
+
+            for item in items:
+                # 1. Check skip
+                should_skip, reason = should_skip_ai_processing(item)
+                if should_skip:
+                    stats["skipped"] += 1
+                    stats["skip_reasons"][reason] = stats["skip_reasons"].get(reason, 0) + 1
+                    progress.update(task, advance=1)
+                    continue
+
+                # 2. Find similar (embedding-based dedup)
+                similar = find_similar_processed_item(item, db)
+                if similar:
+                    stats["dedup"] += 1
+                    progress.update(task, advance=1)
+                    continue
+
+                # 3. Need AI
+                stats["need_ai"] += 1
+                progress.update(task, advance=1)
+
+        # Output results
+        total = stats["total"]
+        console.print("[bold]=== Phase 1 Pre-filtering Statistics ===[/bold]")
+        console.print(f"Total items tested: {total}\n")
+
+        skip_pct = 100 * stats["skipped"] / total
+        dedup_pct = 100 * stats["dedup"] / total
+        ai_pct = 100 * stats["need_ai"] / total
+
+        console.print(f"[red]Skipped:[/red]   {stats['skipped']:4d} ({skip_pct:.1f}%)")
+        console.print(f"[cyan]Dedup:[/cyan]     {stats['dedup']:4d} ({dedup_pct:.1f}%)")
+        console.print(f"[green]Need AI:[/green]   {stats['need_ai']:4d} ({ai_pct:.1f}%)")
+        console.print("")
+
+        prefilter_total = stats["skipped"] + stats["dedup"]
+        console.print(f"[bold]Pre-filter rate: {100*prefilter_total/total:.1f}%[/bold]")
+
+        if stats["skip_reasons"]:
+            console.print("\n[bold]Skip reasons:[/bold]")
+            for reason, count in sorted(stats["skip_reasons"].items(), key=lambda x: -x[1]):
+                console.print(f"  {reason}: {count}")
+
+    finally:
+        db.close()
+
+
 def register_commands(cli):
     """Register fetch commands with the CLI."""
     cli.add_command(fetch)
     cli.add_command(digest)
     cli.add_command(daily)
+    cli.add_command(prefilter_stats)

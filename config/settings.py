@@ -314,6 +314,21 @@ class RuleOptimizationConfig:
         default_factory=lambda: os.getenv("SKIP_ENABLED", "true").lower() == "true"
     )
 
+    # Enable skipping low importance content (estimated score <= threshold)
+    skip_low_importance_enabled: bool = field(
+        default_factory=lambda: os.getenv("SKIP_LOW_IMPORTANCE_ENABLED", "true").lower() == "true"
+    )
+
+    # Threshold for skipping low importance content (score <= this skips AI)
+    skip_low_importance_threshold: int = field(
+        default_factory=lambda: int(os.getenv("SKIP_LOW_IMPORTANCE_THRESHOLD", "3"))
+    )
+
+    # Minimum content length threshold (content shorter than this may be skipped)
+    skip_short_content_threshold: int = field(
+        default_factory=lambda: int(os.getenv("SKIP_SHORT_CONTENT_THRESHOLD", "150"))
+    )
+
     # Enable minimal prompt for very low importance content
     minimal_prompt_enabled: bool = field(
         default_factory=lambda: os.getenv("MINIMAL_PROMPT_ENABLED", "true").lower() == "true"
@@ -339,6 +354,15 @@ class RuleOptimizationConfig:
         if not 1 <= self.minimal_prompt_threshold <= 6:
             raise ValueError(
                 f"minimal_prompt_threshold must be 1-6, got {self.minimal_prompt_threshold}"
+            )
+        if not 1 <= self.skip_low_importance_threshold <= 5:
+            raise ValueError(
+                f"skip_low_importance_threshold must be 1-5, "
+                f"got {self.skip_low_importance_threshold}"
+            )
+        if not 50 <= self.skip_short_content_threshold <= 500:
+            raise ValueError(
+                f"skip_short_content_threshold must be 50-500, got {self.skip_short_content_threshold}"
             )
 
 
@@ -374,6 +398,16 @@ class EmbeddingConfig:
         default_factory=lambda: os.getenv("EMBEDDING_ENABLED", "true").lower() == "true"
     )
 
+    # Deduplication threshold for semantic similarity (0-1)
+    dedup_threshold: float = field(
+        default_factory=lambda: float(os.getenv("EMBEDDING_DEDUP_THRESHOLD", "0.85"))
+    )
+
+    # Maximum number of items to search for deduplication
+    dedup_search_limit: int = field(
+        default_factory=lambda: int(os.getenv("EMBEDDING_DEDUP_SEARCH_LIMIT", "5000"))
+    )
+
     def __post_init__(self):
         """Validate embedding configuration."""
         valid_providers = {"sentence-transformers", "openai"}
@@ -391,6 +425,14 @@ class EmbeddingConfig:
                 f"rule_weight + semantic_weight should equal 1.0, "
                 f"got {self.rule_weight} + {self.semantic_weight} = {self.rule_weight + self.semantic_weight}"
             )
+
+        # Validate dedup threshold
+        if not 0.5 <= self.dedup_threshold <= 1.0:
+            raise ValueError(f"dedup_threshold must be 0.5-1.0, got {self.dedup_threshold}")
+
+        # Validate dedup search limit
+        if not 100 <= self.dedup_search_limit <= 50000:
+            raise ValueError(f"dedup_search_limit must be 100-50000, got {self.dedup_search_limit}")
 
 
 @dataclass
