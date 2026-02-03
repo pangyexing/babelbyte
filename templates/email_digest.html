@@ -271,6 +271,51 @@
             font-style: italic;
             padding-top: 4px;
         }
+        /* Section divider styles */
+        .section-divider {
+            margin: 30px 0 20px 0;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-divider.events {
+            background: linear-gradient(135deg, #4a90d9 0%, #357abd 100%);
+        }
+        .section-divider.individual {
+            background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
+        }
+        .section-divider .count {
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        /* Paper/RSS specific styles */
+        .paper-badge {
+            display: inline-block;
+            background: #00b894;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .paper-item {
+            background-color: #f0fff4;
+            border-left: 4px solid #00b894;
+        }
+        .source-rss {
+            background-color: #00b894;
+            color: white;
+        }
         .footer {
             text-align: center;
             margin-top: 30px;
@@ -310,19 +355,27 @@
             {% if event_count > 0 %}
             <span><strong>{{ event_count }}</strong> 个事件</span>
             {% endif %}
+            {% if individual_count > 0 %}
+            <span><strong>{{ individual_count }}</strong> 条独立内容</span>
+            {% endif %}
             <span>涵盖 <strong>{{ category_count }}</strong> 个分类</span>
         </div>
 
         {% if items or events %}
-            {% for category, category_items in items_by_category.items() %}
+            {# ===== SECTION 1: Event Clusters ===== #}
+            {% if events_by_category %}
+            <div class="section-divider events">
+                <span>事件聚合</span>
+                <span class="count">{{ event_count }} 个事件</span>
+            </div>
+
+            {% for category, category_events in events_by_category.items() %}
             <div class="category-section">
                 <div class="category-header">
-                    {{ category }} ({{ category_items|length }}条)
+                    {{ category }} ({{ category_events|length }}个事件)
                 </div>
                 <div class="category-content">
-                    {% for item in category_items %}
-                    {% if item.is_event %}
-                    {# Event cluster rendering #}
+                    {% for item in category_events %}
                     <div class="item event-item">
                         <div class="item-header">
                             <div>
@@ -384,19 +437,42 @@
                             <span class="source-badge source-multi">{{ item.source_display }}</span>
                         </div>
                     </div>
-                    {% else %}
-                    {# Regular item rendering #}
-                    <div class="item">
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {# ===== SECTION 2: Individual Items (Papers, etc.) ===== #}
+            {% if individual_by_category %}
+            <div class="section-divider individual">
+                <span>独立内容</span>
+                <span class="count">{{ individual_count }} 条</span>
+            </div>
+
+            {% for category, category_items in individual_by_category.items() %}
+            <div class="category-section">
+                <div class="category-header">
+                    {{ category }} ({{ category_items|length }}条)
+                </div>
+                <div class="category-content">
+                    {% for item in category_items %}
+                    <div class="item {% if item.content_item.source_type.value == 'rss' %}paper-item{% endif %}">
                         <div class="item-header">
-                            <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
-                                {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
-                            </a>
+                            <div>
+                                {% if item.content_item.source_type.value == 'rss' %}
+                                <span class="paper-badge">论文</span>
+                                {% endif %}
+                                <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
+                                    {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
+                                </a>
+                            </div>
                             <span class="importance {% if item.importance_score >= 8 %}high{% elif item.importance_score >= 5 %}medium{% else %}low{% endif %}">
                                 {{ item.importance_score }}/10
                             </span>
                         </div>
 
-                        {# One-liner conclusion (Phase 1) #}
+                        {# One-liner conclusion #}
                         {% if item.content_item.one_liner %}
                         <div class="one-liner">
                             {{ item.content_item.one_liner }}
@@ -407,7 +483,7 @@
                             {{ item.summary }}
                         </div>
 
-                        {# Key points (Phase 1) #}
+                        {# Key points #}
                         {% if item.enhanced_data and item.enhanced_data.key_points %}
                         <div class="key-points">
                             {% for kp in item.enhanced_data.key_points %}
@@ -419,7 +495,7 @@
                         </div>
                         {% endif %}
 
-                        {# Impact assessment (Phase 1) - only for high importance items #}
+                        {# Impact assessment - only for high importance items #}
                         {% if item.importance_score >= 7 and item.enhanced_data and item.enhanced_data.impact_assessment %}
                         <div class="impact-section">
                             {% if item.enhanced_data.impact_assessment.short_term %}
@@ -431,7 +507,7 @@
                         </div>
                         {% endif %}
 
-                        {# Actionable items (Phase 1) #}
+                        {# Actionable items #}
                         {% if item.enhanced_data and item.enhanced_data.actionable_items %}
                         <div class="action-items">
                             {% for action in item.enhanced_data.actionable_items %}
@@ -453,11 +529,11 @@
                             <a href="{{ item.content_item.url }}" target="_blank">查看原文</a>
                         </div>
                     </div>
-                    {% endif %}
                     {% endfor %}
                 </div>
             </div>
             {% endfor %}
+            {% endif %}
         {% else %}
             <div class="no-content">
                 <p>今日暂无新内容</p>

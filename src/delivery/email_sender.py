@@ -165,10 +165,13 @@ class EmailSender:
             date=digest.generated_at.strftime("%Y年%m月%d日"),
             total_items=digest.total_items,
             event_count=len(digest.events),
+            individual_count=len(digest.items),
             category_count=len(digest.by_category),
             items=digest.items,
             events=digest.events,
             items_by_category=digest.by_category,
+            events_by_category=digest.events_by_category,
+            individual_by_category=digest.items_by_category,
         )
 
     def _render_digest_text(self, digest: DigestResult) -> str:

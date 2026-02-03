@@ -16,7 +16,7 @@ from typing import Optional
 from config.settings import get_settings
 from src.analytics.token_tracker import AICallType, record_ai_call
 from src.storage.database import SyncDatabase
-from src.storage.models import ContentItem, EventCluster, EventMember, EventTimeline
+from src.storage.models import ContentItem, EventCluster, EventMember, EventTimeline, SourceType
 
 # Optional numpy import for embeddings
 try:
@@ -800,6 +800,11 @@ class EventStreamProcessor:
         # Check if item is already in a cluster (prevent duplicates)
         if self.db.is_item_in_cluster(item.id):
             logger.debug(f"Item {item.id} already in a cluster, skipping")
+            return None
+
+        # Skip RSS items (e.g., arXiv papers) - they should be displayed independently
+        if item.source_type == SourceType.RSS:
+            logger.debug(f"Skipping RSS item {item.id} from clustering")
             return None
 
         # Find candidates

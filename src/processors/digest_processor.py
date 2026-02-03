@@ -110,6 +110,32 @@ class DigestResult:
         return result
 
     @property
+    def events_by_category(self) -> dict[str, list[EventDigestItem]]:
+        """Group events by category (for separate display)."""
+        result: dict[str, list[EventDigestItem]] = {}
+        for event in self.events:
+            if event.category not in result:
+                result[event.category] = []
+            result[event.category].append(event)
+        # Sort by importance
+        for category in result:
+            result[category].sort(key=lambda x: x.importance_score, reverse=True)
+        return result
+
+    @property
+    def items_by_category(self) -> dict[str, list[DigestItem]]:
+        """Group individual items by category (for separate display)."""
+        result: dict[str, list[DigestItem]] = {}
+        for item in self.items:
+            if item.category not in result:
+                result[item.category] = []
+            result[item.category].append(item)
+        # Sort by importance
+        for category in result:
+            result[category].sort(key=lambda x: x.importance_score, reverse=True)
+        return result
+
+    @property
     def total_items(self) -> int:
         """Total count including event members."""
         event_member_count = sum(len(e.members) for e in self.events)
