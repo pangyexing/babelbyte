@@ -371,6 +371,7 @@ Copy `.env.example` to `.env`. Key settings:
 - `AI_MAX_CONTENT_LENGTH` - Content truncation limit (default: 1500)
 - `AI_BATCH_SIZE_SHORT` - Batch size for short content (default: 12)
 - `AI_BATCH_SIZE_LONG` - Batch size for long content (default: 6)
+- `AI_PROCESS_LIMIT` - Max items per AI processing run (default: 500)
 - `CLUSTER_CACHE_TTL` - Cluster cache seconds (default: 60)
 - `CLUSTER_RETRY_HOURS` - Retry failed clusters after hours (default: 24)
 - `EMBEDDING_PROVIDER` - "sentence-transformers" (default, local) or "openai"

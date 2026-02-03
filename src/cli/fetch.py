@@ -4,6 +4,7 @@ import click
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from config.settings import get_settings
 from src.cli.common import console, get_db
 from src.delivery.email_sender import EmailSender
 from src.processors.digest_processor import DigestGenerator, create_digest_preview
@@ -87,8 +88,9 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parall
             def update_progress(phase: str, current: int, total: int):
                 progress.update(task, description=phase, completed=current, total=total)
 
+            settings = get_settings()
             processed = generator.process_unprocessed_items(
-                limit=100, progress_callback=update_progress
+                limit=settings.ai.process_limit, progress_callback=update_progress
             )
 
         console.print(f"[dim]Processed {processed} items[/dim]")
@@ -229,6 +231,7 @@ def daily(ctx, dry_run, skip_fetch, min_importance):
 
         # Step 3: Process content with AI (can leverage embeddings for dedup)
         console.print("\n[bold cyan]Step 3/5: Processing with AI...[/bold cyan]")
+        settings = get_settings()
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -236,7 +239,7 @@ def daily(ctx, dry_run, skip_fetch, min_importance):
             transient=True,
         ) as progress:
             task = progress.add_task("Processing...", total=None)
-            processed = runner.process_content(limit=500)
+            processed = runner.process_content(limit=settings.ai.process_limit)
 
         console.print(f"  [green]✓[/green] Processed {processed} items")
 
