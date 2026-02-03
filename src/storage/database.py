@@ -654,19 +654,30 @@ class Database:
             return None
 
     async def get_unprocessed_items(self, limit: int = 100) -> list[ContentItem]:
-        """Get content items that haven't been processed by AI."""
+        """Get content items that haven't been processed by AI.
+
+        Returns items sorted by priority score calculated from:
+        1. Source quality tier (based on historical AI scores)
+        2. Twitter author reputation (high-value authors prioritized)
+        3. Content length (penalize very short content)
+
+        Lower priority score = higher priority (processed first).
+        """
+        from src.processors.content_ranker import rank_content_items
+
         async with self._connection.cursor() as cursor:
+            # Fetch all unprocessed items (no SQL-level sorting)
             await cursor.execute(
                 """
                 SELECT * FROM content_items
                 WHERE processed_at IS NULL
-                ORDER BY published_at DESC
-                LIMIT ?
                 """,
-                (limit,),
             )
             rows = await cursor.fetchall()
-            return [self._row_to_content_item(row) for row in rows]
+            items = [self._row_to_content_item(row) for row in rows]
+
+        # Apply Python-based priority ranking
+        return rank_content_items(items, limit=limit)
 
     async def get_undelivered_items(
         self, min_importance: int = 1, limit: int = 50

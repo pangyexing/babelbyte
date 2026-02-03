@@ -21,7 +21,6 @@ from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
     should_skip_ai_processing,
-    try_rule_only_processing,
 )
 from src.optimization.dedup_optimizer import find_similar_processed_item
 from src.storage.database import SyncDatabase
@@ -237,37 +236,28 @@ class DigestGenerator:
         if not self.db:
             raise ValueError("Database not configured")
 
-        # Get more items than limit, then sort by estimated importance
-        # This ensures high-priority items are processed first
-        fetch_limit = min(limit * 2, 1000)  # Fetch up to 2x limit for better prioritization
-        all_items = self.db.get_unprocessed_items(limit=fetch_limit)
-        if not all_items:
+        # Get items pre-sorted by content_ranker (based on historical AI scores)
+        # content_ranker considers: source tier, author reputation, content length
+        items = self.db.get_unprocessed_items(limit=limit)
+        if not items:
             logger.info("No unprocessed items found")
             return 0
 
-        # Sort by estimated importance (descending)
-        items_with_estimates = []
-        for item in all_items:
-            est = estimate_importance(item)
-            items_with_estimates.append((item, est.score, est.confidence))
+        # Log priority distribution for debugging
+        from src.processors.content_ranker import calculate_priority_score, extract_source_key
 
-        # Sort by: importance score (desc), then confidence (desc)
-        items_with_estimates.sort(key=lambda x: (x[1], x[2]), reverse=True)
-
-        # Take top 'limit' items
-        items = [item for item, _, _ in items_with_estimates[:limit]]
-
-        if len(all_items) > limit:
-            top_scores = [s for _, s, _ in items_with_estimates[:5]]
-            logger.info(
-                f"Prioritized {limit}/{len(all_items)} items by estimated importance "
-                f"(top 5 scores: {top_scores})"
-            )
+        if len(items) >= 5:
+            top_sources = []
+            for item in items[:5]:
+                src_type = item.source_type.value if item.source_type else None
+                score = calculate_priority_score(item.url or "", item.content, item.author, src_type)
+                src = extract_source_key(item.url or "")
+                top_sources.append(f"{src}:{score}")
+            logger.info(f"Processing {len(items)} items (top 5 by priority: {top_sources})")
 
         total_start = time.time()
         processed_count = 0
         skipped_count = 0
-        rule_classified_count = 0
         ai_processed_count = 0
 
         # Items that need AI processing
@@ -295,33 +285,6 @@ class DigestGenerator:
                 logger.debug(f"Skipped: {item.title[:40]}... ({skip_reason})")
                 continue
 
-            # Try rule-only processing (full result without AI)
-            rule_only_result = try_rule_only_processing(item)
-            if rule_only_result:
-                # Full processing result from rules - includes summary, key_points, etc.
-                item.summary = rule_only_result.summary
-                item.category = rule_only_result.category
-                item.importance_score = rule_only_result.importance_score
-                item.one_liner = rule_only_result.one_liner
-                if rule_only_result.key_points:
-                    import json
-
-                    item.key_points = json.dumps(
-                        [
-                            {"type": kp.type, "value": kp.value, "impact": kp.impact}
-                            for kp in rule_only_result.key_points
-                        ],
-                        ensure_ascii=False,
-                    )
-                item.processed_at = datetime.now()
-                self.db.update_content_item(item)
-                rule_classified_count += 1
-                processed_count += 1
-                logger.debug(
-                    f"Rule-only processed: {item.title[:40]}... -> {rule_only_result.category}"
-                )
-                continue
-
             # Try embedding-based dedup: reuse AI results from similar items
             similar_result = find_similar_processed_item(item, self.db)
             if similar_result:
@@ -345,10 +308,8 @@ class DigestGenerator:
             # Needs AI processing (removed basic rule classification to ensure complete enhanced fields)
             items_for_ai.append(item)
 
-        prefilter_count = skipped_count + rule_classified_count
         logger.info(
-            f"Phase 1 done: {prefilter_count} items handled without AI "
-            f"(skipped={skipped_count}, rules={rule_classified_count}), "
+            f"Phase 1 done: {skipped_count} items skipped, "
             f"{len(items_for_ai)} need AI processing"
         )
 
