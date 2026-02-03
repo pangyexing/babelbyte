@@ -15,7 +15,7 @@ def embeddings(ctx):
 
 
 @embeddings.command("compute")
-@click.option("--limit", "-n", default=100, help="Maximum items to process")
+@click.option("--limit", "-n", default=2000, help="Maximum items to process")
 @click.option("--force", "-f", is_flag=True, help="Recompute existing embeddings")
 @click.pass_context
 def embeddings_compute(ctx, limit, force):

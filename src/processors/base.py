@@ -72,12 +72,15 @@ class ProcessingResult:
 class BaseAIProcessor(ABC):
     """Abstract base class for AI processors."""
 
+    # Valid categories for classification
+    VALID_CATEGORIES = {"AI", "机器学习", "编程", "技术", "创业", "创新", "金融", "研究", "设计", "其他"}
+
     # Enhanced prompt template for content processing (Chinese output)
     # fmt: off
     PROCESS_PROMPT = """分析内容，返回JSON（仅JSON，无其他文字）：
 {{
   "summary": "50字中文摘要",
-  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
+  "category": "只选一个：AI、机器学习、编程、技术、创业、创新、金融、研究、设计、其他",
   "importance": 1-10,
   "one_liner": "一句话结论：这条信息对读者意味着什么",
   "key_points": [
@@ -94,6 +97,7 @@ class BaseAIProcessor(ABC):
 }}
 
 评分:9-10重大发布/突破性论文,7-8官宣/重要开源/融资,5-6教程/一般研究,3-4普通讨论,1-2招聘/水帖
+category：必须是以上10个分类之一，不要组合
 key_points：提取最多3个关键点（数字/时间/实体/事实）
 actionable_items：仅当importance>=7时提取行动项，否则为空数组
 
@@ -103,7 +107,7 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
 
     # Simple prompt for low-value or pre-filtered content (uses less tokens)
     # fmt: off
-    SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI/机器学习/编程/技术/创业/研究/设计/其他","importance":1-10}}
+    SIMPLE_PROMPT = """返回JSON：{{"summary":"中文摘要50字内","category":"AI|机器学习|编程|技术|创业|创新|金融|研究|设计|其他(选一个)","importance":1-10}}
 评分:9-10重大发布,7-8重要更新,5-6一般,1-4低价值
 
 标题：{title}
@@ -114,7 +118,7 @@ actionable_items：仅当importance>=7时提取行动项，否则为空数组
     # fmt: off
     LIGHT_PROMPT = """返回JSON：{{
   "summary": "50字中文摘要",
-  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
+  "category": "只选一个：AI、机器学习、编程、技术、创业、创新、金融、研究、设计、其他",
   "importance": 1-10,
   "one_liner": "一句话结论",
   "key_points": [{{"type": "数字/时间/实体/事实", "value": "关键值", "impact": "影响"}}]
@@ -132,7 +136,7 @@ key_points：最多3个关键点
 {{
   "id": 序号,
   "summary": "50字中文摘要",
-  "category": "AI/机器学习/编程/技术/创业/研究/设计/其他",
+  "category": "只选一个：AI、机器学习、编程、技术、创业、创新、金融、研究、设计、其他",
   "importance": 1-10,
   "one_liner": "一句话结论",
   "key_points": [{{"type": "类型", "value": "值", "impact": "影响"}}],
@@ -141,7 +145,7 @@ key_points：最多3个关键点
 }}
 
 评分:9-10重大发布/突破,7-8官宣/开源/融资,5-6教程/研究,3-4讨论,1-2招聘/水帖
-key_points最多3个，actionable_items仅importance>=7时提取
+category必须是10个分类之一，key_points最多3个，actionable_items仅importance>=7时提取
 
 {items}"""  # noqa: E501
     # fmt: on
@@ -458,10 +462,64 @@ key_points最多3个，actionable_items仅importance>=7时提取
             # Fallback: try regex extraction for malformed JSON (e.g., unescaped quotes)
             return self._parse_with_regex(original_response)
 
+    # Category aliases for normalization
+    CATEGORY_ALIASES = {
+        "经济": "金融",
+        "投资": "金融",
+        "商业": "创业",
+        "产品": "创新",
+        "开发": "编程",
+        "科研": "研究",
+        "学术": "研究",
+        "ML": "机器学习",
+        "深度学习": "机器学习",
+    }
+
+    def _normalize_category(self, category: str) -> str:
+        """
+        Normalize category to one of the valid categories.
+
+        Handles cases where AI returns:
+        - Composite categories like "AI/机器学习" -> "AI"
+        - Full category list -> "其他"
+        - Alias categories like "经济" -> "金融"
+        - Unknown categories -> "其他"
+        """
+        if not category:
+            return "其他"
+
+        # If it's already a valid category, return it
+        if category in self.VALID_CATEGORIES:
+            return category
+
+        # Check aliases
+        if category in self.CATEGORY_ALIASES:
+            return self.CATEGORY_ALIASES[category]
+
+        # Handle composite categories (e.g., "AI/机器学习", "AI/技术")
+        # Take the first valid category
+        for sep in ["/", "、", ",", "，"]:
+            if sep in category:
+                parts = category.split(sep)
+                for part in parts:
+                    part = part.strip()
+                    if part in self.VALID_CATEGORIES:
+                        return part
+                    if part in self.CATEGORY_ALIASES:
+                        return self.CATEGORY_ALIASES[part]
+
+        # Handle partial matches (e.g., "机器学习/编程/技术" contains valid ones)
+        for valid_cat in self.VALID_CATEGORIES:
+            if valid_cat in category:
+                return valid_cat
+
+        return "其他"
+
     def _extract_processing_result(self, data: dict, raw_response: str) -> ProcessingResult:
         """Extract ProcessingResult from parsed JSON dict with enhanced fields."""
         summary = data.get("summary", "")
-        category = data.get("category", "其他")
+        raw_category = data.get("category", "其他")
+        category = self._normalize_category(raw_category)
         importance = data.get("importance", 5)
 
         # Validate importance score

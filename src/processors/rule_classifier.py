@@ -392,6 +392,26 @@ def should_skip_ai_processing(item: ContentItem) -> tuple[bool, str]:
     if len(content) < 100 and len(title) < 50:
         return True, "Content too short"
 
+    # Twitter/X short content without substantial value
+    # Data shows: <200 chars avg score 2-4, not worth AI processing
+    source_type = getattr(item, "source_type", None)
+    if source_type == "twitter" and len(content) < 200:
+        # Exception: Keep if contains high-value signals
+        high_value_signals = [
+            r"\b(announce|launch|release|发布|上线)\b",
+            r"\b(GPT|Claude|Gemini|LLM|AI model)\b",
+            r"\$\d+[BMK]?\b",  # Funding amounts
+            r"\b(breaking|重大|突破)\b",
+        ]
+        has_signal = False
+        text = f"{title} {content}"
+        for pattern in high_value_signals:
+            if re.search(pattern, text, re.IGNORECASE):
+                has_signal = True
+                break
+        if not has_signal:
+            return True, "Twitter short content"
+
     # Reddit link-posts with no real content
     if len(content) < 100 and "[link]" in content_lower:
         return True, "Reddit link-post with no content"
@@ -503,26 +523,77 @@ def reload_classifications() -> None:
 
 # High-confidence domains that can skip AI processing entirely
 HIGH_CONFIDENCE_DOMAINS = {
-    # Major AI companies - very predictable content structure
+    # === AI 公司 (Major AI companies) ===
     "openai.com": ("AI", 8),
     "anthropic.com": ("AI", 8),
     "deepmind.com": ("AI", 8),
     "mistral.ai": ("AI", 8),
     "huggingface.co": ("AI", 7),
     "developer.nvidia.com": ("AI", 7),
-    # Top science journals
-    "nature.com": ("科学", 8),
-    "science.org": ("科学", 8),
-    "arxiv.org": ("科学", 7),
-    # Official company blogs (predictable announcements)
+    "stability.ai": ("AI", 7),
+    "cohere.com": ("AI", 7),
+    "midjourney.com": ("AI", 7),
+    # === 科学期刊 (Science journals) ===
+    "nature.com": ("研究", 8),
+    "science.org": ("研究", 8),
+    "arxiv.org": ("研究", 7),
+    "biorxiv.org": ("研究", 7),
+    "cell.com": ("研究", 8),
+    # === 公司博客 (Company blogs) ===
     "blog.google": ("技术", 7),
     "engineering.fb.com": ("编程", 7),
     "aws.amazon.com/blogs": ("技术", 7),
-    # Programming language official sites
+    "github.blog": ("编程", 7),
+    "blog.cloudflare.com": ("技术", 7),
+    "engineering.linkedin.com": ("编程", 6),
+    "engineering.uber.com": ("编程", 6),
+    "netflixtechblog.com": ("编程", 6),
+    # === 编程语言 (Programming languages) ===
     "pytorch.org": ("编程", 7),
     "tensorflow.org": ("编程", 7),
     "rust-lang.org": ("编程", 6),
     "python.org": ("编程", 6),
+    "golang.org": ("编程", 6),
+    "kotlinlang.org": ("编程", 6),
+    "typescriptlang.org": ("编程", 6),
+    # === 开发者平台 (Developer platforms) ===
+    "github.com": ("编程", 6),
+    "gitlab.com": ("编程", 6),
+    "stackoverflow.com": ("编程", 5),
+    "dev.to": ("编程", 5),
+    "hashnode.com": ("编程", 5),
+    # === 科技媒体 (Tech media) ===
+    "techcrunch.com": ("创业", 6),
+    "arstechnica.com": ("技术", 6),
+    "wired.com": ("技术", 5),
+    "theverge.com": ("技术", 5),
+    "venturebeat.com": ("AI", 6),
+    # === 中文科技源 (Chinese tech sources) ===
+    "jiqizhixin.com": ("AI", 7),
+    "36kr.com": ("创业", 6),
+    "infoq.cn": ("技术", 6),
+    "sspai.com": ("技术", 5),
+    # === 金融/投资 (Finance/Investment) ===
+    "bloomberg.com": ("金融", 7),
+    "reuters.com": ("金融", 7),
+    "wsj.com": ("金融", 7),
+    "ft.com": ("金融", 7),
+    "coindesk.com": ("金融", 6),
+    "theblock.co": ("金融", 6),
+    "seekingalpha.com": ("金融", 6),
+    "cointelegraph.com": ("金融", 6),
+    # === 创新/产品 (Innovation/Product) ===
+    "producthunt.com": ("创新", 6),
+    "ycombinator.com": ("创业", 7),
+    "crunchbase.com": ("创业", 6),
+    "betalist.com": ("创新", 5),
+}
+
+# Domains that should NOT use rule-only processing (need AI for proper classification)
+# These domains have diverse content that can't be classified by domain alone
+DOMAINS_REQUIRE_AI = {
+    "news.ycombinator.com",  # HN has diverse content: AI, tech, research, etc.
+    "hnrss.org",             # HN RSS feed
 }
 
 
@@ -575,6 +646,11 @@ def try_rule_only_processing(item: ContentItem) -> Optional[ProcessingResult]:
         if domain.startswith("www."):
             domain = domain[4:]
     except (ValueError, AttributeError):
+        return None
+
+    # Check if domain requires AI processing (diverse content)
+    if domain in DOMAINS_REQUIRE_AI:
+        logger.debug(f"Domain requires AI: {domain}")
         return None
 
     # Check high-confidence domains
@@ -637,14 +713,17 @@ def _check_keyword_signals(text: str, expected_category: str) -> Optional[dict]:
     """Check if text contains confirming keyword signals for the category."""
     category_keywords = {
         "AI": [
-            (r"\b(GPT|Claude|Gemini|LLM|model|AI|机器学习)\b", 1),
+            (r"\b(GPT|Claude|Gemini|LLMs?|models?|AI|机器学习)\b", 1),
             (r"\b(launch|release|announce|发布|上线|更新)\b", 1),
             (r"\b(研究|论文|paper|research)\b", 0),
         ],
-        "科学": [
+        "研究": [
             (r"\b(研究|论文|paper|study|research)\b", 1),
             (r"\b(发现|breakthrough|discovery)\b", 2),
             (r"\b(实验|experiment|trial)\b", 0),
+            # arXiv论文常见关键词
+            (r"\b(learning|neural|network|algorithm|method)\b", 1),
+            (r"\b(evaluation|benchmark|dataset|training)\b", 1),
         ],
         "技术": [
             (r"\b(技术|tech|engineering|架构)\b", 0),
@@ -655,6 +734,21 @@ def _check_keyword_signals(text: str, expected_category: str) -> Optional[dict]:
             (r"\b(code|coding|程序|开发|developer)\b", 0),
             (r"\b(API|SDK|库|library|framework)\b", 1),
             (r"\b(bug|fix|feature|PR|commit)\b", 0),
+        ],
+        "创业": [
+            (r"\b(startup|初创|创业|融资|funding)\b", 1),
+            (r"\b(seed|series.?[a-d]|pre.?ipo|ipo)\b", 1),
+            (r"\b(YC|Y.?Combinator|accelerator|孵化器)\b", 1),
+        ],
+        "创新": [
+            (r"\b(launch|发布|新品|product|产品)\b", 1),
+            (r"\b(innovation|创新|disruption|颠覆)\b", 1),
+            (r"\b(patent|专利|breakthrough|突破)\b", 1),
+        ],
+        "金融": [
+            (r"\b(invest|investment|投资|股票|stock)\b", 1),
+            (r"\b(crypto|bitcoin|btc|eth|区块链|blockchain)\b", 1),
+            (r"\b(市场|market|经济|economy|金融|finance)\b", 0),
         ],
     }
 
@@ -697,11 +791,13 @@ def _generate_one_liner(title: str, category: str) -> str:
     """Generate a one-liner conclusion from title."""
     category_prefixes = {
         "AI": "AI动态",
-        "科学": "科研进展",
+        "研究": "科研进展",
         "技术": "技术更新",
         "编程": "开发资讯",
         "产品": "产品动态",
         "创业": "创业动态",
+        "创新": "创新资讯",
+        "金融": "金融快讯",
         "商业": "商业资讯",
     }
     prefix = category_prefixes.get(category, "资讯")

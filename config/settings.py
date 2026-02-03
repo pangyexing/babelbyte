@@ -155,7 +155,11 @@ class OllamaConfig:
     Two-stage processing:
     Set OLLAMA_MODEL_SCREEN to enable 8B screening + 32B refinement mode.
     When configured, content is first screened with the 8B model, then items
-    with importance >= 7 or category="不确定" are refined with the 32B model.
+    are upgraded to 32B based on layered decision:
+    - importance >= 7: always upgrade
+    - importance 5-6 with low confidence: upgrade
+    - importance 5-6 with medium/high confidence: use light model
+    - importance < 5: use light model
     """
 
     base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))

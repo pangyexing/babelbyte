@@ -116,7 +116,7 @@ Fetchers                                         Rule Classifier
                             ↓
                     AI Processors ←─── Token Tracker
               (Claude/Codex/Ollama)     (8类调用追踪)
-                 (跳过相似内容:92%阈值)
+                 (跳过相似内容:85%阈值)
                             ↓
         ┌───────────────────┼───────────────────┐
         ↓                   ↓                   ↓
@@ -306,7 +306,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Mock mode:** `--mock` flag enables `MockAIProcessor` and `MockTwitterFetcher` for testing
 - **JSON AI responses:** Processors parse JSON from CLI output, handle markdown code blocks, fallback to defaults
 - **Token optimization:** Rule-based pre-classification skips AI for low-value content
-- **Embedding dedup:** Semantic similarity (>=92%) reuses AI results from similar processed items
+- **Embedding dedup:** Semantic similarity (>=85%) reuses AI results from similar processed items
 - **Batch processing:** Multiple items processed in single AI call for efficiency
 - **FTS5 search:** Full-text search with filters (category, date, importance, state)
 - **State management:** Content items have state (unread/read/saved/archived/flagged)

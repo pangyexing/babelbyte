@@ -104,17 +104,29 @@ class OllamaAPI(BaseAIProcessor):
         """Check if two-stage processing is enabled."""
         return bool(self._model_screen and self._model_screen != self._model)
 
-    # Simplified screening prompt - only outputs importance + category
+    # Simplified screening prompt - outputs importance, category, and confidence
     # fmt: off
     SCREEN_PROMPT = """分析内容，仅输出JSON：
-{{"importance": 1-10, "category": "AI/机器学习/编程/技术/创业/研究/设计/其他/不确定"}}
+{{"importance": 1-10, "category": "只选一个", "confidence": "high/medium/low"}}
+
+category必须是以下之一：AI、机器学习、编程、技术、创业、创新、金融、研究、设计、其他
 
 评分:
-9-10: 重大发布(GPT-5/Claude-4级)、突破性论文、行业变革
-7-8: AI公司官宣、知名人物观点、重要开源、大额融资
-5-6: 技术教程、一般研究、产品更新、行业分析
-3-4: 普通讨论、转载、个人项目
+9-10: 重大发布(GPT-5/Claude-4级)、突破性论文、行业变革、重大政策
+7-8: AI公司官宣、知名人物观点、重要开源、大额融资、产品发布、商业模式创新
+5-6: 技术教程、一般研究、产品更新、行业分析、市场动态、投资趋势
+3-4: 普通讨论、转载、个人项目、一般财经新闻
 1-2: 招聘、求助、水帖、广告
+
+分类说明:
+- 创业: 融资、初创公司、商业模式、创业故事
+- 创新: 新产品发布、颠覆性技术、行业变革、专利突破
+- 金融: 投资、股市、加密货币、经济政策、金融科技
+
+confidence规则:
+- high: 关键词明确匹配分类
+- medium: 有一定线索但不完全确定
+- low: 内容模糊难以判断
 
 标题: {title}
 内容: {content}"""
@@ -144,14 +156,37 @@ class OllamaAPI(BaseAIProcessor):
 
         return self.SCREEN_PROMPT.format(title=title, content=content)
 
-    def _parse_screen_response(self, response: str) -> tuple[int, str]:
-        """Parse screening response for importance and category.
+    # Valid categories for normalization
+    VALID_CATEGORIES = {"AI", "机器学习", "编程", "技术", "创业", "创新", "金融", "研究", "设计", "其他"}
+
+    def _normalize_category(self, category: str) -> str:
+        """Normalize category to one of the valid categories."""
+        if not category:
+            return "其他"
+        if category in self.VALID_CATEGORIES:
+            return category
+        # Handle composite categories
+        for sep in ["/", "、", ",", "，"]:
+            if sep in category:
+                for part in category.split(sep):
+                    part = part.strip()
+                    if part in self.VALID_CATEGORIES:
+                        return part
+        # Partial match
+        for valid_cat in self.VALID_CATEGORIES:
+            if valid_cat in category:
+                return valid_cat
+        return "其他"
+
+    def _parse_screen_response(self, response: str) -> tuple[int, str, str]:
+        """Parse screening response for importance, category, and confidence.
 
         Args:
             response: Raw response from 8B model.
 
         Returns:
-            Tuple of (importance_score, category). Defaults to (5, "不确定") on error.
+            Tuple of (importance_score, category, confidence).
+            Defaults to (5, "其他", "low") on error.
         """
         try:
             # Clean up response
@@ -174,7 +209,18 @@ class OllamaAPI(BaseAIProcessor):
 
             data = json.loads(response)
             importance = data.get("importance", 5)
-            category = data.get("category", "不确定")
+            raw_category = data.get("category", "其他")
+            category = self._normalize_category(raw_category)
+            confidence = data.get("confidence", "low")
+
+            # Validate confidence
+            if confidence not in ("high", "medium", "low"):
+                confidence = "low"
+
+            # Handle legacy "不确定" category - convert to "其他" with low confidence
+            if category == "不确定":
+                category = "其他"
+                confidence = "low"
 
             # Validate importance
             if not isinstance(importance, int):
@@ -184,10 +230,53 @@ class OllamaAPI(BaseAIProcessor):
                     importance = 5
             importance = max(1, min(10, importance))
 
-            return importance, category
+            return importance, category, confidence
 
         except (json.JSONDecodeError, KeyError, TypeError):
-            return 5, "不确定"
+            return 5, "其他", "low"
+
+    def _build_screen_result(self, title: str, category: str, importance: int) -> ProcessingResult:
+        """Build a lightweight ProcessingResult from screening data.
+
+        Used for low-importance items that don't need full AI processing.
+        Generates summary and one_liner from title, uses screening category/importance.
+
+        Args:
+            title: Content title.
+            category: Category from 8B screening.
+            importance: Importance score from 8B screening.
+
+        Returns:
+            ProcessingResult with basic fields populated.
+        """
+        # Generate summary from title (truncate if needed)
+        summary = title[:100] if len(title) > 100 else title
+
+        # Generate one_liner with category prefix
+        category_prefixes = {
+            "AI": "AI动态",
+            "机器学习": "ML资讯",
+            "编程": "开发资讯",
+            "技术": "技术更新",
+            "创业": "创业动态",
+            "创新": "创新资讯",
+            "金融": "金融快讯",
+            "研究": "研究进展",
+            "设计": "设计资讯",
+        }
+        prefix = category_prefixes.get(category, "资讯")
+        one_liner = f"{prefix}：{title[:50]}" if len(title) > 50 else f"{prefix}：{title}"
+
+        return ProcessingResult(
+            summary=summary,
+            category=category,
+            importance_score=importance,
+            success=True,
+            one_liner=one_liner,
+            key_points=[],
+            impact_assessment=None,
+            actionable_items=[],
+        )
 
     def is_available(self) -> bool:
         """Check if Ollama service is running.
@@ -547,6 +636,8 @@ class OllamaAPI(BaseAIProcessor):
 
         # ========================================
         # Stage 0: Rule-based filtering (zero cost)
+        # Note: Similar content dedup and importance estimation are done
+        # externally in digest_processor.py before calling this method.
         # ========================================
         skipped_count = 0
         rule_only_count = 0
@@ -590,36 +681,65 @@ class OllamaAPI(BaseAIProcessor):
 
         if skipped_count > 0 or rule_only_count > 0:
             logger.info(
-                f"Two-stage pre-filter: {skipped_count} skipped, "
-                f"{rule_only_count} rule-only, {len(to_screen)} to screen"
+                f"Two-stage pre-filter: {skipped_count} skipped, {rule_only_count} rule-only, "
+                f"{len(to_screen)} to screen"
             )
 
         if not to_screen:
             return results
 
         # ========================================
-        # Stage 1: 8B batch screening
+        # Stage 1: 8B batch screening (with cache)
         # ========================================
-        screen_results: list[tuple[int, str]] = []  # (importance, category)
+        screen_results: list[tuple[int, str, str]] = []  # (importance, category, confidence)
         start_time = time.time()
+        screen_cache_hits = 0
 
         for idx, item in to_screen:
             title = item.title or ""
             content = item.content or ""
-            prompt = self._build_screen_prompt(title, content)
 
+            # Check screen cache first
+            screen_cache_key = None
+            if self.settings.ai.cache_enabled and self.db:
+                screen_cache_key = f"screen:{self._get_content_hash(title, content[:500])}"
+                cached_screen = self.db.get_ai_cache(screen_cache_key)
+                if cached_screen:
+                    try:
+                        cached_data = json.loads(cached_screen)
+                        importance = cached_data.get("importance", 5)
+                        category = cached_data.get("category", "其他")
+                        confidence = cached_data.get("confidence", "low")
+                        screen_results.append((importance, category, confidence))
+                        screen_cache_hits += 1
+                        continue
+                    except (json.JSONDecodeError, KeyError):
+                        pass  # Cache miss, proceed with API call
+
+            # Call 8B model for screening
+            prompt = self._build_screen_prompt(title, content)
             success, response_text, error = self._call_api(prompt, model=self._model_screen)
             if success:
-                importance, category = self._parse_screen_response(response_text)
+                importance, category, confidence = self._parse_screen_response(response_text)
+                # Store in cache
+                if screen_cache_key and self.db:
+                    cache_data = json.dumps({
+                        "importance": importance,
+                        "category": category,
+                        "confidence": confidence,
+                    })
+                    self.db.set_ai_cache(screen_cache_key, cache_data, self.settings.ai.cache_ttl)
             else:
                 logger.warning(f"Screen failed for {title[:30]}...: {error}")
-                importance, category = 5, "不确定"
+                importance, category, confidence = 5, "其他", "low"
 
-            screen_results.append((importance, category))
+            screen_results.append((importance, category, confidence))
 
         screen_duration = time.time() - start_time
+        screen_api_calls = len(to_screen) - screen_cache_hits
         logger.info(
             f"Two-stage screening: {len(to_screen)} items in {screen_duration:.1f}s "
+            f"({screen_cache_hits} cache hits, {screen_api_calls} API calls) "
             f"with {self._model_screen}"
         )
 
@@ -627,26 +747,41 @@ class OllamaAPI(BaseAIProcessor):
         # Stage 2: Collect items needing 32B refinement
         # ========================================
         to_heavy: list[tuple[int, "ContentItem"]] = []
-        heavy_threshold = self.settings.ai.model_tiers.heavy_threshold  # default 7
+        heavy_threshold = self.settings.ai.model_tiers.heavy_threshold  # default 8
+        low_conf_threshold = self.settings.ai.model_tiers.low_confidence_threshold  # default 5
 
-        for (idx, item), (importance, category) in zip(to_screen, screen_results):
+        for (idx, item), (importance, category, confidence) in zip(to_screen, screen_results):
             title = item.title or ""
             content = item.content or ""
 
-            # Upgrade conditions: high importance OR uncertain category
-            needs_upgrade = importance >= heavy_threshold or category == "不确定"
+            # Layered upgrade decision logic:
+            # | Importance          | Confidence   | Action                    |
+            # |---------------------|--------------|---------------------------|
+            # | >= heavy_threshold  | any          | 32B refinement            |
+            # | >= low_conf_thresh  | low          | 32B refinement            |
+            # | otherwise           | any          | use screen result (no AI) |
+            #
+            # With heavy_threshold=8, low_conf_threshold=6:
+            # - 8+ always upgrade
+            # - 6-7 with low confidence upgrade
+            # - 5 and below use 8B result
+            if importance >= heavy_threshold:
+                needs_upgrade = True
+            elif importance >= low_conf_threshold and confidence == "low":
+                needs_upgrade = True
+            else:
+                needs_upgrade = False
 
             if needs_upgrade:
                 to_heavy.append((idx, item))
             else:
-                # Use screening result directly - create lightweight ProcessingResult
-                # For non-upgraded items, we use the light prompt to get full result
-                # but we know it's low importance so we use light model
-                results[idx] = self.process_content(title, content, TaskType.CONTENT_LOW)
+                # Use screening result directly - no additional AI call
+                results[idx] = self._build_screen_result(title, category, importance)
 
+        upgrade_pct = len(to_heavy) / len(to_screen) * 100 if to_screen else 0
         logger.info(
-            f"Two-stage upgrade: {len(to_heavy)}/{len(to_screen)} items "
-            f"need 32B refinement (threshold: importance >= {heavy_threshold} or category='不确定')"
+            f"Two-stage upgrade: {len(to_heavy)}/{len(to_screen)} items ({upgrade_pct:.1f}%) "
+            f"need 32B refinement"
         )
 
         # ========================================
