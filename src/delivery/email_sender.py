@@ -141,22 +141,49 @@ class EmailSender:
                 message=f"Network error: {str(e)}",
             )
 
-    def _send_email(self, msg: MIMEMultipart, recipient: str) -> None:
-        """Send the email via SMTP."""
+    def _send_email(self, msg: MIMEMultipart, recipient: str, max_retries: int = 3) -> None:
+        """Send the email via SMTP with timeout and retry.
+
+        Args:
+            msg: The email message to send.
+            recipient: The recipient email address.
+            max_retries: Maximum number of retry attempts (default: 3).
+        """
+        import time
+
         # Create SSL context
         context = ssl.create_default_context()
+        timeout = 60  # 60 seconds timeout for connection
 
-        if self.port == 465:
-            # SSL connection
-            with smtplib.SMTP_SSL(self.host, self.port, context=context) as server:
-                server.login(self.user, self.password)
-                server.sendmail(self.from_addr, recipient, msg.as_string())
-        else:
-            # TLS connection
-            with smtplib.SMTP(self.host, self.port) as server:
-                server.starttls(context=context)
-                server.login(self.user, self.password)
-                server.sendmail(self.from_addr, recipient, msg.as_string())
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    logger.info(f"Retrying email send (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(2)  # Wait before retry
+
+                if self.port == 465:
+                    # SSL connection with timeout
+                    with smtplib.SMTP_SSL(
+                        self.host, self.port, context=context, timeout=timeout
+                    ) as server:
+                        server.login(self.user, self.password)
+                        server.sendmail(self.from_addr, recipient, msg.as_string())
+                else:
+                    # TLS connection with timeout
+                    with smtplib.SMTP(self.host, self.port, timeout=timeout) as server:
+                        server.starttls(context=context)
+                        server.login(self.user, self.password)
+                        server.sendmail(self.from_addr, recipient, msg.as_string())
+
+                return  # Success, exit the retry loop
+
+            except (smtplib.SMTPException, ssl.SSLError, OSError, TimeoutError) as e:
+                last_error = e
+                logger.warning(f"Email send attempt {attempt + 1} failed: {e}")
+
+        # All retries failed
+        raise last_error
 
     def _render_digest_html(self, digest: DigestResult) -> str:
         """Render the digest as HTML."""
@@ -165,12 +192,18 @@ class EmailSender:
             date=digest.generated_at.strftime("%Y年%m月%d日"),
             total_items=digest.total_items,
             event_count=len(digest.events),
-            individual_count=len(digest.items),
+            individual_count=len(digest.regular_items),
+            paper_count=len(digest.papers),
             category_count=len(digest.by_category),
             items=digest.items,
             events=digest.events,
             items_by_category=digest.by_category,
             events_by_category=digest.events_by_category,
+            # Section 2: 独立事件 (non-paper items)
+            regular_items_by_category=digest.regular_items_by_category,
+            # Section 3: 论文 (papers)
+            papers_by_category=digest.papers_by_category,
+            # Legacy (kept for compatibility)
             individual_by_category=digest.items_by_category,
         )
 
@@ -182,20 +215,24 @@ class EmailSender:
         lines.append(f"日期: {digest.generated_at.strftime('%Y年%m月%d日')}")
         lines.append(f"共 {digest.total_items} 条内容")
         if digest.events:
-            lines.append(f"其中 {len(digest.events)} 个事件")
+            lines.append(f"  - {len(digest.events)} 个事件")
+        if digest.regular_items:
+            lines.append(f"  - {len(digest.regular_items)} 条独立事件")
+        if digest.papers:
+            lines.append(f"  - {len(digest.papers)} 篇论文")
         lines.append("=" * 50)
 
         if not digest.items and not digest.events:
             lines.append("\n今日暂无新内容")
             return "\n".join(lines)
 
-        for category, category_items in sorted(digest.by_category.items()):
-            lines.append(f"\n【{category}】({len(category_items)}条)")
-            lines.append("-" * 30)
-
-            for item in category_items:
-                if item.is_event:
-                    # Event rendering
+        # Section 1: Event Clusters
+        if digest.events_by_category:
+            lines.append("\n" + "=" * 20 + " 事件聚合 " + "=" * 20)
+            for category, category_events in sorted(digest.events_by_category.items()):
+                lines.append(f"\n【{category}】({len(category_events)}个事件)")
+                lines.append("-" * 30)
+                for item in category_events:
                     lines.append(f"\n[事件] ★ [{item.importance_score}/10] {item.event_title}")
                     lines.append(f"   {item.summary}")
                     lines.append(f"   来源: {item.source_display}")
@@ -204,12 +241,31 @@ class EmailSender:
                         lines.append(f"     - {member.title[:40]}...")
                     if len(item.members) > 3:
                         lines.append(f"     ...还有 {len(item.members) - 3} 篇")
-                else:
-                    # Regular item rendering
+
+        # Section 2: Regular Items (non-paper)
+        if digest.regular_items_by_category:
+            lines.append("\n" + "=" * 20 + " 独立事件 " + "=" * 20)
+            for category, category_items in sorted(digest.regular_items_by_category.items()):
+                lines.append(f"\n【{category}】({len(category_items)}条)")
+                lines.append("-" * 30)
+                for item in category_items:
                     title = item.content_item.title[:50]
                     lines.append(f"\n★ [{item.importance_score}/10] {title}")
                     lines.append(f"   {item.summary}")
                     lines.append(f"   来源: {item.source_display} | 作者: {item.content_item.author}")
+                    lines.append(f"   链接: {item.content_item.url}")
+
+        # Section 3: Papers (RSS)
+        if digest.papers_by_category:
+            lines.append("\n" + "=" * 22 + " 论文 " + "=" * 22)
+            for category, category_items in sorted(digest.papers_by_category.items()):
+                lines.append(f"\n【{category}】({len(category_items)}篇)")
+                lines.append("-" * 30)
+                for item in category_items:
+                    title = item.content_item.title[:50]
+                    lines.append(f"\n[论文] ★ [{item.importance_score}/10] {title}")
+                    lines.append(f"   {item.summary}")
+                    lines.append(f"   作者: {item.content_item.author}")
                     lines.append(f"   链接: {item.content_item.url}")
 
         lines.append("\n" + "=" * 50)

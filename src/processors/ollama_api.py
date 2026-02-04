@@ -29,6 +29,7 @@ from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
 from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
+    is_paper_content,
     should_skip_ai_processing,
 )
 
@@ -216,6 +217,29 @@ confidence规则:
 内容: {content}"""
     # fmt: on
 
+    # Paper quick screening prompt for academic papers
+    # Strict scoring to limit 32B upgrades (~2% get 9-10)
+    # fmt: off
+    PAPER_SCREEN_PROMPT = """快速判断论文价值，仅输出JSON：
+{{"importance": 1-10, "category": "AI|机器学习|研究|技术|其他", "novelty": "high/medium/low", "confidence": "high/medium/low"}}
+
+严格评分（大部分论文应在5-6分）:
+10: 极罕见，改变领域的开创性工作(如Transformer/GPT/AlphaFold级别)
+9: 顶级突破，新范式或SOTA大幅提升(>10%)，每年仅几篇
+7-8: 重要贡献，显著改进或新颖方法，顶会best paper级别
+5-6: 普通研究，渐进改进/标准方法/有效但不突出（大部分论文）
+3-4: 一般，小幅改进/复现/应用已有方法
+1-2: 低价值，无创新/方法存疑
+
+novelty严格判断:
+high: 全新方法/架构，从未见过的思路（罕见，<5%）
+medium: 改进现有方法/新应用场景（大部分论文）
+low: 渐进改进/综述/复现/微调
+
+标题: {title}
+摘要: {content}"""
+    # fmt: on
+
     def _build_screen_prompt(self, title: str, content: str) -> str:
         """Build simplified screening prompt for 8B model.
 
@@ -239,6 +263,29 @@ confidence规则:
             content = self._smart_truncate(content, max_content)
 
         return self.SCREEN_PROMPT.format(title=title, content=content)
+
+    def _build_paper_screen_prompt(self, title: str, content: str) -> str:
+        """Build paper screening prompt for quick value judgment.
+
+        Uses PAPER_SCREEN_PROMPT which extracts importance, category, novelty.
+        Content is truncated to 800 chars (abstracts are typically 200-500 words).
+
+        Args:
+            title: Paper title.
+            content: Paper abstract.
+
+        Returns:
+            Formatted paper screening prompt.
+        """
+        max_title = 150
+        max_content = 800  # Abstracts need more space
+
+        if len(title) > max_title:
+            title = self._smart_truncate(title, max_title)
+        if len(content) > max_content:
+            content = self._smart_truncate(content, max_content)
+
+        return self.PAPER_SCREEN_PROMPT.format(title=title, content=content)
 
     # Valid categories for normalization
     VALID_CATEGORIES = {
@@ -321,6 +368,71 @@ confidence规则:
         except (json.JSONDecodeError, KeyError, TypeError):
             return 5, "其他", "low"
 
+    def _parse_paper_screen_response(
+        self, response: str, is_paper: bool
+    ) -> tuple[int, str, str, str]:
+        """Parse screening response including novelty for papers.
+
+        Args:
+            response: Raw response from 8B model.
+            is_paper: Whether this is a paper (to extract novelty).
+
+        Returns:
+            Tuple of (importance_score, category, confidence, novelty).
+            novelty is "medium" for non-papers.
+        """
+        try:
+            # Clean up response
+            response = response.strip()
+            if response.startswith("```"):
+                lines = response.split("\n")
+                start_idx = 1 if lines[0].startswith("```") else 0
+                end_idx = len(lines)
+                for i in range(len(lines) - 1, -1, -1):
+                    if lines[i].strip() == "```":
+                        end_idx = i
+                        break
+                response = "\n".join(lines[start_idx:end_idx])
+
+            # Find JSON
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+            if json_start != -1 and json_end > json_start:
+                response = response[json_start:json_end]
+
+            data = json.loads(response)
+            importance = data.get("importance", 5)
+            raw_category = data.get("category", "研究" if is_paper else "其他")
+            category = self._normalize_category(raw_category)
+            confidence = data.get("confidence", "low")
+            novelty = data.get("novelty", "medium") if is_paper else "medium"
+
+            # Validate confidence
+            if confidence not in ("high", "medium", "low"):
+                confidence = "low"
+
+            # Validate novelty
+            if novelty not in ("high", "medium", "low"):
+                novelty = "medium"
+
+            # Handle legacy "不确定" category
+            if category == "不确定":
+                category = "研究" if is_paper else "其他"
+                confidence = "low"
+
+            # Validate importance
+            if not isinstance(importance, int):
+                try:
+                    importance = int(importance)
+                except (ValueError, TypeError):
+                    importance = 5
+            importance = max(1, min(10, importance))
+
+            return importance, category, confidence, novelty
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return 5, "研究" if is_paper else "其他", "low", "medium"
+
     def _build_screen_result(self, title: str, category: str, importance: int) -> ProcessingResult:
         """Build a lightweight ProcessingResult from screening data.
 
@@ -361,6 +473,60 @@ confidence规则:
             one_liner=one_liner,
             key_points=[],
             impact_assessment=None,
+            actionable_items=[],
+        )
+
+    def _build_paper_screen_result(
+        self, title: str, category: str, importance: int, novelty: str
+    ) -> ProcessingResult:
+        """Build a ProcessingResult for papers from screening data.
+
+        Used for papers that don't need full PAPER_FULL analysis.
+        Generates paper-style summary with novelty indication.
+
+        Args:
+            title: Paper title.
+            category: Category from 8B screening.
+            importance: Importance score from 8B screening.
+            novelty: Novelty level (high/medium/low).
+
+        Returns:
+            ProcessingResult with paper-style fields populated.
+        """
+        from src.processors.base import ImpactResult
+
+        # Generate summary from title
+        summary = f"论文：{title[:80]}" if len(title) > 80 else f"论文：{title}"
+
+        # Generate one_liner with novelty indication
+        novelty_text = {"high": "高创新性", "medium": "渐进改进", "low": "一般研究"}.get(
+            novelty, "研究论文"
+        )
+        one_liner = f"{novelty_text}：{title[:50]}" if len(title) > 50 else f"{novelty_text}：{title}"
+
+        # Basic impact assessment based on novelty
+        if novelty == "high":
+            academic_impact = "潜在重要贡献"
+            industry_impact = "可能有应用价值"
+        elif novelty == "medium":
+            academic_impact = "渐进性贡献"
+            industry_impact = "待评估"
+        else:
+            academic_impact = "有限贡献"
+            industry_impact = "有限"
+
+        return ProcessingResult(
+            summary=summary,
+            category=category,
+            importance_score=importance,
+            success=True,
+            one_liner=one_liner,
+            key_points=[],
+            impact_assessment=ImpactResult(
+                short_term=academic_impact,
+                long_term=industry_impact,
+                certainty="uncertain",
+            ),
             actionable_items=[],
         )
 
@@ -442,9 +608,15 @@ confidence规则:
         if not self._model_light:
             return self._model
 
+        # Light model for simple tasks
         if task_type in (TaskType.CONTENT_LOW, TaskType.CONTENT_MINIMAL):
             return self._model_light
 
+        # Paper screening uses screen model if available, otherwise light
+        if task_type == TaskType.PAPER_SCREEN:
+            return self._model_screen or self._model_light or self._model
+
+        # Heavy model for paper full analysis and other tasks
         return self._model
 
     def _call_api(
@@ -519,6 +691,8 @@ confidence规则:
             TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
             TaskType.CONTENT_MINIMAL: AICallType.CONTENT_LIGHT,
             TaskType.CONTENT_UNCERTAIN: AICallType.CONTENT_HEAVY,
+            TaskType.PAPER_FULL: AICallType.CONTENT_HEAVY,
+            TaskType.PAPER_SCREEN: AICallType.CONTENT_LIGHT,
         }
         return call_type_map.get(task_type, AICallType.CONTENT_HEAVY)
 
@@ -562,7 +736,20 @@ confidence规则:
         # Select prompt, model, num_predict, and thinking mode based on task type
         # Simple/Light tasks don't need thinking mode (faster, fewer tokens)
         # Heavy tasks: controlled by OLLAMA_THINKING_ENABLED setting
-        if task_type == TaskType.CONTENT_MINIMAL:
+        if task_type == TaskType.PAPER_FULL:
+            # Deep paper analysis with innovation/practicality assessment
+            prompt = self._build_paper_prompt(title, content)
+            # Papers need more tokens for detailed analysis
+            max_tokens = self.NUM_PREDICT["heavy"] + 256
+            disable_thinking = not self.settings.ollama.thinking_enabled
+            if not disable_thinking:
+                max_tokens += self.THINKING_EXTRA_TOKENS
+        elif task_type == TaskType.PAPER_SCREEN:
+            # Quick paper screening for value judgment
+            prompt = self._build_paper_screen_prompt(title, content)
+            max_tokens = self.NUM_PREDICT["screen"]
+            disable_thinking = True  # Fast screening without reasoning
+        elif task_type == TaskType.CONTENT_MINIMAL:
             prompt = self._build_simple_prompt(title, content)
             max_tokens = self.NUM_PREDICT["simple"]
             disable_thinking = True  # Simple classification, no reasoning needed
@@ -666,9 +853,15 @@ confidence规则:
                 success=True,
             )
 
-        # Strategy 2: Estimate importance for prompt selection
-        importance_est = estimate_importance(item)
+        # Strategy 2: Check if this is an academic paper
         rule_settings = self.settings.rule_optimization
+        if rule_settings.paper_prompt_enabled and is_paper_content(item):
+            # Use specialized paper prompt
+            logger.info(f"Paper detected: {title[:50]}...")
+            return self.process_content(title, content, TaskType.PAPER_FULL)
+
+        # Strategy 3: Estimate importance for prompt selection
+        importance_est = estimate_importance(item)
         min_conf = rule_settings.minimal_prompt_min_confidence
 
         # Select task type based on importance estimate
@@ -919,6 +1112,11 @@ confidence规则:
         # externally in digest_processor.py before calling this method.
         # ========================================
         skipped_count = 0
+        paper_count = 0
+        # Track which items are papers (for using PAPER_SCREEN_PROMPT in Stage 1)
+        paper_indices: set[int] = set()
+
+        rule_settings = self.settings.rule_optimization
 
         for i, item in enumerate(items):
             title = item.title or ""
@@ -942,12 +1140,18 @@ confidence规则:
                 skipped_count += 1
                 continue
 
-            # Needs AI screening
+            # Strategy 2: Mark papers for specialized screening
+            if rule_settings.paper_prompt_enabled and is_paper_content(item):
+                paper_indices.add(i)
+                paper_count += 1
+
+            # All non-skipped items go to screening (including papers)
             to_screen.append((i, item))
 
-        if skipped_count > 0:
+        if skipped_count > 0 or paper_count > 0:
             logger.info(
-                f"Two-stage pre-filter: {skipped_count} skipped, {len(to_screen)} to screen"
+                f"Two-stage pre-filter: {skipped_count} skipped, {paper_count} papers, "
+                f"{len(to_screen)} to screen"
             )
 
         if not to_screen:
@@ -955,39 +1159,45 @@ confidence规则:
 
         # ========================================
         # Stage 1: 8B batch screening (with cache, optionally parallel)
+        # Papers use PAPER_SCREEN_PROMPT, regular content uses SCREEN_PROMPT
         # ========================================
-        # idx -> (importance, category, confidence)
-        screen_results: dict[int, tuple[int, str, str]] = {}
+        # idx -> (importance, category, confidence, novelty)
+        # novelty is only set for papers (high/medium/low)
+        screen_results: dict[int, tuple[int, str, str, str]] = {}
         start_time = time.time()
         screen_cache_hits = 0
-        to_screen_api: list[tuple[int, "ContentItem", str]] = []  # items needing API call
+        # (idx, item, cache_key, is_paper)
+        to_screen_api: list[tuple[int, "ContentItem", str, bool]] = []
 
         # First pass: check cache
         for idx, item in to_screen:
             title = item.title or ""
             content = item.content or ""
+            is_paper = idx in paper_indices
 
             screen_cache_key = None
             if self.settings.ai.cache_enabled and self.db:
-                screen_cache_key = f"screen:{self._get_content_hash(title, content[:500])}"
+                # Use different cache prefix for papers vs regular content
+                prefix = "paper_screen" if is_paper else "screen"
+                screen_cache_key = f"{prefix}:{self._get_content_hash(title, content[:800 if is_paper else 500])}"
                 cached_screen = self.db.get_ai_cache(screen_cache_key)
                 if cached_screen:
                     try:
                         cached_data = json.loads(cached_screen)
                         importance = cached_data.get("importance", 5)
-                        category = cached_data.get("category", "其他")
+                        category = cached_data.get("category", "研究" if is_paper else "其他")
                         confidence = cached_data.get("confidence", "low")
-                        screen_results[idx] = (importance, category, confidence)
+                        novelty = cached_data.get("novelty", "medium")
+                        screen_results[idx] = (importance, category, confidence, novelty)
                         screen_cache_hits += 1
                         continue
                     except (json.JSONDecodeError, KeyError):
                         pass  # Cache miss, proceed with API call
 
-            to_screen_api.append((idx, item, screen_cache_key or ""))
+            to_screen_api.append((idx, item, screen_cache_key or "", is_paper))
 
         # Second pass: API calls (sequential or parallel based on setting)
-        # Cache writes are collected and done in main thread to avoid asyncio issues
-        cache_to_write: list[tuple[str, str]] = []  # (cache_key, cache_data)
+        # Cache writes are done immediately after each API call (survives Ctrl+C)
 
         # Notify phase transition for 8B screening
         if to_screen_api and phase_callback:
@@ -999,14 +1209,21 @@ confidence规则:
                 screen_workers = self.settings.ollama.workers_screen
 
                 def screen_single(
-                    args: tuple[int, "ContentItem", str]
-                ) -> tuple[int, str, tuple[int, str, str]]:
-                    """Screen a single item, return (idx, cache_key, result)."""
-                    idx, item, cache_key = args
+                    args: tuple[int, "ContentItem", str, bool]
+                ) -> tuple[int, str, bool, tuple[int, str, str, str]]:
+                    """Screen a single item, return (idx, cache_key, is_paper, result).
+                    Result tuple: (importance, category, confidence, novelty).
+                    """
+                    idx, item, cache_key, is_paper = args
                     title = item.title or ""
                     content = item.content or ""
 
-                    prompt = self._build_screen_prompt(title, content)
+                    # Use appropriate prompt for papers vs regular content
+                    if is_paper:
+                        prompt = self._build_paper_screen_prompt(title, content)
+                    else:
+                        prompt = self._build_screen_prompt(title, content)
+
                     success, response_text, error = self._call_api(
                         prompt,
                         model=self._model_screen,
@@ -1015,16 +1232,19 @@ confidence规则:
                     )
 
                     if success:
-                        imp, cat, conf = self._parse_screen_response(response_text)
+                        imp, cat, conf, novelty = self._parse_paper_screen_response(
+                            response_text, is_paper
+                        )
                     else:
                         logger.warning(f"Screen failed for {title[:30]}...: {error}")
-                        imp, cat, conf = 5, "其他", "low"
+                        imp, cat, conf, novelty = 5, "研究" if is_paper else "其他", "low", "medium"
 
-                    return idx, cache_key, (imp, cat, conf)
+                    return idx, cache_key, is_paper, (imp, cat, conf, novelty)
 
+                paper_api_count = sum(1 for _, _, _, is_paper in to_screen_api if is_paper)
                 logger.info(
                     f"Parallel 8B screening: {len(to_screen_api)} items "
-                    f"with {screen_workers} workers"
+                    f"({paper_api_count} papers) with {screen_workers} workers"
                 )
 
                 screen_done = 0
@@ -1036,20 +1256,26 @@ confidence规则:
                     }
                     for future in as_completed(futures):
                         try:
-                            idx, cache_key, (imp, cat, conf) = future.result()
-                            screen_results[idx] = (imp, cat, conf)
-                            # Collect cache writes for main thread
-                            if cache_key and self.db:
-                                cache_data = json.dumps({
-                                    "importance": imp,
-                                    "category": cat,
-                                    "confidence": conf,
-                                })
-                                cache_to_write.append((cache_key, cache_data))
+                            idx, cache_key, is_paper, (imp, cat, conf, novelty) = future.result()
+                            screen_results[idx] = (imp, cat, conf, novelty)
+                            # Write cache immediately (survives Ctrl+C interruption)
+                            if cache_key and self.db and self.settings.ai.cache_enabled:
+                                try:
+                                    cache_data = json.dumps({
+                                        "importance": imp,
+                                        "category": cat,
+                                        "confidence": conf,
+                                        "novelty": novelty,
+                                    })
+                                    self.db.set_ai_cache(
+                                        cache_key, cache_data, self.settings.ai.cache_ttl
+                                    )
+                                except Exception as cache_err:
+                                    logger.warning(f"Screen cache write failed: {cache_err}")
                         except Exception as e:
                             idx = futures[future]
                             logger.warning(f"Screen error for item {idx}: {e}")
-                            screen_results[idx] = (5, "其他", "low")
+                            screen_results[idx] = (5, "其他", "low", "medium")
 
                         # Update progress for 8B screening
                         with lock:
@@ -1060,11 +1286,16 @@ confidence规则:
                 # Sequential screening
                 screen_done = 0
                 screen_total = len(to_screen_api)
-                for idx, item, cache_key in to_screen_api:
+                for idx, item, cache_key, is_paper in to_screen_api:
                     title = item.title or ""
                     content = item.content or ""
 
-                    prompt = self._build_screen_prompt(title, content)
+                    # Use appropriate prompt for papers vs regular content
+                    if is_paper:
+                        prompt = self._build_paper_screen_prompt(title, content)
+                    else:
+                        prompt = self._build_screen_prompt(title, content)
+
                     success, response_text, error = self._call_api(
                         prompt,
                         model=self._model_screen,
@@ -1073,33 +1304,33 @@ confidence规则:
                     )
 
                     if success:
-                        imp, cat, conf = self._parse_screen_response(response_text)
-                        if cache_key and self.db:
-                            cache_data = json.dumps({
-                                "importance": imp,
-                                "category": cat,
-                                "confidence": conf,
-                            })
-                            cache_to_write.append((cache_key, cache_data))
+                        imp, cat, conf, novelty = self._parse_paper_screen_response(
+                            response_text, is_paper
+                        )
+                        # Write cache immediately (survives Ctrl+C interruption)
+                        if cache_key and self.db and self.settings.ai.cache_enabled:
+                            try:
+                                cache_data = json.dumps({
+                                    "importance": imp,
+                                    "category": cat,
+                                    "confidence": conf,
+                                    "novelty": novelty,
+                                })
+                                self.db.set_ai_cache(
+                                    cache_key, cache_data, self.settings.ai.cache_ttl
+                                )
+                            except Exception as cache_err:
+                                logger.warning(f"Screen cache write failed: {cache_err}")
                     else:
                         logger.warning(f"Screen failed for {title[:30]}...: {error}")
-                        imp, cat, conf = 5, "其他", "low"
+                        imp, cat, conf, novelty = 5, "研究" if is_paper else "其他", "low", "medium"
 
-                    screen_results[idx] = (imp, cat, conf)
+                    screen_results[idx] = (imp, cat, conf, novelty)
 
                     # Update progress for 8B screening
                     screen_done += 1
                     if progress_callback:
                         progress_callback(screen_done, screen_total)
-
-        # Write screen cache in main thread (thread-safe)
-        if cache_to_write and self.db:
-            ttl = self.settings.ai.cache_ttl
-            for cache_key, cache_data in cache_to_write:
-                try:
-                    self.db.set_ai_cache(cache_key, cache_data, ttl)
-                except Exception as e:
-                    logger.warning(f"Cache write failed: {e}")
 
         screen_duration = time.time() - start_time
         screen_api_calls = len(to_screen) - screen_cache_hits
@@ -1113,44 +1344,139 @@ confidence规则:
 
         # ========================================
         # Stage 2: Collect items needing 32B refinement
+        # Papers and regular content have different upgrade logic
         # ========================================
-        to_heavy: list[tuple[int, "ContentItem"]] = []
+        to_heavy: list[tuple[int, "ContentItem"]] = []  # Regular content → CONTENT_HIGH
+        to_paper_full: list[tuple[int, "ContentItem"]] = []  # Papers → PAPER_FULL
         heavy_threshold = self.settings.ai.model_tiers.heavy_threshold  # default 8
         low_conf_threshold = self.settings.ai.model_tiers.low_confidence_threshold  # default 5
 
         for idx, item in to_screen:
-            importance, category, confidence = screen_results.get(idx, (5, "其他", "low"))
+            importance, category, confidence, novelty = screen_results.get(
+                idx, (5, "其他", "low", "medium")
+            )
             title = item.title or ""
+            is_paper = idx in paper_indices
 
-            # Layered upgrade decision logic:
-            # | Importance          | Confidence   | Action                    |
-            # |---------------------|--------------|---------------------------|
-            # | >= heavy_threshold  | any          | 32B refinement            |
-            # | >= low_conf_thresh  | low          | 32B refinement            |
-            # | otherwise           | any          | use screen result (no AI) |
-            #
-            # With heavy_threshold=8, low_conf_threshold=6:
-            # - 8+ always upgrade
-            # - 6-7 with low confidence upgrade
-            # - 5 and below use 8B result
-            if importance >= heavy_threshold:
-                needs_upgrade = True
-            elif importance >= low_conf_threshold and confidence == "low":
-                needs_upgrade = True
+            if is_paper:
+                # Paper upgrade logic: configurable thresholds
+                # 8B screening with PAPER_SCREEN_PROMPT is sufficient for most papers
+                # Upgrade criteria controlled by settings:
+                # - paper_upgrade_importance_threshold: min importance to upgrade (default 10)
+                # - paper_upgrade_novelty_boost: threshold reduction for high novelty (default 0)
+                paper_threshold = rule_settings.paper_upgrade_importance_threshold
+                novelty_boost = rule_settings.paper_upgrade_novelty_boost
+
+                if importance >= paper_threshold:
+                    needs_upgrade = True
+                elif novelty_boost > 0 and novelty == "high" and importance >= (paper_threshold - novelty_boost):
+                    needs_upgrade = True
+                else:
+                    needs_upgrade = False
+
+                if needs_upgrade:
+                    to_paper_full.append((idx, item))
+                else:
+                    # Use paper screening result - generate paper-style summary
+                    results[idx] = self._build_paper_screen_result(title, category, importance, novelty)
             else:
-                needs_upgrade = False
+                # Regular content upgrade logic (unchanged)
+                # | Importance          | Confidence   | Action                    |
+                # |---------------------|--------------|---------------------------|
+                # | >= heavy_threshold  | any          | 32B refinement            |
+                # | >= low_conf_thresh  | low          | 32B refinement            |
+                # | otherwise           | any          | use screen result (no AI) |
+                if importance >= heavy_threshold:
+                    needs_upgrade = True
+                elif importance >= low_conf_threshold and confidence == "low":
+                    needs_upgrade = True
+                else:
+                    needs_upgrade = False
 
-            if needs_upgrade:
-                to_heavy.append((idx, item))
-            else:
-                # Use screening result directly - no additional AI call
-                results[idx] = self._build_screen_result(title, category, importance)
+                if needs_upgrade:
+                    to_heavy.append((idx, item))
+                else:
+                    # Use screening result directly - no additional AI call
+                    results[idx] = self._build_screen_result(title, category, importance)
 
-        upgrade_pct = len(to_heavy) / len(to_screen) * 100 if to_screen else 0
+        total_upgrades = len(to_heavy) + len(to_paper_full)
+        upgrade_pct = total_upgrades / len(to_screen) * 100 if to_screen else 0
         logger.info(
-            f"Two-stage upgrade: {len(to_heavy)}/{len(to_screen)} items ({upgrade_pct:.1f}%) "
-            f"need 32B refinement"
+            f"Two-stage upgrade: {total_upgrades}/{len(to_screen)} items ({upgrade_pct:.1f}%) "
+            f"need 32B refinement ({len(to_heavy)} regular, {len(to_paper_full)} papers)"
         )
+
+        # ========================================
+        # Stage 2.5: Check cache for 32B results (regular content and papers)
+        # ========================================
+        heavy_cache_hits = 0
+        paper_cache_hits = 0
+        to_heavy_uncached: list[tuple[int, "ContentItem"]] = []
+        to_paper_uncached: list[tuple[int, "ContentItem"]] = []
+
+        if self.settings.ai.cache_enabled and self.db:
+            # Check cache for regular content
+            for idx, item in to_heavy:
+                title = item.title or ""
+                content = item.content or ""
+                content_hash = self._get_content_hash(title, content)
+
+                cached_json = self.db.get_ai_cache(content_hash)
+                if cached_json:
+                    try:
+                        cached_result = self._deserialize_result(cached_json)
+                        results[idx] = cached_result
+                        heavy_cache_hits += 1
+
+                        record_ai_call(
+                            call_type=AICallType.CONTENT_HEAVY,
+                            cached=True,
+                            input_chars=len(title) + len(content),
+                        )
+                        logger.debug(f"32B cache hit: {title[:30]}...")
+                    except Exception as e:
+                        logger.warning(f"32B cache deserialize failed: {e}")
+                        to_heavy_uncached.append((idx, item))
+                else:
+                    to_heavy_uncached.append((idx, item))
+
+            # Check cache for papers
+            for idx, item in to_paper_full:
+                title = item.title or ""
+                content = item.content or ""
+                # Use different cache key prefix for papers
+                content_hash = f"paper:{self._get_content_hash(title, content)}"
+
+                cached_json = self.db.get_ai_cache(content_hash)
+                if cached_json:
+                    try:
+                        cached_result = self._deserialize_result(cached_json)
+                        results[idx] = cached_result
+                        paper_cache_hits += 1
+
+                        record_ai_call(
+                            call_type=AICallType.CONTENT_HEAVY,
+                            cached=True,
+                            input_chars=len(title) + len(content),
+                        )
+                        logger.debug(f"Paper cache hit: {title[:30]}...")
+                    except Exception as e:
+                        logger.warning(f"Paper cache deserialize failed: {e}")
+                        to_paper_uncached.append((idx, item))
+                else:
+                    to_paper_uncached.append((idx, item))
+
+            if heavy_cache_hits > 0 or paper_cache_hits > 0:
+                logger.info(
+                    f"Two-stage 32B cache: {heavy_cache_hits}/{len(to_heavy)} regular hits, "
+                    f"{paper_cache_hits}/{len(to_paper_full)} paper hits"
+                )
+            to_heavy = to_heavy_uncached
+            to_paper_full = to_paper_uncached
+        else:
+            # Cache disabled, all items need API
+            to_heavy_uncached = to_heavy
+            to_paper_uncached = to_paper_full
 
         # ========================================
         # Stage 3: 32B batch refinement (sequential or parallel)
@@ -1188,9 +1514,6 @@ confidence规则:
                     f"with {heavy_workers} workers"
                 )
 
-                # Collect results for main thread cache write
-                heavy_cache_writes: list[tuple[str, ProcessingResult]] = []
-
                 with ThreadPoolExecutor(max_workers=heavy_workers) as executor:
                     futures = {
                         executor.submit(refine_single, args): args[0]
@@ -1200,8 +1523,16 @@ confidence规则:
                         try:
                             idx, content_hash, result = future.result()
                             results[idx] = result
-                            if result.success:
-                                heavy_cache_writes.append((content_hash, result))
+                            # Write cache immediately (survives Ctrl+C interruption)
+                            if result.success and self.db and self.settings.ai.cache_enabled:
+                                try:
+                                    self.db.set_ai_cache(
+                                        content_hash,
+                                        self._serialize_result(result),
+                                        self.settings.ai.cache_ttl,
+                                    )
+                                except Exception as cache_err:
+                                    logger.warning(f"Heavy cache write failed: {cache_err}")
                         except Exception as e:
                             idx = futures[future]
                             logger.warning(f"Refine error for item {idx}: {e}")
@@ -1218,17 +1549,6 @@ confidence规则:
                             refine_done += 1
                             if progress_callback:
                                 progress_callback(refine_done, refine_total)
-
-                # Write cache in main thread (thread-safe)
-                if heavy_cache_writes and self.db and self.settings.ai.cache_enabled:
-                    ttl = self.settings.ai.cache_ttl
-                    for content_hash, result in heavy_cache_writes:
-                        try:
-                            self.db.set_ai_cache(
-                                content_hash, self._serialize_result(result), ttl
-                            )
-                        except Exception as e:
-                            logger.warning(f"Heavy cache write failed: {e}")
             else:
                 # Sequential refinement
                 for idx, item in to_heavy:
@@ -1247,6 +1567,102 @@ confidence规则:
             logger.info(
                 f"Two-stage refinement ({parallel_mode}): {len(to_heavy)} items "
                 f"in {heavy_duration:.1f}s with {self._model}"
+            )
+
+        # ========================================
+        # Stage 4: Process papers with specialized PAPER_FULL prompt
+        # Papers that passed 8B screening and need deep analysis
+        # ========================================
+        if to_paper_full:
+            if phase_callback:
+                phase_callback("Paper analysis", len(to_paper_full))
+
+            paper_start = time.time()
+            paper_done = 0
+            paper_total = len(to_paper_full)
+
+            if self.concurrent_enabled and len(to_paper_full) > 1:
+                # Parallel paper processing
+                heavy_workers = self.settings.ollama.workers_heavy
+
+                def process_paper(
+                    args: tuple[int, "ContentItem"]
+                ) -> tuple[int, str, ProcessingResult]:
+                    """Process a paper with PAPER_FULL prompt."""
+                    idx, item = args
+                    title = item.title or ""
+                    content = item.content or ""
+                    result = self.process_content(
+                        title, content, TaskType.PAPER_FULL, _use_db_cache=False
+                    )
+                    # Use paper-specific cache key
+                    content_hash = f"paper:{self._get_content_hash(title, content)}"
+                    return idx, content_hash, result
+
+                logger.info(
+                    f"Parallel paper analysis: {len(to_paper_full)} papers "
+                    f"with {heavy_workers} workers"
+                )
+
+                with ThreadPoolExecutor(max_workers=heavy_workers) as executor:
+                    futures = {
+                        executor.submit(process_paper, args): args[0]
+                        for args in to_paper_full
+                    }
+                    for future in as_completed(futures):
+                        try:
+                            idx, content_hash, result = future.result()
+                            results[idx] = result
+                            if result.success and self.db and self.settings.ai.cache_enabled:
+                                try:
+                                    self.db.set_ai_cache(
+                                        content_hash,
+                                        self._serialize_result(result),
+                                        self.settings.ai.cache_ttl,
+                                    )
+                                except Exception as cache_err:
+                                    logger.warning(f"Paper cache write failed: {cache_err}")
+                        except Exception as e:
+                            idx = futures[future]
+                            logger.warning(f"Paper processing error for item {idx}: {e}")
+                            results[idx] = ProcessingResult(
+                                summary="",
+                                category="研究",
+                                importance_score=5,
+                                success=False,
+                                error_message=str(e),
+                            )
+
+                        with lock:
+                            paper_done += 1
+                            if progress_callback:
+                                progress_callback(paper_done, paper_total)
+            else:
+                # Sequential paper processing
+                for idx, item in to_paper_full:
+                    title = item.title or ""
+                    content = item.content or ""
+                    results[idx] = self.process_content(title, content, TaskType.PAPER_FULL)
+
+                    # Write cache immediately
+                    if results[idx].success and self.db and self.settings.ai.cache_enabled:
+                        content_hash = f"paper:{self._get_content_hash(title, content)}"
+                        self.db.set_ai_cache(
+                            content_hash,
+                            self._serialize_result(results[idx]),
+                            self.settings.ai.cache_ttl,
+                        )
+
+                    paper_done += 1
+                    if progress_callback:
+                        progress_callback(paper_done, paper_total)
+
+            paper_duration = time.time() - paper_start
+            is_parallel = self.concurrent_enabled and len(to_paper_full) > 1
+            parallel_mode = "parallel" if is_parallel else "sequential"
+            logger.info(
+                f"Two-stage paper analysis ({parallel_mode}): {len(to_paper_full)} papers "
+                f"in {paper_duration:.1f}s with {self._model}"
             )
 
         # Unload models to release GPU memory

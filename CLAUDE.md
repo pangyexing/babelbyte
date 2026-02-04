@@ -365,6 +365,9 @@ Copy `.env.example` to `.env`. Key settings:
 - `TWITTERAPI_IO_KEY` - TwitterAPI.io API key for Twitter data
 - `SMTP_*` - Email delivery configuration
 - `DIGEST_SEND_TIME` - Daily digest time (HH:MM)
+- `DIGEST_INCLUDE_INDIVIDUAL` - Include unclustered items in digest (default: true)
+- `DIGEST_INDIVIDUAL_MIN_IMPORTANCE` - Min importance for individual items (default: 0 = use threshold)
+- `DIGEST_USE_HEAVY_THRESHOLD` - Use MODEL_TIER_HEAVY_THRESHOLD for individual items (default: true)
 - `FETCH_INTERVAL_HOURS` - Content fetch frequency
 - `AI_CACHE_ENABLED` - Enable AI response caching (default: true)
 - `AI_CACHE_TTL` - Cache TTL in seconds (default: 86400)

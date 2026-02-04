@@ -167,7 +167,7 @@ def digest(ctx, dry_run, min_importance, max_items, provider, no_cluster, parall
 @click.command()
 @click.option("--dry-run", is_flag=True, help="Preview digest without sending email")
 @click.option("--skip-fetch", is_flag=True, help="Skip fetching new content")
-@click.option("--min-importance", default=3, help="Minimum importance score to include (default: 3)")
+@click.option("--min-importance", default=7, help="Minimum importance score to include (default: 7)")
 @click.pass_context
 def daily(ctx, dry_run, skip_fetch, min_importance):
     """Run the complete daily pipeline in one command.

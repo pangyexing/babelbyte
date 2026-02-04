@@ -62,29 +62,52 @@ class SentenceTransformersProvider(EmbeddingProvider):
         if self._model is None:
             try:
                 # Suppress verbose loading messages from transformers/sentence-transformers
+                import io
                 import logging as _logging
+                import os
                 import warnings
+                from contextlib import redirect_stderr, redirect_stdout
 
-                # Save original levels
-                st_logger = _logging.getLogger("sentence_transformers")
-                tf_logger = _logging.getLogger("transformers")
-                orig_st_level = st_logger.level
-                orig_tf_level = tf_logger.level
+                # Disable tokenizers parallelism warning
+                os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-                # Suppress during load
-                st_logger.setLevel(_logging.WARNING)
-                tf_logger.setLevel(_logging.WARNING)
+                # Suppress tqdm progress bars from transformers and huggingface
+                os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+                os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+                os.environ.setdefault("TQDM_DISABLE", "1")
+
+                # Suppress verbose loggers
+                for logger_name in [
+                    "sentence_transformers",
+                    "transformers",
+                    "huggingface_hub",
+                    "filelock",
+                    "mlx",
+                ]:
+                    _logging.getLogger(logger_name).setLevel(_logging.WARNING)
 
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=FutureWarning)
+                    warnings.filterwarnings("ignore", category=UserWarning)
+
+                    # Also try to disable transformers' internal progress bars
+                    try:
+                        import transformers
+
+                        transformers.logging.set_verbosity_error()
+                        transformers.logging.disable_progress_bar()
+                    except (ImportError, AttributeError):
+                        pass
+
                     from sentence_transformers import SentenceTransformer
 
                     logger.info(f"Loading embedding model: {self.model_name}")
-                    self._model = SentenceTransformer(self.model_name)
 
-                # Restore original levels
-                st_logger.setLevel(orig_st_level)
-                tf_logger.setLevel(orig_tf_level)
+                    # Suppress stdout/stderr during model loading to hide MLX progress bars
+                    # and "LOAD REPORT" messages that bypass the logging system
+                    devnull = io.StringIO()
+                    with redirect_stdout(devnull), redirect_stderr(devnull):
+                        self._model = SentenceTransformer(self.model_name)
 
                 self._dimension = self._model.get_sentence_embedding_dimension()
             except ImportError:
@@ -97,12 +120,16 @@ class SentenceTransformersProvider(EmbeddingProvider):
     def encode(self, text: str):
         """Encode text to embedding vector."""
         model = self._get_model()
-        return model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
+        return model.encode(
+            text, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False
+        )
 
     def encode_batch(self, texts: list[str]):
         """Encode multiple texts to embedding vectors."""
         model = self._get_model()
-        return model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+        return model.encode(
+            texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False
+        )
 
     @property
     def dimension(self) -> int:

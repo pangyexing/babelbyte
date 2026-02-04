@@ -372,6 +372,29 @@ class RuleOptimizationConfig:
         default_factory=lambda: float(os.getenv("MINIMAL_PROMPT_MIN_CONFIDENCE", "0.3"))
     )
 
+    # Enable paper-specific prompt for academic papers (arxiv, nature, etc.)
+    paper_prompt_enabled: bool = field(
+        default_factory=lambda: os.getenv("PAPER_PROMPT_ENABLED", "true").lower() == "true"
+    )
+
+    # Extended content length for papers (abstracts are longer than typical content)
+    paper_extended_content_length: int = field(
+        default_factory=lambda: int(os.getenv("PAPER_EXTENDED_CONTENT_LENGTH", "2500"))
+    )
+
+    # Paper upgrade threshold: minimum importance to upgrade from 8B to 32B PAPER_FULL
+    # Default 10 means only top-tier papers (importance == 10) get deep analysis
+    paper_upgrade_importance_threshold: int = field(
+        default_factory=lambda: int(os.getenv("PAPER_UPGRADE_IMPORTANCE_THRESHOLD", "10"))
+    )
+
+    # Paper upgrade novelty boost: if novelty == "high", lower the threshold by this amount
+    # E.g., threshold=10, boost=1 means: upgrade if importance >= 10 OR (importance >= 9 AND novelty=high)
+    # Default 0 means novelty doesn't affect upgrade decision
+    paper_upgrade_novelty_boost: int = field(
+        default_factory=lambda: int(os.getenv("PAPER_UPGRADE_NOVELTY_BOOST", "0"))
+    )
+
     def __post_init__(self):
         """Validate rule optimization configuration."""
         if self.rule_only_max_content_length < 100:
@@ -391,6 +414,51 @@ class RuleOptimizationConfig:
             raise ValueError(
                 f"skip_short_content_threshold must be 50-500, got {self.skip_short_content_threshold}"
             )
+
+
+@dataclass
+class DigestConfig:
+    """Digest generation configuration."""
+
+    # Whether to include individual (unclustered) items in the digest
+    # If False, only event clusters are included
+    include_individual_items: bool = field(
+        default_factory=lambda: os.getenv("DIGEST_INCLUDE_INDIVIDUAL", "true").lower() == "true"
+    )
+
+    # Minimum importance for individual items (defaults to MODEL_TIER_HEAVY_THRESHOLD)
+    # Items below this threshold are excluded from the digest
+    # Set to 0 to use the standard min_importance parameter
+    individual_min_importance: int = field(
+        default_factory=lambda: int(os.getenv("DIGEST_INDIVIDUAL_MIN_IMPORTANCE", "0"))
+    )
+
+    # If True, use MODEL_TIER_HEAVY_THRESHOLD as the minimum for individual items
+    # This ensures only high-importance items are included alongside events
+    use_heavy_threshold_for_individual: bool = field(
+        default_factory=lambda: os.getenv("DIGEST_USE_HEAVY_THRESHOLD", "true").lower() == "true"
+    )
+
+    def get_individual_min_importance(self, heavy_threshold: int, default_min: int) -> int:
+        """Get the effective minimum importance for individual items.
+
+        Args:
+            heavy_threshold: The MODEL_TIER_HEAVY_THRESHOLD value.
+            default_min: The default min_importance from generate_digest().
+
+        Returns:
+            The minimum importance score for individual items.
+        """
+        if not self.include_individual_items:
+            return 11  # Effectively exclude all (max importance is 10)
+
+        if self.individual_min_importance > 0:
+            return self.individual_min_importance
+
+        if self.use_heavy_threshold_for_individual:
+            return heavy_threshold
+
+        return default_min
 
 
 @dataclass
@@ -577,6 +645,7 @@ class Settings:
     ai: AIConfig = field(default_factory=AIConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     rule_optimization: RuleOptimizationConfig = field(default_factory=RuleOptimizationConfig)
+    digest: DigestConfig = field(default_factory=DigestConfig)
 
 
 # Global settings instance

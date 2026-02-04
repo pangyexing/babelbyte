@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 DigestItemType = Union[DigestItem, EventDigestItem]
 
 
+def is_heavy_processed(item: ContentItem) -> bool:
+    """Check if item was processed by heavy (32B) model.
+
+    Heavy-processed items have non-empty key_points.
+    8B screen-only items have empty key_points (None or "[]").
+
+    Args:
+        item: Content item to check.
+
+    Returns:
+        True if heavy-processed, False otherwise.
+    """
+    if not item.key_points:
+        return False
+    # key_points is stored as JSON string, empty array = "[]"
+    return item.key_points not in ("[]", "null", "")
+
+
 def get_ai_processor(
     provider: Optional[str] = None,
     use_mock: bool = False,
@@ -129,9 +147,49 @@ class DigestResult:
             if item.category not in result:
                 result[item.category] = []
             result[item.category].append(item)
-        # Sort by importance
+        # Sort by: 1) heavy-processed first, 2) importance desc
+        for category in result:
+            result[category].sort(
+                key=lambda x: (is_heavy_processed(x.content_item), x.importance_score),
+                reverse=True,
+            )
+        return result
+
+    @property
+    def papers(self) -> list[DigestItem]:
+        """Get paper items (RSS source)."""
+        return [item for item in self.items if item.is_paper]
+
+    @property
+    def regular_items(self) -> list[DigestItem]:
+        """Get non-paper individual items."""
+        return [item for item in self.items if not item.is_paper]
+
+    @property
+    def papers_by_category(self) -> dict[str, list[DigestItem]]:
+        """Group papers by category."""
+        result: dict[str, list[DigestItem]] = {}
+        for item in self.papers:
+            if item.category not in result:
+                result[item.category] = []
+            result[item.category].append(item)
         for category in result:
             result[category].sort(key=lambda x: x.importance_score, reverse=True)
+        return result
+
+    @property
+    def regular_items_by_category(self) -> dict[str, list[DigestItem]]:
+        """Group non-paper items by category."""
+        result: dict[str, list[DigestItem]] = {}
+        for item in self.regular_items:
+            if item.category not in result:
+                result[item.category] = []
+            result[item.category].append(item)
+        for category in result:
+            result[category].sort(
+                key=lambda x: (is_heavy_processed(x.content_item), x.importance_score),
+                reverse=True,
+            )
         return result
 
     @property
@@ -885,50 +943,80 @@ class DigestGenerator:
                     )
                 )
 
-        # Sort events by importance
+        # Sort events by importance (events are always heavy-processed via clustering)
         events.sort(key=lambda e: e.importance_score, reverse=True)
 
-        # Step 4: Get unclustered items
-        unclustered = self.db.get_undelivered_unclustered_items(
-            min_importance=min_importance,
-            limit=max_items,
+        # Step 4: Get unclustered items (filtered by digest config)
+        settings = get_settings()
+        heavy_threshold = settings.ai.model_tiers.heavy_threshold
+        individual_min = settings.digest.get_individual_min_importance(
+            heavy_threshold=heavy_threshold,
+            default_min=min_importance,
         )
 
         digest_items = []
-        for item in unclustered:
-            if item.summary and item.category and item.importance_score:
-                digest_items.append(
-                    DigestItem(
-                        content_item=item,
-                        summary=item.summary,
-                        category=item.category,
-                        importance_score=item.importance_score,
-                    )
-                )
+        unclustered = []  # Initialize to empty list
+        if settings.digest.include_individual_items:
+            unclustered = self.db.get_undelivered_unclustered_items(
+                min_importance=individual_min,
+                limit=max_items,
+            )
 
-        # Sort by importance (descending)
-        digest_items.sort(key=lambda x: x.importance_score, reverse=True)
+            for item in unclustered:
+                if item.summary and item.category and item.importance_score:
+                    digest_items.append(
+                        DigestItem(
+                            content_item=item,
+                            summary=item.summary,
+                            category=item.category,
+                            importance_score=item.importance_score,
+                        )
+                    )
+
+            if individual_min > min_importance:
+                logger.info(
+                    f"Digest filter: individual items require importance >= {individual_min} "
+                    f"(events use min_importance={min_importance})"
+                )
+        else:
+            logger.info("Digest filter: individual items disabled, only events included")
+
+        # Sort by: 1) heavy-processed first, 2) importance (descending)
+        # Heavy items have non-empty key_points from 32B processing
+        digest_items.sort(
+            key=lambda x: (is_heavy_processed(x.content_item), x.importance_score),
+            reverse=True,
+        )
 
         # Limit total count (events + items)
         # Each event counts as 1 toward the limit
         total_count = len(events) + len(digest_items)
         if total_count > max_items:
-            # Prioritize by importance across both lists
-            all_items: list[tuple[int, bool, int]] = []
+            # Prioritize: heavy-processed first, then by importance
+            # Events are considered heavy-processed (tuple: is_heavy, importance, is_event, idx)
+            all_items: list[tuple[bool, int, bool, int]] = []
             for i, e in enumerate(events):
-                all_items.append((e.importance_score, True, i))
+                all_items.append((True, e.importance_score, True, i))  # Events are heavy
             for i, d in enumerate(digest_items):
-                all_items.append((d.importance_score, False, i))
+                is_heavy = is_heavy_processed(d.content_item)
+                all_items.append((is_heavy, d.importance_score, False, i))
 
-            all_items.sort(key=lambda x: x[0], reverse=True)
+            # Sort by: heavy first, then importance desc
+            all_items.sort(key=lambda x: (x[0], x[1]), reverse=True)
             all_items = all_items[:max_items]
 
             # Rebuild filtered lists
-            event_indices = {idx for score, is_event, idx in all_items if is_event}
-            item_indices = {idx for score, is_event, idx in all_items if not is_event}
+            event_indices = {idx for is_heavy, score, is_event, idx in all_items if is_event}
+            item_indices = {idx for is_heavy, score, is_event, idx in all_items if not is_event}
 
             events = [e for i, e in enumerate(events) if i in event_indices]
             digest_items = [d for i, d in enumerate(digest_items) if i in item_indices]
+
+            # Re-sort digest_items to maintain heavy-first order after filtering
+            digest_items.sort(
+                key=lambda x: (is_heavy_processed(x.content_item), x.importance_score),
+                reverse=True,
+            )
 
         total_processed = len(unclustered) + sum(len(e.members) for e in events)
         successful = len(digest_items) + len(events)

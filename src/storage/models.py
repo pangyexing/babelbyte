@@ -231,9 +231,18 @@ class DigestItem:
     @property
     def source_display(self) -> str:
         """Display name for the source."""
-        if self.content_item.source_type == SourceType.REDDIT:
-            return "Reddit"
-        return "Twitter"
+        source_map = {
+            SourceType.REDDIT: "Reddit",
+            SourceType.TWITTER: "Twitter",
+            SourceType.HACKERNEWS: "Hacker News",
+            SourceType.RSS: "论文",
+        }
+        return source_map.get(self.content_item.source_type, "Unknown")
+
+    @property
+    def is_paper(self) -> bool:
+        """Check if this is a paper/RSS item."""
+        return self.content_item.source_type == SourceType.RSS
 
     @property
     def enhanced_data(self) -> Optional[EnhancedProcessingData]:

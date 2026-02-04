@@ -25,6 +25,19 @@ def setup_logging():
         ],
     )
 
+    # Suppress verbose third-party loggers
+    for logger_name in [
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "sentence_transformers",
+        "transformers",
+        "huggingface_hub",
+        "filelock",
+        "apscheduler",
+    ]:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 
 def main():
     """Main entry point."""

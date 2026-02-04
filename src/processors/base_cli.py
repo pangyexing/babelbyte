@@ -13,6 +13,7 @@ from src.processors.base import BaseAIProcessor, ProcessingResult, TaskType
 from src.processors.rule_classifier import (
     create_skip_result,
     estimate_importance,
+    is_paper_content,
     should_skip_ai_processing,
 )
 
@@ -173,6 +174,8 @@ class BaseCLIProcessor(BaseAIProcessor):
             TaskType.CONTENT_LOW: AICallType.CONTENT_LIGHT,
             TaskType.CONTENT_MINIMAL: AICallType.CONTENT_LIGHT,
             TaskType.CONTENT_UNCERTAIN: AICallType.CONTENT_HEAVY,
+            TaskType.PAPER_FULL: AICallType.CONTENT_HEAVY,
+            TaskType.PAPER_SCREEN: AICallType.CONTENT_LIGHT,
         }
         return call_type_map.get(task_type, AICallType.CONTENT_HEAVY)
 
@@ -208,7 +211,9 @@ class BaseCLIProcessor(BaseAIProcessor):
                 return self._deserialize_result(cached_json)
 
         # Select prompt based on task type
-        if task_type == TaskType.CONTENT_MINIMAL:
+        if task_type == TaskType.PAPER_FULL:
+            prompt = self._build_paper_prompt(title, content)
+        elif task_type == TaskType.CONTENT_MINIMAL:
             prompt = self._build_simple_prompt(title, content)
         elif task_type == TaskType.CONTENT_LOW:
             prompt = self._build_light_prompt(title, content)
@@ -547,9 +552,14 @@ class BaseCLIProcessor(BaseAIProcessor):
                 success=True,
             )
 
-        # Strategy 2: Estimate importance for model/prompt selection
-        importance_est = estimate_importance(item)
+        # Strategy 2: Check if this is an academic paper
         rule_settings = self.settings.rule_optimization
+        if rule_settings.paper_prompt_enabled and is_paper_content(item):
+            logger.info(f"Paper detected: {title[:50]}...")
+            return self.process_content(title, content, TaskType.PAPER_FULL)
+
+        # Strategy 3: Estimate importance for model/prompt selection
+        importance_est = estimate_importance(item)
         min_conf = rule_settings.minimal_prompt_min_confidence
 
         # Select task type based on importance estimate

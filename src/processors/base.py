@@ -22,6 +22,8 @@ class TaskType(Enum):
     EVENT_TITLE = auto()  # Event title generation
     TIMELINE = auto()  # Timeline summary
     REPORT = auto()  # Report generation
+    PAPER_FULL = auto()  # Academic paper - deep analysis with innovation/practicality
+    PAPER_SCREEN = auto()  # Academic paper - quick screening for value judgment
 
 
 @dataclass
@@ -49,6 +51,26 @@ class ActionResult:
     type: str  # 跟进/验证/决策/触发器
     description: str
     priority: str = "中"
+
+
+@dataclass
+class InnovationResult:
+    """Paper innovation assessment."""
+
+    core_contribution: str = ""  # Core contribution (1-2 sentences)
+    novelty_type: str = ""  # 理论创新/方法创新/应用创新/工程创新
+    diff_from_prior: str = ""  # Key difference from prior work
+    novelty_score: int = 3  # 1-5 scale
+
+
+@dataclass
+class PracticalityResult:
+    """Paper practicality assessment."""
+
+    application_scenarios: list[str] = field(default_factory=list)
+    engineering_feasibility: str = "中"  # 高/中/低
+    deployment_difficulty: str = "中等"  # 简单/中等/复杂
+    practicality_score: int = 3  # 1-5 scale
 
 
 @dataclass
@@ -128,6 +150,56 @@ key_points：最多3个关键点
 
 标题：{title}
 正文：{content}"""
+    # fmt: on
+
+    # Academic paper deep analysis prompt
+    # fmt: off
+    PAPER_PROMPT = """分析学术论文，返回JSON（仅JSON，无其他文字）：
+{{
+  "summary": "100字中文摘要：研究目标、方法、主要发现",
+  "category": "只选一个：AI、机器学习、编程、技术、创业、创新、金融、研究、设计、其他",
+  "importance": 1-10,
+  "one_liner": "一句话：这篇论文最核心的贡献",
+  "innovation": {{
+    "core_contribution": "核心贡献（1-2句）",
+    "novelty_type": "理论创新/方法创新/应用创新/工程创新",
+    "diff_from_prior": "与现有工作的关键区别",
+    "novelty_score": 1-5
+  }},
+  "practicality": {{
+    "application_scenarios": ["应用场景1", "应用场景2"],
+    "engineering_feasibility": "高/中/低",
+    "deployment_difficulty": "简单/中等/复杂",
+    "practicality_score": 1-5
+  }},
+  "key_points": [
+    {{"type": "方法/数据/结果/局限", "value": "关键信息", "impact": "影响说明"}}
+  ],
+  "impact_assessment": {{
+    "academic_impact": "学术影响（引用潜力、领域推进）",
+    "industry_impact": "工业界影响（实际应用价值）",
+    "certainty": "certain/uncertain"
+  }},
+  "actionable_items": [
+    {{"type": "复现/跟进/应用/关注", "description": "具体行动", "priority": "高/中/低"}}
+  ]
+}}
+
+论文评分（严格标准，与筛选阶段一致）:
+10: 极罕见，改变领域的开创性工作(如Transformer/GPT/AlphaFold级别)
+9: 顶级突破，新范式或SOTA大幅提升(>10%)，每年仅几篇
+7-8: 重要贡献，显著改进或新颖方法，顶会best paper级别
+5-6: 普通研究，渐进改进/标准方法/有效但不突出（大部分论文）
+3-4: 一般，小幅改进/复现/应用已有方法
+1-2: 低价值，无创新/方法存疑
+
+novelty_score: 5=开创性,4=重要创新,3=有意义改进,2=渐进改进,1=无明显创新
+practicality_score: 5=即刻可用,4=稍加修改可用,3=需要开发,2=研究阶段,1=纯理论
+key_points: 最多4个
+actionable_items: 仅importance>=7时提取
+
+标题：{title}
+摘要/正文：{content}"""
     # fmt: on
 
     # Batch processing prompt for multiple items
@@ -384,6 +456,36 @@ category必须是10个分类之一，key_points最多3个，actionable_items仅i
             content = self._smart_truncate(content, max_length)
 
         return self.SIMPLE_PROMPT.format(title=title, content=content)
+
+    def _build_paper_prompt(self, title: str, content: str, max_length: int = -1) -> str:
+        """
+        Build prompt for academic paper deep analysis.
+
+        Papers need more content (abstracts are typically 200-500 words).
+        Uses PAPER_PROMPT with innovation and practicality assessment.
+
+        Args:
+            title: Paper title.
+            content: Abstract or full text.
+            max_length: Max content length. -1 uses extended default (2500 chars).
+
+        Returns:
+            Formatted paper analysis prompt string.
+        """
+        settings = get_settings()
+
+        # Apply title truncation
+        max_title = 200  # Paper titles can be longer
+        if max_title > 0 and len(title) > max_title:
+            title = self._smart_truncate(title, max_title)
+
+        # Papers need more content (abstracts are structured and longer)
+        if max_length == -1:
+            max_length = settings.rule_optimization.paper_extended_content_length
+        if max_length > 0 and len(content) > max_length:
+            content = self._smart_truncate(content, max_length)
+
+        return self.PAPER_PROMPT.format(title=title, content=content)
 
     def _build_batch_prompt(self, items: list[tuple[int, str, str]], max_length: int = -1) -> str:
         """

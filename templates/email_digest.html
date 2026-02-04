@@ -356,7 +356,10 @@
             <span><strong>{{ event_count }}</strong> 个事件</span>
             {% endif %}
             {% if individual_count > 0 %}
-            <span><strong>{{ individual_count }}</strong> 条独立内容</span>
+            <span><strong>{{ individual_count }}</strong> 条独立事件</span>
+            {% endif %}
+            {% if paper_count > 0 %}
+            <span><strong>{{ paper_count }}</strong> 篇论文</span>
             {% endif %}
             <span>涵盖 <strong>{{ category_count }}</strong> 个分类</span>
         </div>
@@ -443,26 +446,23 @@
             {% endfor %}
             {% endif %}
 
-            {# ===== SECTION 2: Individual Items (Papers, etc.) ===== #}
-            {% if individual_by_category %}
+            {# ===== SECTION 2: Unclustered Regular Items (non-paper) ===== #}
+            {% if regular_items_by_category %}
             <div class="section-divider individual">
-                <span>独立内容</span>
+                <span>独立事件</span>
                 <span class="count">{{ individual_count }} 条</span>
             </div>
 
-            {% for category, category_items in individual_by_category.items() %}
+            {% for category, category_items in regular_items_by_category.items() %}
             <div class="category-section">
                 <div class="category-header">
                     {{ category }} ({{ category_items|length }}条)
                 </div>
                 <div class="category-content">
                     {% for item in category_items %}
-                    <div class="item {% if item.content_item.source_type.value == 'rss' %}paper-item{% endif %}">
+                    <div class="item">
                         <div class="item-header">
                             <div>
-                                {% if item.content_item.source_type.value == 'rss' %}
-                                <span class="paper-badge">论文</span>
-                                {% endif %}
                                 <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
                                     {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
                                 </a>
@@ -525,6 +525,94 @@
                             <span class="source-badge source-{{ item.content_item.source_type.value }}">
                                 {{ item.source_display }}
                             </span>
+                            作者: {{ item.content_item.author }} |
+                            <a href="{{ item.content_item.url }}" target="_blank">查看原文</a>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {# ===== SECTION 3: Papers (RSS items) ===== #}
+            {% if papers_by_category %}
+            <div class="section-divider" style="background: linear-gradient(135deg, #00b894 0%, #00a085 100%);">
+                <span>论文</span>
+                <span class="count">{{ paper_count }} 篇</span>
+            </div>
+
+            {% for category, category_items in papers_by_category.items() %}
+            <div class="category-section">
+                <div class="category-header">
+                    {{ category }} ({{ category_items|length }}篇)
+                </div>
+                <div class="category-content">
+                    {% for item in category_items %}
+                    <div class="item paper-item">
+                        <div class="item-header">
+                            <div>
+                                <span class="paper-badge">论文</span>
+                                <a href="{{ item.content_item.url }}" class="item-title" target="_blank">
+                                    {{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}
+                                </a>
+                            </div>
+                            <span class="importance {% if item.importance_score >= 8 %}high{% elif item.importance_score >= 5 %}medium{% else %}low{% endif %}">
+                                {{ item.importance_score }}/10
+                            </span>
+                        </div>
+
+                        {# One-liner conclusion #}
+                        {% if item.content_item.one_liner %}
+                        <div class="one-liner">
+                            {{ item.content_item.one_liner }}
+                        </div>
+                        {% endif %}
+
+                        <div class="item-summary">
+                            {{ item.summary }}
+                        </div>
+
+                        {# Key points #}
+                        {% if item.enhanced_data and item.enhanced_data.key_points %}
+                        <div class="key-points">
+                            {% for kp in item.enhanced_data.key_points %}
+                            <span class="key-point">
+                                <span class="type">{{ kp.type }}:</span>
+                                <span class="value">{{ kp.value }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        {# Impact assessment - only for high importance items #}
+                        {% if item.importance_score >= 7 and item.enhanced_data and item.enhanced_data.impact_assessment %}
+                        <div class="impact-section">
+                            {% if item.enhanced_data.impact_assessment.short_term %}
+                            <div><span class="label">短期影响:</span> {{ item.enhanced_data.impact_assessment.short_term }}</div>
+                            {% endif %}
+                            {% if item.enhanced_data.impact_assessment.long_term %}
+                            <div><span class="label">长期影响:</span> {{ item.enhanced_data.impact_assessment.long_term }}</div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {# Actionable items #}
+                        {% if item.enhanced_data and item.enhanced_data.actionable_items %}
+                        <div class="action-items">
+                            {% for action in item.enhanced_data.actionable_items %}
+                            <div class="action-item {% if action.priority == '高' %}high-priority{% elif action.priority == '中' %}medium-priority{% endif %}">
+                                <strong>{{ action.type }}:</strong> {{ action.description }}
+                                <span class="priority-badge priority-{% if action.priority == '高' %}high{% elif action.priority == '中' %}medium{% else %}low{% endif %}">
+                                    {{ action.priority }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <div class="item-meta">
+                            <span class="source-badge source-rss">论文</span>
                             作者: {{ item.content_item.author }} |
                             <a href="{{ item.content_item.url }}" target="_blank">查看原文</a>
                         </div>

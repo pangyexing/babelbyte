@@ -15,6 +15,35 @@ from src.storage.models import ContentItem
 
 logger = logging.getLogger(__name__)
 
+# Academic paper domains for specialized paper processing
+PAPER_DOMAINS = {
+    # Preprint servers
+    "arxiv.org",
+    "biorxiv.org",
+    "medrxiv.org",
+    "ssrn.com",
+    # Top journals
+    "nature.com",
+    "science.org",
+    "cell.com",
+    "pnas.org",
+    "sciencedirect.com",
+    # CS/AI venues
+    "ieee.org",
+    "acm.org",
+    "openreview.net",
+    "aclanthology.org",
+    "papers.nips.cc",
+    "proceedings.mlr.press",
+    "paperswithcode.com",
+    # Other academic publishers
+    "springer.com",
+    "wiley.com",
+    "tandfonline.com",
+    "oup.com",  # Oxford University Press
+    "cambridge.org",
+}
+
 # Path to classification config
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "classifications.yaml"
 
@@ -561,6 +590,72 @@ def create_skip_result(item: ContentItem, reason: str) -> tuple[str, str, int]:
 def reload_classifications() -> None:
     """Force reload of classifications config."""
     _load_classifications.cache_clear()
+
+
+def is_paper_content(item: ContentItem) -> bool:
+    """
+    Detect if content is an academic paper that should use specialized paper prompts.
+
+    Detection methods:
+    1. Domain matching against known academic publishers/preprints
+    2. URL pattern matching for paper-specific paths
+    3. Title pattern matching for common paper formats
+
+    Args:
+        item: ContentItem to check.
+
+    Returns:
+        True if content is likely an academic paper.
+    """
+    if not item.url:
+        return False
+
+    url_lower = item.url.lower()
+
+    # 1. Domain matching
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url_lower)
+        domain = parsed.netloc
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        # Check exact match and subdomain matches
+        for paper_domain in PAPER_DOMAINS:
+            if domain == paper_domain or domain.endswith("." + paper_domain):
+                return True
+    except (ValueError, AttributeError):
+        pass
+
+    # 2. URL pattern matching (common paper URL patterns)
+    paper_url_patterns = [
+        r"/abs/\d+\.\d+",       # arxiv abstract (e.g., /abs/2301.07041)
+        r"/pdf/\d+\.\d+",       # arxiv pdf
+        r"/paper/",             # openreview papers
+        r"/doi/",               # DOI links
+        r"/article/",           # Journal articles
+        r"/publication/",       # Research publications
+        r"/papers?/\d+",        # Paper IDs
+        r"10\.\d{4,}/",         # DOI pattern in URL
+    ]
+    for pattern in paper_url_patterns:
+        if re.search(pattern, url_lower):
+            return True
+
+    # 3. Title pattern matching
+    title = item.title or ""
+    paper_title_patterns = [
+        r"^arXiv:\d+\.\d+",                    # arXiv ID prefix
+        r"^\[\d+\.\d+\]",                      # arXiv ID in brackets
+        r"\[arXiv\]",                          # arXiv tag
+        r"\(arXiv:\d+\)",                      # arXiv ID in parens
+        r"^Paper:",                            # Paper prefix
+    ]
+    for pattern in paper_title_patterns:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True
+
+    return False
 
 
 # High-confidence domains that can skip AI processing entirely
