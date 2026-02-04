@@ -235,11 +235,20 @@ def daily(ctx, dry_run, skip_fetch, min_importance):
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
             console=console,
-            transient=True,
+            transient=False,
         ) as progress:
             task = progress.add_task("Processing...", total=None)
-            processed = runner.process_content(limit=settings.ai.process_limit)
+
+            def update_ai_progress(stage: str, current: int, total: int):
+                progress.update(task, description=f"{stage}: {current}/{total}", completed=current, total=total)
+
+            processed = runner.process_content(
+                limit=settings.ai.process_limit,
+                progress_callback=update_ai_progress,
+            )
 
         console.print(f"  [green]✓[/green] Processed {processed} items")
 

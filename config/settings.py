@@ -160,6 +160,12 @@ class OllamaConfig:
     - importance 5-6 with low confidence: upgrade
     - importance 5-6 with medium/high confidence: use light model
     - importance < 5: use light model
+
+    Concurrent processing:
+    Enable parallel processing to better utilize GPU resources.
+    - workers_heavy: concurrent requests for 32B model (default 2 for 4090 24GB)
+    - workers_screen: concurrent requests for 8B model (default 4)
+    - keep_alive: seconds to keep model loaded between requests (default 1800)
     """
 
     base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
@@ -167,6 +173,27 @@ class OllamaConfig:
     model_light: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_LIGHT", ""))
     model_screen: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_SCREEN", ""))
     timeout: int = field(default_factory=lambda: int(os.getenv("OLLAMA_TIMEOUT", "120")))
+
+    # Concurrent processing settings
+    concurrent_enabled: bool = field(
+        default_factory=lambda: os.getenv("OLLAMA_CONCURRENT_ENABLED", "true").lower() == "true"
+    )
+    workers_heavy: int = field(
+        default_factory=lambda: int(os.getenv("OLLAMA_WORKERS_HEAVY", "2"))
+    )
+    workers_screen: int = field(
+        default_factory=lambda: int(os.getenv("OLLAMA_WORKERS_SCREEN", "4"))
+    )
+    keep_alive: int = field(
+        default_factory=lambda: int(os.getenv("OLLAMA_KEEP_ALIVE", "1800"))
+    )
+
+    # Thinking mode for qwen3 models (affects CONTENT_HIGH tasks)
+    # true: Enable thinking for better reasoning (slower, ~43s per item)
+    # false: Disable thinking for speed (faster, ~18s per item, same quality)
+    thinking_enabled: bool = field(
+        default_factory=lambda: os.getenv("OLLAMA_THINKING_ENABLED", "false").lower() == "true"
+    )
 
     @property
     def dual_model_enabled(self) -> bool:

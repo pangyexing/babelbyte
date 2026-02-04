@@ -324,10 +324,10 @@ class DigestGenerator:
             logger.info("Phase 2: No items need AI processing!")
 
         total_elapsed = time.time() - total_start
-        tokens_saved_pct = (prefilter_count / len(items) * 100) if items else 0
+        tokens_saved_pct = (skipped_count / len(items) * 100) if items else 0
         logger.info(
             f"Processing complete in {total_elapsed:.1f}s: {processed_count}/{len(items)} total "
-            f"| Token savings: {tokens_saved_pct:.0f}% ({prefilter_count} items skipped AI)"
+            f"| Token savings: {tokens_saved_pct:.0f}% ({skipped_count} items skipped AI)"
         )
         return processed_count
 
@@ -505,12 +505,32 @@ class DigestGenerator:
 
         logger.info(f"Starting two-stage processing for {total_items} items...")
 
+        # Track current phase for progress display
+        current_phase_name = "Two-stage processing"
+        current_phase_total = total_items
+
         # Update progress at start
         if progress_callback:
-            progress_callback("Two-stage processing", 0, total_items)
+            progress_callback(current_phase_name, 0, total_items)
 
-        # Process all items through two-stage pipeline
-        results = ollama_api.process_items_two_stage(items)
+        # Phase callback: called when entering a new processing phase
+        def internal_phase(phase_name: str, phase_total: int) -> None:
+            """Reset progress display for new phase."""
+            nonlocal current_phase_name, current_phase_total
+            current_phase_name = phase_name
+            current_phase_total = phase_total
+            if progress_callback:
+                progress_callback(phase_name, 0, phase_total)
+
+        # Progress callback: updates current phase progress
+        def internal_progress(current: int, total: int) -> None:
+            if progress_callback:
+                progress_callback(current_phase_name, current, total)
+
+        # Process all items through two-stage pipeline (with parallel processing)
+        results = ollama_api.process_items_two_stage(
+            items, progress_callback=internal_progress, phase_callback=internal_phase
+        )
 
         # Update items with results
         processed_count = 0
@@ -518,10 +538,6 @@ class DigestGenerator:
             if result and result.success:
                 self._update_item_with_result(item, result)
                 processed_count += 1
-
-            # Update progress periodically
-            if progress_callback:
-                progress_callback("Two-stage processing", processed_count, total_items)
 
         elapsed = time.time() - start_time
         logger.info(

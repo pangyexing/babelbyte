@@ -55,11 +55,20 @@ _ENTITY_PATTERNS = [
     # Company names (English)
     r"\b(OpenAI|Google|Microsoft|Meta|Apple|Amazon|Tesla|Anthropic|Nvidia|AMD|Intel)\b",
     r"\b(DeepMind|Stability|Hugging\s*Face|Cohere|Mistral|xAI|Perplexity)\b",
+    r"\b(SpaceX|Waymo|Cruise|Aurora|Mobileye|Uber|Lyft)\b",  # Autonomous driving / Space
     # Chinese company names
     r"(阿里巴巴|腾讯|百度|字节跳动|华为|小米|京东|美团|拼多多|商汤|旷视|智谱)",
-    # Tech terms / AI models
-    r"\b(GPT-\d+|Claude|Gemini|Llama|ChatGPT|Copilot|DALL-E|Midjourney|Stable\s*Diffusion)\b",
+    # Tech terms / AI models (with version patterns)
+    r"\b(GPT-[\d.]+|Claude|Gemini|Llama|ChatGPT|Copilot|DALL-E|Midjourney|Stable\s*Diffusion)\b",
     r"\b(Sora|Grok|Flux|DeepSeek|Qwen|Yi|Kimi)\b",
+    # New AI models with version numbers (Step, GLM, etc.)
+    r"\b(Step[- ]?[\d.]+[- ]?\w*)\b",  # Step 3.5 Flash, Step-3.5-Flash
+    r"\b(GLM[- ]?(?:[\d.]+|OCR|V\d+))\b",  # GLM-4.7, GLM-OCR (not "GLM releases")
+    r"\b(GLM)\b",  # GLM standalone (fallback)
+    r"\b(TranslateGemma|Galactica|Marble)\b",  # Specific model names
+    r"\b(ComfyUI[- ]?\w*)\b",  # ComfyUI-CacheDiT
+    r"\b(WebAssembly|Wasm)\b",  # Tech standards
+    r"\b(OCR)\b",  # Common tech terms that help matching
     # Twitter/X usernames (capture the username part)
     r"@([A-Za-z0-9_]{1,15})\b",
     # Hashtags
@@ -69,6 +78,28 @@ _ENTITY_PATTERNS = [
     # Common event markers (English)
     r"\b(launch|release|announce|acquire|funding|merger|layoff|update)\b",
 ]
+
+# Pattern to extract model names with versions (e.g., "Step 3.5 Flash", "GLM-4.7")
+# Note: Order matters - more specific patterns should come first
+_MODEL_NAME_PATTERN = re.compile(
+    r"\b("
+    # Step models: Step 3.5 Flash, Step-3.5-Flash
+    r"Step[- ]?[\d.]+[- ]?\w+|"
+    # GLM models with version or suffix: GLM-4.7, GLM-OCR (but not "GLM releases")
+    r"GLM[- ]?(?:[\d.]+|OCR|V\d+)|"
+    # GPT models: GPT-4, GPT-5.2
+    r"GPT[- ]?[\d.]+|"
+    # DeepSeek models: DeepSeek v3.2, DeepSeek-v3
+    r"DeepSeek[- ]?v?[\d.]+|"
+    # Other model families with optional versions
+    r"Qwen[- ]?[\d.]+|Llama[- ]?[\d.]+|Claude[- ]?[\d.]+|Gemini[- ]?[\d.]+|"
+    # Specific model names (no version needed)
+    r"TranslateGemma|Galactica|ComfyUI[- ]?\w+|"
+    # Companies/products (for merger/acquisition news)
+    r"Waymo|SpaceX|xAI"
+    r")\b",
+    re.IGNORECASE
+)
 
 
 @lru_cache(maxsize=1024)
@@ -100,10 +131,39 @@ def _extract_entities_cached(text: str) -> frozenset[str]:
 
 
 @lru_cache(maxsize=1024)
+def _extract_model_names(text: str) -> frozenset[str]:
+    """Extract AI model names from text (cached).
+
+    This specifically targets model names with versions like:
+    - Step 3.5 Flash, Step-3.5-Flash
+    - GLM-4.7, GLM-OCR
+    - TranslateGemma, etc.
+    """
+    models = set()
+    for match in _MODEL_NAME_PATTERN.finditer(text):
+        # Normalize: lowercase and remove spaces/hyphens for comparison
+        model = match.group(1).lower()
+        # Keep original for entity matching
+        models.add(model)
+        # Also add normalized version (spaces/hyphens removed)
+        normalized = re.sub(r"[- ]+", "", model)
+        models.add(normalized)
+    return frozenset(models)
+
+
+@lru_cache(maxsize=1024)
 def _extract_keywords_cached(text: str) -> frozenset[str]:
     """Extract key words from title (cached)."""
+    # First extract model names to preserve them as units
+    model_names = _extract_model_names(text)
+
+    # Remove model names from text before splitting to avoid double-counting
+    text_cleaned = text
+    for model in _MODEL_NAME_PATTERN.findall(text):
+        text_cleaned = text_cleaned.replace(model, " ")
+
     # Remove punctuation and split
-    words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text.lower())
+    words = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text_cleaned.lower())
     # Filter short words and stopwords
     stopwords = {
         "的",
@@ -171,7 +231,9 @@ def _extract_keywords_cached(text: str) -> frozenset[str]:
         "do",
         "does",
     }
-    return frozenset(w for w in words if len(w) > 1 and w not in stopwords)
+    keywords = frozenset(w for w in words if len(w) > 1 and w not in stopwords)
+    # Combine keywords with model names for better matching
+    return keywords | model_names
 
 
 def _get_hn_discussion_type(title: str) -> Optional[str]:
@@ -387,6 +449,7 @@ class EventStreamProcessor:
         cls._clusters_cache.clear()
         _extract_entities_cached.cache_clear()
         _extract_keywords_cached.cache_clear()
+        _extract_model_names.cache_clear()
 
     def _update_cluster_centroid(
         self, cluster_id: int, item: ContentItem, is_initial: bool = False
@@ -486,10 +549,11 @@ class EventStreamProcessor:
         """
         Find potential cluster matches using hybrid similarity (rule-based + semantic).
 
-        Rule-based scoring breakdown (max 1.0):
-        - Title similarity (Jaccard): up to 0.5 (highest weight for content match)
+        Rule-based scoring breakdown (can exceed 1.0, but that's fine):
+        - Model name match: 0.40 (single) or 0.50 (multiple) - highest priority
+        - Title similarity (Jaccard): up to 0.35
         - Entity overlap: up to 0.25
-        - Keyword overlap: up to 0.15
+        - Keyword overlap: up to 0.10
         - Category match: 0.05 (reduced - don't want to block cross-category)
         - Time proximity: 0.05
 
@@ -499,6 +563,7 @@ class EventStreamProcessor:
         Special handling:
         - HN discussion posts (Ask HN, Show HN, etc.) with different types are penalized
           to prevent incorrect clustering
+        - AI model names (Step 3.5 Flash, GLM-4.7, etc.) get priority matching
 
         Args:
             item: Content item to find clusters for
@@ -520,6 +585,7 @@ class EventStreamProcessor:
         item_text = item.title + " " + (item.content or "")
         item_entities = _extract_entities_cached(item_text)
         item_keywords = _extract_keywords_cached(item.title)
+        item_models = _extract_model_names(item.title)
 
         # Check HN discussion type for the item
         item_hn_type = _get_hn_discussion_type(item.title)
@@ -540,27 +606,50 @@ class EventStreamProcessor:
                 # Different HN discussion types should not cluster together
                 continue
 
-            # 1. Title similarity (most important - up to 0.5)
+            # 0. Model name match (highest priority - up to 0.50)
+            # This catches cases like "Step 3.5 Flash" appearing in different articles
+            # Even a single model name match is a strong signal
+            cluster_models = _extract_model_names(cluster.event_title)
+            model_overlap = item_models & cluster_models
+            if model_overlap:
+                # Strong signal: same model name means likely same event
+                # Single match: 0.40, two+ matches: 0.50
+                model_score = 0.40 if len(model_overlap) == 1 else 0.50
+                rule_score += model_score
+                method = "model"  # Any model match sets method to "model"
+                logger.debug(
+                    f"Model match: {model_overlap} between '{item.title[:30]}' "
+                    f"and cluster '{cluster.event_title[:30]}'"
+                )
+
+            # 1. Title similarity (up to 0.35, reduced from 0.5 due to model match)
             title_sim = _calculate_title_similarity(item.title, cluster.event_title)
             if title_sim > 0:
-                rule_score += 0.5 * title_sim
-                if title_sim >= 0.8:
+                rule_score += 0.35 * title_sim
+                if title_sim >= 0.8 and method == "keyword":
                     method = "title"
 
-            # 2. Entity overlap (up to 0.25)
+            # 2. Entity overlap (up to 0.40)
+            # Enhanced: multiple overlapping entities (e.g., GLM + OCR) get higher score
             cluster_entities = _extract_entities_cached(cluster.event_title)
             entity_overlap = item_entities & cluster_entities
             if entity_overlap:
-                entity_score = 0.25 * min(len(entity_overlap), 3) / 3
+                overlap_count = len(entity_overlap)
+                # Base score: up to 0.25 for 1-3 entities
+                entity_score = 0.25 * min(overlap_count, 3) / 3
+                # Bonus for multiple tech-related entities (suggests same product/topic)
+                # e.g., "GLM" + "OCR" strongly suggests same topic
+                if overlap_count >= 2:
+                    entity_score += 0.15  # Bonus for multiple entity overlap
                 rule_score += entity_score
-                if entity_score > 0.1:
+                if entity_score > 0.2 and method == "keyword":
                     method = "entity"
 
-            # 3. Keyword overlap (up to 0.15)
+            # 3. Keyword overlap (up to 0.10, reduced from 0.15)
             cluster_keywords = _extract_keywords_cached(cluster.event_title)
             keyword_overlap = item_keywords & cluster_keywords
             if keyword_overlap:
-                rule_score += 0.15 * min(len(keyword_overlap), 5) / 5
+                rule_score += 0.10 * min(len(keyword_overlap), 5) / 5
 
             # 4. Category match (small bonus - 0.05)
             if item.category and cluster.category == item.category:
@@ -594,9 +683,19 @@ class EventStreamProcessor:
             else:
                 final_score = rule_score
 
-            # Threshold: 0.40 (raised from 0.35 to reduce false positives)
-            # For keyword-only matches, require higher threshold to reduce low-quality matches
-            threshold = 0.50 if method == "keyword" else 0.40
+            # Threshold varies by match method:
+            # - model: 0.35 (model name match is strong signal)
+            # - entity: 0.35 (multiple entity overlap is also strong signal)
+            # - keyword: 0.50 (keyword-only needs higher confidence)
+            # - others: 0.40 (default)
+            if method == "model":
+                threshold = 0.35
+            elif method == "entity":
+                threshold = 0.35  # Lowered from 0.40 for entity matches
+            elif method == "keyword":
+                threshold = 0.50
+            else:
+                threshold = 0.40
             if final_score >= threshold:
                 candidates.append(
                     ClusterCandidate(

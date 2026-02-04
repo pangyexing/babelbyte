@@ -61,11 +61,32 @@ class SentenceTransformersProvider(EmbeddingProvider):
         """Lazy load the model."""
         if self._model is None:
             try:
-                from sentence_transformers import SentenceTransformer
-                logger.info(f"Loading sentence-transformers model: {self.model_name}")
-                self._model = SentenceTransformer(self.model_name)
+                # Suppress verbose loading messages from transformers/sentence-transformers
+                import logging as _logging
+                import warnings
+
+                # Save original levels
+                st_logger = _logging.getLogger("sentence_transformers")
+                tf_logger = _logging.getLogger("transformers")
+                orig_st_level = st_logger.level
+                orig_tf_level = tf_logger.level
+
+                # Suppress during load
+                st_logger.setLevel(_logging.WARNING)
+                tf_logger.setLevel(_logging.WARNING)
+
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=FutureWarning)
+                    from sentence_transformers import SentenceTransformer
+
+                    logger.info(f"Loading embedding model: {self.model_name}")
+                    self._model = SentenceTransformer(self.model_name)
+
+                # Restore original levels
+                st_logger.setLevel(orig_st_level)
+                tf_logger.setLevel(orig_tf_level)
+
                 self._dimension = self._model.get_sentence_embedding_dimension()
-                logger.info(f"Model loaded with dimension: {self._dimension}")
             except ImportError:
                 raise ImportError(
                     "sentence-transformers not installed. "

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -298,12 +298,17 @@ class JobRunner:
 
         return list(results)
 
-    def process_content(self, limit: int = 500) -> int:
+    def process_content(
+        self,
+        limit: int = 500,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> int:
         """
         Process unprocessed content with AI.
 
         Args:
             limit: Maximum items to process.
+            progress_callback: Optional callback(stage, current, total) for progress updates.
 
         Returns:
             Number of items processed.
@@ -312,7 +317,9 @@ class JobRunner:
         db = self.get_db()
 
         generator = DigestGenerator(db=db, use_mock=self.use_mock)
-        processed = generator.process_unprocessed_items(limit=limit)
+        processed = generator.process_unprocessed_items(
+            limit=limit, progress_callback=progress_callback
+        )
 
         logger.info(f"Processing job completed: {processed} items processed")
         return processed
