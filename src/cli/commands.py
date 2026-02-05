@@ -17,14 +17,21 @@ def setup_logging():
 
     settings = get_settings()
 
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.WARNING)
+    file_handler = logging.FileHandler(settings.logging.path, encoding="utf-8")
+
     logging.basicConfig(
         level=getattr(logging, settings.logging.level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(settings.logging.path, encoding="utf-8"),
-        ],
+        handlers=[stream_handler, file_handler],
     )
+
+    for logger_name in [
+        "httpx", "httpcore", "urllib3", "sentence_transformers",
+        "transformers", "huggingface_hub", "filelock", "apscheduler",
+    ]:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 @click.group()

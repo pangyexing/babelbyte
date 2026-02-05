@@ -89,7 +89,7 @@ class JobRunner:
             asyncio.set_event_loop(loop)
             results = loop.run_until_complete(
                 self._fetch_all_async(
-                    reddit_subs, twitter_subs, hackernews_subs, rss_subs, progress_callback
+                    reddit_subs, twitter_subs, hackernews_subs, rss_subs
                 )
             )
             loop.close()
@@ -101,7 +101,7 @@ class JobRunner:
             results = []
 
         # Process results and store items
-        for result, sub in results:
+        for i, (result, sub) in enumerate(results):
             try:
                 if result.success:
                     new_count = 0
@@ -131,6 +131,9 @@ class JobRunner:
                 stats["errors"] += 1
                 logger.error(f"Error processing {sub.display_name}: {e}")
 
+            if progress_callback:
+                progress_callback(sub.display_name, i + 1, len(results), stats["new_items"])
+
         logger.info(
             f"Fetch job completed: {stats['fetched']}/{stats['total']} successful, "
             f"{stats['new_items']} new items"
@@ -143,7 +146,6 @@ class JobRunner:
         twitter_subs: List[Subscription],
         hackernews_subs: List[Subscription] = None,
         rss_subs: List[Subscription] = None,
-        progress_callback=None,
     ) -> List[Tuple[FetchResult, Subscription]]:
         """
         Fetch all subscriptions asynchronously with optimized parallelism.
