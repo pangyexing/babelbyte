@@ -1157,7 +1157,7 @@ class BulletinTemplate(VideoTemplate):
         center_y = cfg.height // 2
 
         # Main title
-        title_text = "巴别简报"
+        title_text = "巴别情报站"
         title_bbox = title_font.getbbox(title_text)
         title_x = (cfg.width - title_bbox[2]) // 2
         title_y = center_y - 100
@@ -1662,7 +1662,7 @@ class BulletinTemplate(VideoTemplate):
         draw.text((text_x, text_y), cta_text, font=cta_font, fill=self.GLOW_WHITE)
 
         # Subtitle below
-        subtitle_text = "巴别简报 · 快人一步"
+        subtitle_text = "巴别情报站 · 快人一步"
         subtitle_bbox = subtitle_font.getbbox(subtitle_text)
         subtitle_x = (cfg.width - subtitle_bbox[2]) // 2
         subtitle_y = button_y + button_height + 40
@@ -1682,7 +1682,7 @@ class BulletinTemplate(VideoTemplate):
         """Render cover slide (thumbnail) for the video.
 
         The cover is optimized for video thumbnails with eye-catching design:
-        - Large brand name "巴别简报"
+        - Large brand name "巴别情报站"
         - Date and event count
         - Top headline preview to attract clicks
 
@@ -1712,8 +1712,8 @@ class BulletinTemplate(VideoTemplate):
         center_x = cfg.width // 2
         center_y = cfg.height // 2
 
-        # Brand name "巴别简报" at top with large glow effect
-        brand_text = "巴别简报"
+        # Brand name "巴别情报站" at top with large glow effect
+        brand_text = "巴别情报站"
         brand_bbox = brand_font.getbbox(brand_text)
         brand_x = (cfg.width - brand_bbox[2]) // 2
         brand_y = cfg.padding + 150

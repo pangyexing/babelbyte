@@ -342,7 +342,7 @@ class VideoGenerator:
         # Slide 5: CTA
         slides.append(
             SlideContent(
-                title="关注巴别简报",
+                title="关注巴别情报站",
                 body="获取更多资讯",
                 category=category,
                 duration=2.0,
@@ -357,7 +357,7 @@ class VideoGenerator:
         parts = []
 
         # Opening
-        parts.append(f"欢迎收看巴别简报。{item.title}")
+        parts.append(f"欢迎收看巴别情报站。{item.title}")
 
         # Summary
         if item.summary:
@@ -382,7 +382,7 @@ class VideoGenerator:
             parts.append(f"总结来说，{item.one_liner}")
 
         # Closing
-        parts.append("感谢收看巴别简报，关注我们获取更多资讯。")
+        parts.append("感谢收看巴别情报站，关注我们获取更多资讯。")
 
         return "。".join(parts)
 
