@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 class TemplateType(Enum):
@@ -79,20 +80,17 @@ class VideoTemplate:
         self._font_cache = {}
 
     def _create_gradient_background(self, category: Optional[str] = None) -> Image.Image:
-        """Create a gradient background image."""
+        """Create a gradient background image using numpy vectorization."""
         cfg = self.config
-        img = Image.new("RGB", (cfg.width, cfg.height), cfg.bg_color)
+        top = np.array(cfg.bg_gradient_top, dtype=np.float64)
+        bottom = np.array(cfg.bg_gradient_bottom, dtype=np.float64)
 
-        # Create vertical gradient
-        for y in range(cfg.height):
-            ratio = y / cfg.height
-            r = int(cfg.bg_gradient_top[0] * (1 - ratio) + cfg.bg_gradient_bottom[0] * ratio)
-            g = int(cfg.bg_gradient_top[1] * (1 - ratio) + cfg.bg_gradient_bottom[1] * ratio)
-            b = int(cfg.bg_gradient_top[2] * (1 - ratio) + cfg.bg_gradient_bottom[2] * ratio)
-            for x in range(cfg.width):
-                img.putpixel((x, y), (r, g, b))
+        ratios = np.linspace(0, 1, cfg.height).reshape(-1, 1, 1)
+        arr = (top * (1 - ratios) + bottom * ratios).astype(np.uint8)
+        # Broadcast to full width
+        arr = np.broadcast_to(arr, (cfg.height, cfg.width, 3)).copy()
 
-        return img
+        return Image.fromarray(arr, "RGB")
 
     def _get_background(self, slide: "SlideContent") -> Image.Image:
         """Get background image for a slide.
@@ -138,30 +136,48 @@ class VideoTemplate:
         draw: ImageDraw.ImageDraw,
         coords: tuple,
         opacity: float = 0.7,
-    ) -> None:
-        """Draw a frosted glass effect card.
+        tint: tuple = (20, 20, 35),
+        blur_radius: int = 15,
+    ) -> Image.Image:
+        """Draw a frosted glass effect card with blur.
+
+        Crops the card region, blurs it, overlays a semi-transparent tint,
+        applies a rounded corner mask, then composites back.
 
         Args:
-            img: Base image to draw on.
-            draw: ImageDraw object.
+            img: Base image to draw on (modified in place and returned).
+            draw: ImageDraw object (will be recreated after composite).
             coords: (x1, y1, x2, y2) card coordinates.
-            opacity: Card opacity (0-1).
+            opacity: Card tint opacity (0-1).
+            tint: Tint color RGB.
+            blur_radius: Gaussian blur radius.
+
+        Returns:
+            Modified image with glass card applied.
         """
         x1, y1, x2, y2 = coords
+        radius = self.config.card_radius
+        card_w = x2 - x1
+        card_h = y2 - y1
 
-        # Create semi-transparent overlay
-        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
+        # Crop card region and blur
+        card_region = img.crop((x1, y1, x2, y2))
+        blurred = card_region.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
-        # Draw rounded rectangle with transparency
+        # Create tinted overlay
         alpha = int(255 * opacity)
-        fill_color = (20, 20, 35, alpha)
+        tint_overlay = Image.new("RGBA", (card_w, card_h), (*tint, alpha))
+        blurred_rgba = blurred.convert("RGBA")
+        blurred_with_tint = Image.alpha_composite(blurred_rgba, tint_overlay)
 
-        # Simple rectangle for now (PIL doesn't support rounded rect with alpha easily)
-        overlay_draw.rectangle(coords, fill=fill_color)
+        # Create rounded corner mask
+        mask = Image.new("L", (card_w, card_h), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle([0, 0, card_w, card_h], radius=radius, fill=255)
 
-        # Composite onto image
-        img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"))
+        # Paste back with mask
+        img.paste(blurred_with_tint.convert("RGB"), (x1, y1), mask)
+        return img
 
     def _draw_card(
         self,
@@ -1011,126 +1027,110 @@ class DataCardTemplate(VideoTemplate):
 
 
 class BulletinTemplate(VideoTemplate):
-    """Bulletin template - 抖音科技风格 (Douyin Tech Style).
+    """Bulletin template - Clean Tech style.
 
-    Visual style featuring neon gradients (purple → blue → cyan),
-    dark backgrounds, large typography, and glowing accents.
-    Designed for young tech-savvy audiences.
+    Visual style: clean, minimal, tech-forward with AI-generated backgrounds.
+    Uses category-based accent colors, frosted glass cards, and subtle shadows
+    instead of neon glow effects. Numpy-vectorized rendering for performance.
     """
 
-    # Neon color palette
-    NEON_PURPLE = (180, 100, 255)
-    NEON_BLUE = (0, 150, 255)
-    NEON_CYAN = (0, 255, 200)
-    DARK_BG = (10, 10, 25)
-    GLOW_WHITE = (255, 255, 255)
+    # Category accent colors (restrained, used as highlights only)
+    CATEGORY_COLORS = {
+        "AI": (100, 120, 255),  # Blue
+        "科技": (100, 120, 255),  # Blue
+        "金融": (255, 180, 60),  # Amber
+        "创业": (80, 200, 160),  # Teal
+        "创新": (80, 200, 160),  # Teal
+        "default": (140, 140, 255),  # Light purple
+    }
 
-    def _create_neon_gradient_background(self) -> Image.Image:
-        """Create a neon gradient background (purple → blue → cyan diagonal)."""
+    DARK_BG = (12, 12, 24)
+    TEXT_WHITE = (255, 255, 255)
+    TEXT_SECONDARY = (190, 195, 210)
+    SHADOW_COLOR = (0, 0, 0)
+
+    def __init__(self, config: Optional[TemplateConfig] = None, image_generator=None):
+        super().__init__(config)
+        self._image_generator = image_generator
+
+    def _get_accent_color(self, category: str) -> tuple:
+        """Get accent color for a category."""
+        return self.CATEGORY_COLORS.get(category, self.CATEGORY_COLORS["default"])
+
+    def _create_category_gradient(self, category: Optional[str] = None) -> Image.Image:
+        """Create a dark gradient background tinted by category.
+
+        Uses numpy vectorization instead of putpixel loops.
+        """
         cfg = self.config
-        img = Image.new("RGB", (cfg.width, cfg.height), self.DARK_BG)
+        accent = np.array(self._get_accent_color(category or "default"), dtype=np.float64)
+        bg = np.array(self.DARK_BG, dtype=np.float64)
 
-        # Create diagonal gradient
-        for y in range(cfg.height):
-            for x in range(cfg.width):
-                # Diagonal ratio
-                ratio = (x / cfg.width + y / cfg.height) / 2
+        # Vertical gradient: subtle category tint at top, pure dark at bottom
+        ratios = np.linspace(0.12, 0.0, cfg.height).reshape(-1, 1, 1)
+        arr = (bg * (1 - ratios) + accent * ratios).astype(np.uint8)
+        arr = np.broadcast_to(arr, (cfg.height, cfg.width, 3)).copy()
 
-                if ratio < 0.5:
-                    # Purple to blue
-                    local_ratio = ratio * 2
-                    r = int(
-                        self.NEON_PURPLE[0] * (1 - local_ratio) + self.NEON_BLUE[0] * local_ratio
-                    )
-                    g = int(
-                        self.NEON_PURPLE[1] * (1 - local_ratio) + self.NEON_BLUE[1] * local_ratio
-                    )
-                    b = int(
-                        self.NEON_PURPLE[2] * (1 - local_ratio) + self.NEON_BLUE[2] * local_ratio
-                    )
-                else:
-                    # Blue to cyan
-                    local_ratio = (ratio - 0.5) * 2
-                    r = int(self.NEON_BLUE[0] * (1 - local_ratio) + self.NEON_CYAN[0] * local_ratio)
-                    g = int(self.NEON_BLUE[1] * (1 - local_ratio) + self.NEON_CYAN[1] * local_ratio)
-                    b = int(self.NEON_BLUE[2] * (1 - local_ratio) + self.NEON_CYAN[2] * local_ratio)
+        return Image.fromarray(arr, "RGB")
 
-                # Apply to dark background with low opacity
-                bg = self.DARK_BG
-                opacity = 0.15
-                final_r = int(bg[0] * (1 - opacity) + r * opacity)
-                final_g = int(bg[1] * (1 - opacity) + g * opacity)
-                final_b = int(bg[2] * (1 - opacity) + b * opacity)
-                img.putpixel((x, y), (final_r, final_g, final_b))
+    def _get_ai_background(self, category: str, headline: str = "") -> Optional[Image.Image]:
+        """Get an AI-generated background image if available.
 
-        return img
+        Falls back to None (caller should use gradient).
+        """
+        if self._image_generator is None:
+            return None
 
-    def _draw_glow_border(
+        try:
+            return self._image_generator.generate_background(
+                category=category,
+                headline=headline,
+                width=self.config.width,
+                height=self.config.height,
+            )
+        except Exception:
+            return None
+
+    def _get_bulletin_background(
+        self, category: str = "default", headline: str = ""
+    ) -> Image.Image:
+        """Get background: AI-generated if available, otherwise category gradient."""
+        bg = self._get_ai_background(category, headline)
+        if bg is not None:
+            return bg
+        return self._create_category_gradient(category)
+
+    def _draw_progress_bar(self, draw: ImageDraw.ImageDraw, current: int, total: int, color: tuple):
+        """Draw a thin progress bar at the top of the slide."""
+        cfg = self.config
+        bar_height = 4
+        bar_y = 0
+        full_width = cfg.width
+
+        # Background bar (dim)
+        draw.rectangle([0, bar_y, full_width, bar_y + bar_height], fill=(40, 40, 60))
+
+        # Progress bar (colored)
+        if total > 0:
+            progress_width = int(full_width * current / total)
+            draw.rectangle([0, bar_y, progress_width, bar_y + bar_height], fill=color)
+
+    def _draw_text_shadow(
         self,
         draw: ImageDraw.ImageDraw,
-        coords: tuple,
-        color: tuple,
-        thickness: int = 3,
-        glow_size: int = 6,
+        position: tuple,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        fill: tuple,
+        shadow_offset: int = 2,
     ):
-        """Draw a glowing border effect.
-
-        Args:
-            draw: ImageDraw object.
-            coords: (x1, y1, x2, y2) rectangle coordinates.
-            color: Border color (RGB).
-            thickness: Border thickness.
-            glow_size: Size of glow effect.
-        """
-        x1, y1, x2, y2 = coords
-        radius = self.config.card_radius
-
-        # Draw multiple layers for glow effect (outer to inner, fading)
-        for i in range(glow_size, 0, -1):
-            glow_color = (
-                min(255, color[0] + 50),
-                min(255, color[1] + 50),
-                min(255, color[2] + 50),
-            )
-            offset = i
-            draw.rounded_rectangle(
-                [x1 - offset, y1 - offset, x2 + offset, y2 + offset],
-                radius=radius + offset,
-                outline=glow_color,
-                width=1,
-            )
-
-        # Main border
-        draw.rounded_rectangle(
-            coords,
-            radius=radius,
-            outline=color,
-            width=thickness,
-        )
-
-    def _draw_scan_lines(self, img: Image.Image, opacity: float = 0.03):
-        """Add subtle scan line effect for tech aesthetic.
-
-        Args:
-            img: Image to modify.
-            opacity: Line opacity.
-        """
-        cfg = self.config
-        draw = ImageDraw.Draw(img)
-
-        # Draw horizontal lines every 4 pixels
-        line_color = (255, 255, 255)
-        for y in range(0, cfg.height, 4):
-            if y % 8 == 0:
-                draw.line(
-                    [(0, y), (cfg.width, y)],
-                    fill=(
-                        int(line_color[0] * opacity),
-                        int(line_color[1] * opacity),
-                        int(line_color[2] * opacity),
-                    ),
-                    width=1,
-                )
+        """Draw text with a subtle drop shadow for readability."""
+        x, y = position
+        # Shadow
+        shadow = tuple(min(255, c // 4) for c in self.SHADOW_COLOR)
+        draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=shadow)
+        # Main text
+        draw.text((x, y), text, font=font, fill=fill)
 
     def render_opening_slide(self, date_str: str, event_count: int) -> Image.Image:
         """Render opening slide with title and date.
@@ -1143,59 +1143,37 @@ class BulletinTemplate(VideoTemplate):
             Opening slide image.
         """
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        accent = self._get_accent_color("default")
+        img = self._get_bulletin_background("default", "巴别情报站")
         draw = ImageDraw.Draw(img)
-
-        # Add scan lines
-        self._draw_scan_lines(img)
 
         # Fonts
         title_font = self._get_font(cfg.title_font_size + 30, bold=True)
         date_font = self._get_font(cfg.body_font_size)
 
-        # Center position
         center_y = cfg.height // 2
 
-        # Main title
+        # Main title - clean white, single shadow
         title_text = "巴别情报站"
         title_bbox = title_font.getbbox(title_text)
         title_x = (cfg.width - title_bbox[2]) // 2
         title_y = center_y - 100
 
-        # Glow effect for title (draw multiple times with offset)
-        for offset in range(4, 0, -1):
-            glow_alpha = int(255 * (1 - offset / 4) * 0.3)
-            glow_color = (
-                min(255, self.NEON_CYAN[0] + glow_alpha),
-                min(255, self.NEON_CYAN[1] + glow_alpha),
-                min(255, self.NEON_CYAN[2] + glow_alpha),
-            )
-            draw.text(
-                (title_x - offset // 2, title_y),
-                title_text,
-                font=title_font,
-                fill=glow_color,
-            )
+        self._draw_text_shadow(draw, (title_x, title_y), title_text, title_font, self.TEXT_WHITE)
 
-        draw.text((title_x, title_y), title_text, font=title_font, fill=self.GLOW_WHITE)
-
-        # Date and count
+        # Date and count - accent color
         info_text = f"{date_str} · {event_count}件要闻"
         info_bbox = date_font.getbbox(info_text)
         info_x = (cfg.width - info_bbox[2]) // 2
         info_y = title_y + title_bbox[3] + 40
 
-        draw.text((info_x, info_y), info_text, font=date_font, fill=self.NEON_CYAN)
+        draw.text((info_x, info_y), info_text, font=date_font, fill=accent)
 
-        # Decorative lines
+        # Simple decorative line
         line_width = 200
         line_y = info_y + 60
         line_x = (cfg.width - line_width) // 2
-
-        draw.rectangle(
-            [line_x, line_y, line_x + line_width, line_y + 3],
-            fill=self.NEON_PURPLE,
-        )
+        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 3], fill=accent)
 
         return img
 
@@ -1230,11 +1208,14 @@ class BulletinTemplate(VideoTemplate):
         if actions is None:
             actions = []
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        accent = self._get_accent_color(category)
+
+        # Background: AI-generated per event (each event gets unique visual)
+        img = self._get_bulletin_background(category, headline)
         draw = ImageDraw.Draw(img)
 
-        # Add scan lines
-        self._draw_scan_lines(img)
+        # Progress bar at top
+        self._draw_progress_bar(draw, event_number, total_events, accent)
 
         # Fonts
         headline_font = self._get_font(cfg.title_font_size + 20, bold=True)
@@ -1242,41 +1223,29 @@ class BulletinTemplate(VideoTemplate):
         fact_font = self._get_font(cfg.body_font_size)
         caption_font = self._get_font(cfg.caption_font_size)
 
-        # Progress indicator at top
-        progress_y = cfg.padding + 20
-        progress_text = f"{event_number}/{total_events}"
-        draw.text(
-            (cfg.padding, progress_y),
-            progress_text,
-            font=caption_font,
-            fill=self.NEON_PURPLE,
-        )
-
-        # Main card area
+        # Main card area - frosted glass
         card_margin = 50
-        card_top = cfg.padding + 100
+        card_top = cfg.padding + 80
         card_bottom = cfg.height - cfg.padding - 150
         card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
 
-        # Draw glowing border card
-        self._draw_glow_border(draw, card_coords, self.NEON_BLUE, thickness=2)
+        # Frosted glass card
+        img = self._draw_glass_card(img, draw, card_coords, opacity=0.65)
+        draw = ImageDraw.Draw(img)
 
-        # Semi-transparent card fill
-        card_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        card_draw = ImageDraw.Draw(card_overlay)
-        card_draw.rounded_rectangle(
+        # Simple rounded border in accent color
+        draw.rounded_rectangle(
             card_coords,
             radius=cfg.card_radius,
-            fill=(15, 15, 35, 220),
+            outline=(*accent, 180) if len(accent) == 3 else accent,
+            width=2,
         )
-        img = Image.alpha_composite(img.convert("RGBA"), card_overlay).convert("RGB")
-        draw = ImageDraw.Draw(img)
 
         # Content inside card
         content_x = card_margin + 40
-        content_y = card_top + 50
+        content_y = card_top + 40
 
-        # Category tag with neon background
+        # Category tag with accent background
         tag_text = f"#{category}"
         tag_bbox = caption_font.getbbox(tag_text)
         tag_padding = 12
@@ -1291,25 +1260,22 @@ class BulletinTemplate(VideoTemplate):
                 content_y + tag_height,
             ),
             radius=tag_height // 2,
-            fill=self.NEON_PURPLE,
+            fill=accent,
         )
         draw.text(
             (content_x + tag_padding, content_y + tag_padding - 2),
             tag_text,
             font=caption_font,
-            fill=self.GLOW_WHITE,
+            fill=self.DARK_BG,
         )
 
         content_y += tag_height + 30
 
-        # Headline (large, white, with glow effect)
+        # Headline - white, clean
         headline_lines = self._wrap_text(headline, headline_font, cfg.width - 2 * card_margin - 80)
         for line in headline_lines[:2]:
-            draw.text(
-                (content_x, content_y),
-                line,
-                font=headline_font,
-                fill=self.GLOW_WHITE,
+            self._draw_text_shadow(
+                draw, (content_x, content_y), line, headline_font, self.TEXT_WHITE
             )
             content_y += int((cfg.title_font_size + 20) * cfg.line_spacing)
 
@@ -1319,122 +1285,92 @@ class BulletinTemplate(VideoTemplate):
         if summary:
             summary_lines = self._wrap_text(summary, summary_font, cfg.width - 2 * card_margin - 80)
             for line in summary_lines[:3]:
-                draw.text(
-                    (content_x, content_y),
-                    line,
-                    font=summary_font,
-                    fill=(200, 200, 220),
-                )
+                draw.text((content_x, content_y), line, font=summary_font, fill=self.TEXT_SECONDARY)
                 content_y += int((cfg.body_font_size + 8) * cfg.line_spacing)
 
         content_y += 20
 
         # One-liner (highlighted box)
         if one_liner:
-            # Draw highlighted background for one-liner
             one_liner_lines = self._wrap_text(
                 one_liner, fact_font, cfg.width - 2 * card_margin - 100
             )
             ol_height = len(one_liner_lines[:2]) * int(cfg.body_font_size * 1.3) + 30
 
-            # Use alpha composite for semi-transparent background
+            # Semi-transparent highlight box
             ol_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
             ol_draw = ImageDraw.Draw(ol_overlay)
             ol_draw.rounded_rectangle(
                 (content_x, content_y, cfg.width - card_margin - 40, content_y + ol_height),
                 radius=12,
-                fill=(0, 80, 60, 180),  # Dark cyan tint
+                fill=(accent[0] // 6, accent[1] // 6, accent[2] // 6, 160),
             )
             img = Image.alpha_composite(img.convert("RGBA"), ol_overlay).convert("RGB")
             draw = ImageDraw.Draw(img)
 
             # Left accent bar
             draw.rectangle(
-                [content_x, content_y + 8, content_x + 6, content_y + ol_height - 8],
-                fill=self.NEON_CYAN,
+                [content_x, content_y + 8, content_x + 5, content_y + ol_height - 8],
+                fill=accent,
             )
 
-            # One-liner text
             ol_text_y = content_y + 12
             for line in one_liner_lines[:2]:
-                draw.text(
-                    (content_x + 20, ol_text_y),
-                    line,
-                    font=fact_font,
-                    fill=self.GLOW_WHITE,
-                )
+                draw.text((content_x + 20, ol_text_y), line, font=fact_font, fill=self.TEXT_WHITE)
                 ol_text_y += int(cfg.body_font_size * 1.3)
             content_y += ol_height + 15
 
-        # Impact assessment - unified style with fact_font
+        # Impact assessment
         if impact:
-            # Impact icon/bullet - vertically centered with text
             text_bbox = fact_font.getbbox("影响")
             text_height = text_bbox[3] - text_bbox[1]
-            bullet_size = 12
-            # Add text_bbox[1] to account for font top offset
+            bullet_size = 10
             bullet_top = content_y + 2 + text_bbox[1] + (text_height - bullet_size) // 2
             draw.ellipse(
                 [content_x, bullet_top, content_x + bullet_size, bullet_top + bullet_size],
-                fill=self.NEON_PURPLE,
+                fill=accent,
             )
-            # Full impact text with label
             impact_text = f"影响：{impact}"
             impact_lines = self._wrap_text(
                 impact_text, fact_font, cfg.width - 2 * card_margin - 100
             )
             for line in impact_lines[:2]:
                 draw.text(
-                    (content_x + 22, content_y + 2),
-                    line,
-                    font=fact_font,
-                    fill=(200, 200, 220),
+                    (content_x + 20, content_y + 2), line, font=fact_font, fill=self.TEXT_SECONDARY
                 )
                 content_y += int(cfg.body_font_size * 1.3)
             content_y += 10
 
-        # Actions - "建议:" header with bullet, then arrow list items
+        # Actions
         if actions:
-            # Header: bullet + "建议:" - vertically centered with text
             text_bbox = fact_font.getbbox("建议")
             text_height = text_bbox[3] - text_bbox[1]
-            bullet_size = 12
-            # Add text_bbox[1] to account for font top offset
+            bullet_size = 10
             bullet_top = content_y + 2 + text_bbox[1] + (text_height - bullet_size) // 2
             draw.ellipse(
                 [content_x, bullet_top, content_x + bullet_size, bullet_top + bullet_size],
-                fill=self.NEON_CYAN,
+                fill=accent,
             )
-            draw.text(
-                (content_x + 22, content_y + 2),
-                "建议:",
-                font=fact_font,
-                fill=self.NEON_CYAN,
-            )
+            draw.text((content_x + 20, content_y + 2), "建议:", font=fact_font, fill=accent)
             content_y += int(cfg.body_font_size * 1.3) + 5
 
-            # Action items with arrow prefix (no bullet)
-            arrow_indent = content_x + 22
-            for i, action in enumerate(actions[:2]):
-                arrow_color = self.NEON_CYAN if i == 0 else self.NEON_BLUE
+            arrow_indent = content_x + 20
+            for action in actions[:2]:
                 prefix = "→ "
-                draw.text(
-                    (arrow_indent, content_y + 2),
-                    prefix,
-                    font=fact_font,
-                    fill=arrow_color,
-                )
+                draw.text((arrow_indent, content_y + 2), prefix, font=fact_font, fill=accent)
                 prefix_width = fact_font.getbbox(prefix)[2]
                 action_lines = self._wrap_text(
                     action, fact_font, cfg.width - 2 * card_margin - 100 - prefix_width
                 )
-                draw.text(
-                    (arrow_indent + prefix_width, content_y + 2),
-                    action_lines[0] if action_lines else "",
-                    font=fact_font,
-                    fill=self.GLOW_WHITE,
-                )
-                content_y += int(cfg.body_font_size * 1.3) + 5
+                for line in action_lines[:2]:
+                    draw.text(
+                        (arrow_indent + prefix_width, content_y + 2),
+                        line,
+                        font=fact_font,
+                        fill=self.TEXT_WHITE,
+                    )
+                    content_y += int(cfg.body_font_size * 1.3)
+                content_y += 5
 
         # Source badge at bottom right
         badge_text = f"综合{source_count}家报道"
@@ -1446,14 +1382,9 @@ class BulletinTemplate(VideoTemplate):
             draw,
             (badge_x, badge_y, badge_x + badge_bbox[2] + 30, badge_y + badge_bbox[3] + 16),
             radius=20,
-            fill=self.NEON_CYAN,
+            fill=accent,
         )
-        draw.text(
-            (badge_x + 15, badge_y + 5),
-            badge_text,
-            font=caption_font,
-            fill=self.DARK_BG,
-        )
+        draw.text((badge_x + 15, badge_y + 5), badge_text, font=caption_font, fill=self.DARK_BG)
 
         return img
 
@@ -1474,11 +1405,9 @@ class BulletinTemplate(VideoTemplate):
             Data highlight image.
         """
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        accent = self._get_accent_color("金融")
+        img = self._get_bulletin_background("金融")
         draw = ImageDraw.Draw(img)
-
-        # Add scan lines
-        self._draw_scan_lines(img)
 
         # Fonts
         number_font = self._get_font(150, bold=True)
@@ -1487,42 +1416,29 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # Big number with glow
+        # Big number - clean white with shadow
         number_bbox = number_font.getbbox(number)
         number_x = (cfg.width - number_bbox[2]) // 2
         number_y = center_y - 100
 
-        # Glow effect
-        for offset in range(8, 0, -1):
-            glow_color = (
-                min(255, self.NEON_CYAN[0] + (8 - offset) * 15),
-                min(255, self.NEON_CYAN[1] + (8 - offset) * 15),
-                min(255, self.NEON_CYAN[2] + (8 - offset) * 15),
-            )
-            draw.text(
-                (number_x - offset // 2, number_y - offset // 2),
-                number,
-                font=number_font,
-                fill=glow_color,
-            )
-
-        draw.text((number_x, number_y), number, font=number_font, fill=self.GLOW_WHITE)
+        self._draw_text_shadow(
+            draw, (number_x, number_y), number, number_font, self.TEXT_WHITE, shadow_offset=3
+        )
 
         # Label
         label_bbox = label_font.getbbox(label)
         label_x = (cfg.width - label_bbox[2]) // 2
         label_y = number_y + number_bbox[3] + 30
-
-        draw.text((label_x, label_y), label, font=label_font, fill=self.NEON_CYAN)
+        draw.text((label_x, label_y), label, font=label_font, fill=accent)
 
         # Description
         if description:
-            desc_lines = self._wrap_text(desc_font, cfg.width - 2 * cfg.padding - 100, description)
+            desc_lines = self._wrap_text(description, desc_font, cfg.width - 2 * cfg.padding - 100)
             desc_y = label_y + label_bbox[3] + 40
             for line in desc_lines[:2]:
                 line_bbox = desc_font.getbbox(line)
                 line_x = (cfg.width - line_bbox[2]) // 2
-                draw.text((line_x, desc_y), line, font=desc_font, fill=(180, 180, 200))
+                draw.text((line_x, desc_y), line, font=desc_font, fill=self.TEXT_SECONDARY)
                 desc_y += int(cfg.body_font_size * cfg.line_spacing)
 
         return img
@@ -1540,16 +1456,13 @@ class BulletinTemplate(VideoTemplate):
             Summary slide image.
         """
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        img = self._create_category_gradient()
         draw = ImageDraw.Draw(img)
-
-        # Add scan lines
-        self._draw_scan_lines(img)
 
         # Fonts
         title_font = self._get_font(cfg.title_font_size, bold=True)
         item_font = self._get_font(cfg.body_font_size + 4)
-        number_font = self._get_font(cfg.title_font_size - 10, bold=True)
+        badge_number_font = self._get_font(cfg.body_font_size + 6, bold=True)
 
         y_pos = cfg.padding + 80
 
@@ -1558,27 +1471,23 @@ class BulletinTemplate(VideoTemplate):
         header_bbox = title_font.getbbox(header_text)
         header_x = (cfg.width - header_bbox[2]) // 2
 
-        draw.text((header_x, y_pos), header_text, font=title_font, fill=self.GLOW_WHITE)
+        self._draw_text_shadow(draw, (header_x, y_pos), header_text, title_font, self.TEXT_WHITE)
         y_pos += header_bbox[3] + 50
 
-        # Decorative line
+        # Simple accent line
+        accent = self._get_accent_color("default")
         line_width = 150
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle(
-            [line_x, y_pos, line_x + line_width, y_pos + 3],
-            fill=self.NEON_CYAN,
-        )
+        draw.rectangle([line_x, y_pos, line_x + line_width, y_pos + 3], fill=accent)
         y_pos += 50
 
-        # Headlines list
-        colors = [self.NEON_CYAN, self.NEON_BLUE, self.NEON_PURPLE]
-        # Use larger font for numbers
-        badge_number_font = self._get_font(cfg.body_font_size + 6, bold=True)
-
+        # Headlines list - use per-item category colors for badge
         for i, headline in enumerate(headlines[:5]):
-            color = colors[i % len(colors)]
+            # Cycle through category colors for visual variety
+            color_keys = ["AI", "金融", "创业", "default", "科技"]
+            color = self._get_accent_color(color_keys[i % len(color_keys)])
 
-            # Number badge - slightly larger
+            # Number badge
             badge_size = 44
             badge_x = cfg.padding + 30
             draw.ellipse(
@@ -1586,7 +1495,7 @@ class BulletinTemplate(VideoTemplate):
                 fill=color,
             )
 
-            # Number text - centered in badge (subtract bbox offset for proper positioning)
+            # Number text centered in badge
             num_text = str(i + 1)
             num_bbox = badge_number_font.getbbox(num_text)
             num_width = num_bbox[2] - num_bbox[0]
@@ -1599,15 +1508,23 @@ class BulletinTemplate(VideoTemplate):
             text_x = badge_x + badge_size + 20
             text_max_width = cfg.width - text_x - cfg.padding - 20
             text_lines = self._wrap_text(headline, item_font, text_max_width)
+            line_height = int((cfg.body_font_size + 4) * 1.3)
 
-            # Vertically center text with badge using actual font height
-            headline_bbox = item_font.getbbox(text_lines[0] if text_lines else "A")
-            text_height = headline_bbox[3] - headline_bbox[1]
-            text_y = y_pos + 3 + (badge_size - text_height) // 2 - headline_bbox[1]
-            for line in text_lines[:1]:
-                draw.text((text_x, text_y), line, font=item_font, fill=self.GLOW_WHITE)
-
-            y_pos += badge_size + 30
+            if len(text_lines) <= 1:
+                # Single line: center vertically with badge
+                headline_bbox = item_font.getbbox(text_lines[0] if text_lines else "A")
+                text_height = headline_bbox[3] - headline_bbox[1]
+                text_y = y_pos + 3 + (badge_size - text_height) // 2 - headline_bbox[1]
+                if text_lines:
+                    draw.text((text_x, text_y), text_lines[0], font=item_font, fill=self.TEXT_WHITE)
+                y_pos += badge_size + 30
+            else:
+                # Multi-line: align top with badge
+                text_y = y_pos + 5
+                for line in text_lines[:2]:
+                    draw.text((text_x, text_y), line, font=item_font, fill=self.TEXT_WHITE)
+                    text_y += line_height
+                y_pos += max(badge_size, line_height * min(len(text_lines), 2)) + 20
 
         return img
 
@@ -1618,11 +1535,9 @@ class BulletinTemplate(VideoTemplate):
             Closing slide image.
         """
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        accent = self._get_accent_color("default")
+        img = self._get_bulletin_background("default")
         draw = ImageDraw.Draw(img)
-
-        # Add scan lines
-        self._draw_scan_lines(img)
 
         # Fonts
         cta_font = self._get_font(cfg.title_font_size, bold=True)
@@ -1630,7 +1545,7 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # CTA button with neon border
+        # CTA button - simple rounded rect with accent border
         cta_text = "关注了解更多"
         cta_bbox = cta_font.getbbox(cta_text)
         button_padding = 40
@@ -1642,24 +1557,17 @@ class BulletinTemplate(VideoTemplate):
 
         button_coords = (button_x, button_y, button_x + button_width, button_y + button_height)
 
-        # Glowing border button
-        self._draw_glow_border(draw, button_coords, self.NEON_CYAN, thickness=3, glow_size=10)
-
-        # Semi-transparent fill
-        card_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        card_draw = ImageDraw.Draw(card_overlay)
-        card_draw.rounded_rectangle(
-            button_coords,
-            radius=cfg.card_radius,
-            fill=(15, 15, 35, 200),
-        )
-        img = Image.alpha_composite(img.convert("RGBA"), card_overlay).convert("RGB")
+        # Frosted glass button
+        img = self._draw_glass_card(img, draw, button_coords, opacity=0.6)
         draw = ImageDraw.Draw(img)
+
+        # Simple border
+        draw.rounded_rectangle(button_coords, radius=cfg.card_radius, outline=accent, width=2)
 
         # CTA text
         text_x = (cfg.width - cta_bbox[2]) // 2
         text_y = button_y + (button_height - cta_bbox[3]) // 2 - 5
-        draw.text((text_x, text_y), cta_text, font=cta_font, fill=self.GLOW_WHITE)
+        draw.text((text_x, text_y), cta_text, font=cta_font, fill=self.TEXT_WHITE)
 
         # Subtitle below
         subtitle_text = "巴别情报站 · 快人一步"
@@ -1667,9 +1575,7 @@ class BulletinTemplate(VideoTemplate):
         subtitle_x = (cfg.width - subtitle_bbox[2]) // 2
         subtitle_y = button_y + button_height + 40
 
-        draw.text(
-            (subtitle_x, subtitle_y), subtitle_text, font=subtitle_font, fill=self.NEON_PURPLE
-        )
+        draw.text((subtitle_x, subtitle_y), subtitle_text, font=subtitle_font, fill=accent)
 
         return img
 
@@ -1681,11 +1587,6 @@ class BulletinTemplate(VideoTemplate):
     ) -> Image.Image:
         """Render cover slide (thumbnail) for the video.
 
-        The cover is optimized for video thumbnails with eye-catching design:
-        - Large brand name "巴别情报站"
-        - Date and event count
-        - Top headline preview to attract clicks
-
         Args:
             date_str: Date string (e.g., "2月5日").
             event_count: Number of events in bulletin.
@@ -1695,11 +1596,9 @@ class BulletinTemplate(VideoTemplate):
             Cover slide image.
         """
         cfg = self.config
-        img = self._create_neon_gradient_background()
+        accent = self._get_accent_color("default")
+        img = self._get_bulletin_background("default", top_headline or "巴别情报站")
         draw = ImageDraw.Draw(img)
-
-        # Add scan lines
-        self._draw_scan_lines(img)
 
         # Fonts
         brand_font = self._get_font(cfg.title_font_size + 50, bold=True)
@@ -1708,54 +1607,38 @@ class BulletinTemplate(VideoTemplate):
         date_font = self._get_font(cfg.body_font_size)
         caption_font = self._get_font(cfg.caption_font_size)
 
-        # Center position
         center_x = cfg.width // 2
         center_y = cfg.height // 2
 
-        # Brand name "巴别情报站" at top with large glow effect
+        # Brand name - clean white with shadow
         brand_text = "巴别情报站"
         brand_bbox = brand_font.getbbox(brand_text)
         brand_x = (cfg.width - brand_bbox[2]) // 2
         brand_y = cfg.padding + 150
 
-        # Strong glow effect for brand
-        for offset in range(6, 0, -1):
-            glow_alpha = int(255 * (1 - offset / 6) * 0.4)
-            glow_color = (
-                min(255, self.NEON_CYAN[0] + glow_alpha),
-                min(255, self.NEON_CYAN[1] + glow_alpha),
-                min(255, self.NEON_CYAN[2] + glow_alpha),
-            )
-            draw.text(
-                (brand_x - offset // 2, brand_y),
-                brand_text,
-                font=brand_font,
-                fill=glow_color,
-            )
-        draw.text((brand_x, brand_y), brand_text, font=brand_font, fill=self.GLOW_WHITE)
+        self._draw_text_shadow(
+            draw, (brand_x, brand_y), brand_text, brand_font, self.TEXT_WHITE, shadow_offset=3
+        )
 
         # Decorative line below brand
         line_width = 250
         line_y = brand_y + brand_bbox[3] + 30
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle(
-            [line_x, line_y, line_x + line_width, line_y + 4],
-            fill=self.NEON_PURPLE,
-        )
+        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 4], fill=accent)
 
-        # Big event count in center with circle background
+        # Big event count in center with circle
         count_y = center_y - 80
         circle_radius = 100
 
-        # Outer glow circle
+        # Outer glow circle (subtle)
         draw.ellipse(
             [
-                center_x - circle_radius - 20,
-                count_y - 20,
-                center_x + circle_radius + 20,
-                count_y + circle_radius * 2 + 20,
+                center_x - circle_radius - 15,
+                count_y - 15,
+                center_x + circle_radius + 15,
+                count_y + circle_radius * 2 + 15,
             ],
-            fill=(self.NEON_CYAN[0] // 3, self.NEON_CYAN[1] // 3, self.NEON_CYAN[2] // 3),
+            fill=(accent[0] // 4, accent[1] // 4, accent[2] // 4),
         )
 
         # Main circle
@@ -1766,7 +1649,7 @@ class BulletinTemplate(VideoTemplate):
                 center_x + circle_radius,
                 count_y + circle_radius * 2,
             ],
-            fill=self.NEON_CYAN,
+            fill=accent,
         )
 
         # Event count number
@@ -1776,42 +1659,35 @@ class BulletinTemplate(VideoTemplate):
         count_text_y = count_y + circle_radius - count_bbox[3] // 2 - 10
         draw.text((count_text_x, count_text_y), count_text, font=count_font, fill=self.DARK_BG)
 
-        # "件要闻" label below the number
+        # "件要闻" label below
         label_text = "件要闻"
         label_bbox = caption_font.getbbox(label_text)
         label_x = center_x - label_bbox[2] // 2
         label_y = count_y + circle_radius * 2 + 20
-        draw.text((label_x, label_y), label_text, font=date_font, fill=self.GLOW_WHITE)
+        draw.text((label_x, label_y), label_text, font=date_font, fill=self.TEXT_WHITE)
 
         # Date below
         date_y = label_y + 50
         date_bbox = date_font.getbbox(date_str)
         date_x = center_x - date_bbox[2] // 2
-        draw.text((date_x, date_y), date_str, font=date_font, fill=self.NEON_PURPLE)
+        draw.text((date_x, date_y), date_str, font=date_font, fill=accent)
 
-        # Top headline preview at bottom (if provided)
+        # Top headline preview at bottom
         if top_headline:
-            # Semi-transparent card for headline
             card_margin = 50
             card_top = cfg.height - cfg.padding - 200
             card_bottom = cfg.height - cfg.padding - 60
+            card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
 
-            card_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            card_draw = ImageDraw.Draw(card_overlay)
-            card_draw.rounded_rectangle(
-                [card_margin, card_top, cfg.width - card_margin, card_bottom],
-                radius=cfg.card_radius,
-                fill=(15, 15, 35, 220),
-            )
+            # Frosted glass card
+            img = self._draw_glass_card(img, draw, card_coords, opacity=0.7)
+            draw = ImageDraw.Draw(img)
 
             # Left accent bar
-            card_draw.rectangle(
-                [card_margin, card_top + 15, card_margin + 6, card_bottom - 15],
-                fill=(*self.NEON_BLUE, 255),
+            draw.rectangle(
+                [card_margin, card_top + 15, card_margin + 5, card_bottom - 15],
+                fill=accent,
             )
-
-            img = Image.alpha_composite(img.convert("RGBA"), card_overlay).convert("RGB")
-            draw = ImageDraw.Draw(img)
 
             # Headline text
             headline_lines = self._wrap_text(
@@ -1820,10 +1696,7 @@ class BulletinTemplate(VideoTemplate):
             text_y = card_top + 25
             for line in headline_lines[:2]:
                 draw.text(
-                    (card_margin + 25, text_y),
-                    line,
-                    font=headline_font,
-                    fill=self.GLOW_WHITE,
+                    (card_margin + 25, text_y), line, font=headline_font, fill=self.TEXT_WHITE
                 )
                 text_y += int((cfg.body_font_size + 10) * cfg.line_spacing)
 
@@ -1834,7 +1707,6 @@ class BulletinTemplate(VideoTemplate):
 
         For bulletins, use the specific render methods instead.
         """
-        # Default to event card style
         return self.render_event_card(
             headline=slide.title[:10] if slide.title else "新闻",
             summary=slide.body[:50] if slide.body else "",

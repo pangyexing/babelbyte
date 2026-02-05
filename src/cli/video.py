@@ -82,18 +82,27 @@ def generate(
     db = get_db()
 
     try:
-        # Query candidates (fetch more if using AI selection)
+        # Query candidates - only items in event clusters
         fetch_limit = limit * 3 if ai_select else limit
-        items = db.get_undelivered_items(
+        clustered = db.get_undelivered_clustered_items(
             min_importance=min_importance,
             limit=fetch_limit,
         )
 
-        if not items:
-            console.print("[yellow]No content items found matching criteria.[/yellow]")
+        if not clustered:
+            console.print(
+                "[yellow]No clustered content items found matching criteria.[/yellow]"
+            )
             return
 
-        console.print(f"Found {len(items)} candidate items.")
+        # Flatten clustered items, keep sorted by importance
+        items = [item for members in clustered.values() for item in members]
+        items.sort(key=lambda x: (x.importance_score or 0), reverse=True)
+
+        console.print(
+            f"Found {len(items)} candidate items "
+            f"across {len(clustered)} event clusters."
+        )
 
         # AI content selection
         if ai_select:
@@ -375,20 +384,31 @@ def auto_generate(limit, days, min_articles, output_dir, voice, ai_script, dry_r
     "--days", default=1, help="Include clusters from last N days (default: 1 = today only)"
 )
 @click.option("--limit", default=10, help="Maximum number of events in bulletin (default: 10)")
-def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
-    """Generate daily news bulletin from today's event clusters.
+@click.option(
+    "--ai-bg",
+    is_flag=True,
+    help="Use AI-generated backgrounds (requires LocalAI with IMAGE_GEN_ENABLED=true)",
+)
+@click.option(
+    "--all-clusters",
+    is_flag=True,
+    help="Use all recent clusters instead of only those from today's email digest",
+)
+def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit, ai_bg, all_clusters):
+    """Generate daily news bulletin from today's email digest events.
 
-    Creates a unified news broadcast video featuring all event clusters
-    from today, with AI-generated headlines, summaries, and a cohesive
-    script for TTS narration.
+    By default, uses the same event clusters that were included in today's
+    email digest (items marked as delivered today). Use --all-clusters to
+    include all recent clusters regardless of delivery status.
 
     Visual style: 抖音科技风格 (Douyin Tech Style) with neon gradients,
     glowing borders, and large typography optimized for mobile viewing.
 
     Example:
-        bb video bulletin                    # Generate today's bulletin
+        bb video bulletin                    # From today's digest events
         bb video bulletin --dry-run          # Preview without generating
-        bb video bulletin --days 3           # Include last 3 days
+        bb video bulletin --all-clusters     # All recent clusters
+        bb video bulletin --days 3 --all-clusters  # Last 3 days, all clusters
         bb video bulletin --platform shipinhao  # 6:7 aspect ratio
     """
     from datetime import datetime, timedelta
@@ -401,30 +421,64 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
     db = get_db()
 
     try:
-        # Get clusters from recent days
-        clusters = db.get_recent_event_clusters(days=days, limit=50)
+        if all_clusters:
+            # Legacy mode: get all recent clusters by date
+            clusters = db.get_recent_event_clusters(days=days, limit=50)
 
-        if not clusters:
-            console.print(f"[yellow]No event clusters found in the last {days} day(s).[/yellow]")
-            return
+            if not clusters:
+                console.print(
+                    f"[yellow]No event clusters found in the last {days} day(s).[/yellow]"
+                )
+                return
 
-        # Filter by date range and min_articles
-        # Use last_updated_at to get clusters active in the date range
-        cutoff_date = (datetime.now() - timedelta(days=days - 1)).date()
-        filtered_clusters = [
-            c
-            for c in clusters
-            if c.last_updated_at.date() >= cutoff_date and c.article_count >= min_articles
-        ]
+            # Filter by date range and min_articles (创新/创业 exempt from min_articles)
+            cutoff_date = (datetime.now() - timedelta(days=days - 1)).date()
+            filtered_clusters = [
+                c
+                for c in clusters
+                if c.last_updated_at.date() >= cutoff_date
+                and (c.article_count >= min_articles or c.category in ("创新", "创业"))
+            ]
 
-        if not filtered_clusters:
-            date_range = "today" if days == 1 else f"the last {days} days"
-            msg = f"No event clusters from {date_range} with >= {min_articles} articles."
-            console.print(f"[yellow]{msg}[/yellow]")
-            console.print(
-                f"[dim]Found {len(clusters)} clusters total, but none match the criteria.[/dim]"
-            )
-            return
+            if not filtered_clusters:
+                date_range = "today" if days == 1 else f"the last {days} days"
+                msg = f"No event clusters from {date_range} with >= {min_articles} articles."
+                console.print(f"[yellow]{msg}[/yellow]")
+                console.print(
+                    f"[dim]Found {len(clusters)} clusters total, "
+                    f"but none match the criteria.[/dim]"
+                )
+                return
+        else:
+            # Default: get clusters from today's email digest (delivered today)
+            target_date = (datetime.now() - timedelta(days=days - 1)).date()
+            clusters = db.get_delivered_event_clusters(target_date=target_date, limit=50)
+
+            if not clusters:
+                console.print(
+                    "[yellow]No delivered event clusters found for today's digest.[/yellow]"
+                )
+                console.print(
+                    "[dim]Run 'bb daily' first to send the digest, "
+                    "or use --all-clusters to include all recent clusters.[/dim]"
+                )
+                return
+
+            # Filter by min_articles (创新/创业 exempt)
+            filtered_clusters = [
+                c
+                for c in clusters
+                if c.article_count >= min_articles or c.category in ("创新", "创业")
+            ]
+
+            if not filtered_clusters:
+                msg = f"No delivered clusters with >= {min_articles} articles."
+                console.print(f"[yellow]{msg}[/yellow]")
+                console.print(
+                    f"[dim]Found {len(clusters)} delivered clusters, "
+                    f"but none match the criteria.[/dim]"
+                )
+                return
 
         # Get representative importance for each cluster
         cluster_importance = {}
@@ -436,26 +490,29 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
             else:
                 cluster_importance[cluster.id] = 0
 
-        # Sort: 创业/创新 first, then others by importance and article_count
+        # Sort: 创业/创新 first, then others by article_count and importance
         def sort_key(c):
             is_priority = c.category in ("创业", "创新")
             importance = cluster_importance.get(c.id, 0)
-            return (0 if is_priority else 1, -importance, -c.article_count)
+            return (0 if is_priority else 1, -c.article_count, -importance)
 
         filtered_clusters = sorted(filtered_clusters, key=sort_key)
         total_found = len(filtered_clusters)
         if limit and len(filtered_clusters) > limit:
             filtered_clusters = filtered_clusters[:limit]
 
-        date_range = "today" if days == 1 else f"the last {days} days"
+        source = "today's digest" if not all_clusters else (
+            "today" if days == 1 else f"the last {days} days"
+        )
         if total_found > len(filtered_clusters):
             console.print(
-                f"Found {total_found} event clusters from {date_range}, "
+                f"Found {total_found} event clusters from {source}, "
                 f"using top [green]{len(filtered_clusters)}[/green] (--limit {limit})."
             )
         else:
             console.print(
-                f"Found [green]{len(filtered_clusters)}[/green] event clusters from {date_range}."
+                f"Found [green]{len(filtered_clusters)}[/green] "
+                f"event clusters from {source}."
             )
 
         # Get members for each cluster
@@ -467,7 +524,10 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
 
         # Display preview table
         table_title = (
-            "Today's Event Clusters" if days == 1 else f"Event Clusters (Last {days} Days)"
+            "Today's Digest Events" if not all_clusters else (
+                "Today's Event Clusters" if days == 1
+                else f"Event Clusters (Last {days} Days)"
+            )
         )
         table = Table(title=table_title)
         table.add_column("#", justify="right", width=4)
@@ -533,7 +593,7 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
             voice=voice,
         )
 
-        video_gen = BulletinVideoGenerator(config)
+        video_gen = BulletinVideoGenerator(config, ai_bg=ai_bg)
         video_result = video_gen.generate_from_bulletin(bulletin_result)
 
         if video_result.success:
@@ -545,6 +605,14 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit):
             console.print(f"\n[red]✗[/red] Video generation failed: {video_result.error}")
 
     finally:
+        # Always release GPU memory from image generator
+        try:
+            ig = getattr(getattr(video_gen, "template", None), "_image_generator", None)
+            if ig is not None:
+                ig.unload()
+                console.print("[dim]GPU memory released.[/dim]")
+        except NameError:
+            pass
         db.close()
 
 

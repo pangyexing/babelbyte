@@ -24,11 +24,11 @@ class BulletinItem:
 
     cluster: EventCluster
     members: list[ContentItem]
-    headline: str  # AI-generated short headline (10 chars max)
+    headline: str  # AI-generated short headline (20 chars max)
     summary: str  # AI-generated summary (50 chars max)
-    one_liner: str = ""  # One sentence conclusion
-    impact: str = ""  # Short/long term impact combined
-    actions: list[str] = field(default_factory=list)  # Actionable items (max 2)
+    one_liner: str = ""  # One sentence conclusion (30 chars max)
+    impact: str = ""  # Short/long term impact combined (40 chars max)
+    actions: list[str] = field(default_factory=list)  # Actionable items (max 2, 25 chars each)
     order: int = 0  # Display order in bulletin
 
 
@@ -59,15 +59,19 @@ class BulletinGenerator:
 {events_json}
 
 要求：
-1. 为每个事件生成：
-   - headline: 10字以内的吸睛标题
-   - summary: 50字内的核心摘要
-   - one_liner: 一句话总结（20字以内）
-   - impact: 影响分析（30字以内，如"短期利好XX，长期推动XX"）
-   - actions: 行动建议（最多2条，每条15字以内）
-2. 按重要性排序（返回的顺序就是播报顺序）
+1. 为每个事件生成（必须使用中文）：
+   - headline: 中文吸睛标题（8-15个中文字，不要直接翻译英文标题）
+   - summary: 核心摘要（40-50字）
+   - one_liner: 一句话总结（15-25字）
+   - impact: 影响分析（20-35字，如"短期利好XX，长期推动XX"）
+   - actions: 具体行动建议（最多2条，每条15-25字，必须是完整句子）
+2. 创新/创业类排最前面，其余按报道数量和重要性排序（返回的顺序就是播报顺序）
 3. 使用口语化表达，适合朗读
 4. 突出数字、时间、人物等关键信息
+5. actions必须具体可操作，如"下载体验ACE-Step 1.5音乐生成"，不要写"关注XX的"这种半截话
+6. 【重要】每个字段都必须包含明确主语（公司名/产品名/人物名），禁止省略主体
+   - 正确：headline="OpenAI发布GPT-5" summary="OpenAI正式发布GPT-5，性能提升3倍"
+   - 错误：headline="发布新模型" summary="正式发布新一代大模型，性能大幅提升"
 
 返回JSON数组格式：
 [
@@ -89,7 +93,8 @@ class BulletinGenerator:
 2. 去除重复信息（如标题和摘要说的是同一件事，只保留一次）
 3. 保留关键数字、人名、公司名
 4. 语气自然口语化
-5. 返回JSON数组：[{{"id": 事件ID, "script": "播报文本"}}]
+5. 每句话必须包含明确主语，不要省略"谁做了什么"中的"谁"
+6. 返回JSON数组：[{{"id": 事件ID, "script": "播报文本"}}]
 
 仅返回JSON："""
 
@@ -106,6 +111,7 @@ class BulletinGenerator:
 4. 语气自然、口语化
 5. 不要使用emoji
 6. 总字数300-400字
+7. 每句话必须包含明确主语（公司名/产品名/人物名），不要省略主体
 
 直接返回脚本文本："""
 
@@ -132,6 +138,47 @@ class BulletinGenerator:
 
             self._processor = get_ai_processor()
         return self._processor
+
+    @staticmethod
+    def _extract_headline(cluster: EventCluster, rep: ContentItem = None) -> str:
+        """Extract a meaningful Chinese headline from cluster/member data.
+
+        Tries one_liner first, then summary, then event_title as last resort.
+        Truncates at sentence boundaries when possible.
+        """
+        # Prefer one_liner (usually a concise Chinese conclusion)
+        if rep and rep.one_liner:
+            text = rep.one_liner.strip()
+            if len(text) <= 20:
+                return text
+            # Truncate at punctuation boundary
+            for sep in ("，", "。", "；", "、", ","):
+                idx = text.find(sep, 8)
+                if 8 <= idx <= 20:
+                    return text[:idx]
+            return text[:20]
+
+        # Fall back to summary first sentence
+        if rep and rep.summary:
+            text = rep.summary.strip()
+            for sep in ("。", "，", "；"):
+                idx = text.find(sep)
+                if 0 < idx <= 20:
+                    return text[:idx]
+            if len(text) <= 20:
+                return text
+            return text[:20]
+
+        # Last resort: event_title (may be English)
+        title = cluster.event_title or ""
+        if len(title) <= 20:
+            return title
+        # Try to break at word boundary for English
+        truncated = title[:20]
+        last_space = truncated.rfind(" ")
+        if last_space > 10:
+            return truncated[:last_space]
+        return truncated
 
     def _format_events_for_prompt(
         self,
@@ -161,8 +208,8 @@ class BulletinGenerator:
                 "title": cluster.event_title,
                 "category": cluster.category,
                 "article_count": cluster.article_count,
-                "summary": rep.summary[:150] if rep.summary else "",
-                "one_liner": rep.one_liner[:50] if rep.one_liner else "",
+                "summary": rep.summary[:300] if rep.summary else "",
+                "one_liner": rep.one_liner[:100] if rep.one_liner else "",
                 "importance": rep.importance_score or 5,
             }
 
@@ -171,7 +218,30 @@ class BulletinGenerator:
                 try:
                     kp_data = json.loads(rep.key_points)
                     event["key_points"] = [
-                        kp.get("value", "")[:30] for kp in kp_data[:3] if kp.get("value")
+                        kp.get("value", "")[:60] for kp in kp_data[:3] if kp.get("value")
+                    ]
+                except json.JSONDecodeError:
+                    pass
+
+            # Add impact assessment for better context
+            if rep.impact_assessment:
+                try:
+                    impact_data = json.loads(rep.impact_assessment)
+                    event["impact_info"] = {
+                        "short_term": impact_data.get("short_term", "")[:80],
+                        "long_term": impact_data.get("long_term", "")[:80],
+                    }
+                except json.JSONDecodeError:
+                    pass
+
+            # Add actionable items for better suggestions
+            if rep.actionable_items:
+                try:
+                    action_data = json.loads(rep.actionable_items)
+                    event["original_actions"] = [
+                        a.get("description", "")[:60]
+                        for a in action_data[:3]
+                        if a.get("description")
                     ]
                 except json.JSONDecodeError:
                     pass
@@ -304,15 +374,22 @@ class BulletinGenerator:
                 cluster = cluster_map[cluster_id]
                 members = members_dict.get(cluster_id, [])
 
+                # Build fallback headline from representative member
+                rep = max(members, key=lambda m: m.importance_score or 0) if members else None
+                fallback_headline = self._extract_headline(cluster, rep)
+
+                raw_actions = item_data.get("actions", [])[:2]
+                actions = [a[:25] for a in raw_actions if isinstance(a, str) and a]
+
                 items.append(
                     BulletinItem(
                         cluster=cluster,
                         members=members,
-                        headline=item_data.get("headline", cluster.event_title[:10]),
-                        summary=item_data.get("summary", "")[:50],
-                        one_liner=item_data.get("one_liner", "")[:20],
-                        impact=item_data.get("impact", "")[:30],
-                        actions=item_data.get("actions", [])[:2],
+                        headline=item_data.get("headline") or fallback_headline,
+                        summary=item_data.get("summary", "")[:60],
+                        one_liner=item_data.get("one_liner", "")[:30],
+                        impact=item_data.get("impact", "")[:40],
+                        actions=actions,
                         order=i,
                     )
                 )
@@ -349,11 +426,11 @@ class BulletinGenerator:
             else:
                 cluster_importance[cluster.id] = 0
 
-        # Sort: 创业/创新 first, then others by importance and article_count
+        # Sort: 创业/创新 first, then others by article_count and importance
         def sort_key(c):
             is_priority = c.category in ("创业", "创新")
             importance = cluster_importance.get(c.id, 0)
-            return (0 if is_priority else 1, -importance, -c.article_count)
+            return (0 if is_priority else 1, -c.article_count, -importance)
 
         sorted_clusters = sorted(clusters, key=sort_key)
 
@@ -365,8 +442,11 @@ class BulletinGenerator:
             # Get representative
             rep = max(members, key=lambda m: m.importance_score or 0)
 
+            # Extract headline from one_liner or summary (not raw event_title)
+            headline = self._extract_headline(cluster, rep)
+
             # Extract one_liner
-            one_liner = rep.one_liner[:20] if rep.one_liner else ""
+            one_liner = rep.one_liner[:30] if rep.one_liner else ""
 
             # Extract impact from impact_assessment
             impact = ""
@@ -374,8 +454,13 @@ class BulletinGenerator:
                 try:
                     impact_data = json.loads(rep.impact_assessment)
                     short_term = impact_data.get("short_term", "")
-                    if short_term:
-                        impact = short_term[:30]
+                    long_term = impact_data.get("long_term", "")
+                    if short_term and long_term:
+                        impact = f"短期{short_term[:15]}，长期{long_term[:15]}"
+                    elif short_term:
+                        impact = short_term[:40]
+                    elif long_term:
+                        impact = long_term[:40]
                 except json.JSONDecodeError:
                     pass
 
@@ -385,7 +470,7 @@ class BulletinGenerator:
                 try:
                     action_data = json.loads(rep.actionable_items)
                     actions = [
-                        a.get("description", "")[:15]
+                        a.get("description", "")[:25]
                         for a in action_data[:2]
                         if a.get("description")
                     ]
@@ -396,8 +481,8 @@ class BulletinGenerator:
                 BulletinItem(
                     cluster=cluster,
                     members=members,
-                    headline=cluster.event_title[:10],
-                    summary=rep.summary[:50] if rep.summary else "",
+                    headline=headline,
+                    summary=rep.summary[:60] if rep.summary else "",
                     one_liner=one_liner,
                     impact=impact,
                     actions=actions,
@@ -547,14 +632,16 @@ class BulletinGenerator:
         # Prepare events data for the prompt
         events = []
         for item in items:
-            events.append({
-                "id": item.cluster.id,
-                "headline": item.headline,
-                "summary": item.summary,
-                "one_liner": item.one_liner,
-                "impact": item.impact,
-                "actions": item.actions,
-            })
+            events.append(
+                {
+                    "id": item.cluster.id,
+                    "headline": item.headline,
+                    "summary": item.summary,
+                    "one_liner": item.one_liner,
+                    "impact": item.impact,
+                    "actions": item.actions,
+                }
+            )
 
         prompt = self.DEDUP_SCRIPT_PROMPT.format(
             events_json=json.dumps(events, ensure_ascii=False, indent=2)

@@ -417,6 +417,29 @@ class RuleOptimizationConfig:
 
 
 @dataclass
+class ImageGenConfig:
+    """AI image generation configuration (direct diffusers pipeline)."""
+
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("IMAGE_GEN_ENABLED", "false").lower() == "true"
+    )
+    model_id: str = field(
+        default_factory=lambda: os.getenv(
+            "IMAGE_GEN_MODEL_ID", "black-forest-labs/FLUX.2-klein-4B"
+        )
+    )
+    steps: int = field(default_factory=lambda: int(os.getenv("IMAGE_GEN_STEPS", "4")))
+    timeout: int = field(default_factory=lambda: int(os.getenv("IMAGE_GEN_TIMEOUT", "120")))
+    auto_release: bool = field(
+        default_factory=lambda: os.getenv("IMAGE_GEN_AUTO_RELEASE", "true").lower() == "true"
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        return self.enabled
+
+
+@dataclass
 class DigestConfig:
     """Digest generation configuration."""
 
@@ -646,6 +669,7 @@ class Settings:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     rule_optimization: RuleOptimizationConfig = field(default_factory=RuleOptimizationConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
+    image_gen: ImageGenConfig = field(default_factory=ImageGenConfig)
 
 
 # Global settings instance

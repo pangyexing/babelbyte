@@ -562,7 +562,7 @@ class BulletinVideoGenerator:
     4. Closing slide with CTA
     """
 
-    def __init__(self, config: Optional[VideoConfig] = None):
+    def __init__(self, config: Optional[VideoConfig] = None, ai_bg: bool = False):
         self.config = config or VideoConfig()
         self.tts = EdgeTTS(
             TTSConfig(
@@ -581,7 +581,42 @@ class BulletinVideoGenerator:
             height=self.config.height,
             fps=self.config.fps,
         )
-        self.template = BulletinTemplate(self._template_config)
+
+        # Initialize AI image generator if enabled
+        image_generator = None
+        if ai_bg:
+            image_generator = self._create_image_generator()
+
+        self.template = BulletinTemplate(self._template_config, image_generator=image_generator)
+
+    def _create_image_generator(self):
+        """Create an ImageGenerator from settings, or None if not configured."""
+        try:
+            from config.settings import get_settings
+            from src.video.image_generator import ImageGenerator
+
+            settings = get_settings()
+            ig_cfg = settings.image_gen
+            if ig_cfg.is_configured:
+                return ImageGenerator(
+                    model_id=ig_cfg.model_id,
+                    num_inference_steps=ig_cfg.steps,
+                    timeout=ig_cfg.timeout,
+                )
+        except Exception:
+            pass
+        return None
+
+    def _auto_release_image_generator(self):
+        """Release image generator GPU memory if auto_release is enabled."""
+        try:
+            from config.settings import get_settings
+
+            ig = self.template._image_generator
+            if ig is not None and get_settings().image_gen.auto_release:
+                ig.unload()
+        except Exception:
+            pass
 
     def generate_from_bulletin(
         self,
@@ -714,6 +749,9 @@ class BulletinVideoGenerator:
             final_video.close()
             voice_audio.close()
 
+            # Release GPU memory if auto_release is enabled
+            self._auto_release_image_generator()
+
             return BulletinVideoResult(
                 video_path=output_path,
                 audio_path=audio_path,
@@ -724,6 +762,7 @@ class BulletinVideoGenerator:
             )
 
         except Exception as e:
+            self._auto_release_image_generator()
             return BulletinVideoResult(
                 video_path=output_path,
                 audio_path=audio_dir / "voice.mp3",

@@ -38,8 +38,8 @@ env/
 .env.local
 
 # Database
-data/*.db
-data/*.db-journal
+*.db
+*.db-journal
 
 # Logs
 logs/*.log
@@ -59,6 +59,9 @@ htmlcov/
 
 # Video generation
 videos/
-test_*.png
-test_*.mp3
+*.png
+*.mp3
 *TEMP_MPY*.mp4
+
+# AI model weights and configs (no longer needed for LocalAI)
+models/

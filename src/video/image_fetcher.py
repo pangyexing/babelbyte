@@ -9,8 +9,9 @@ import logging
 import re
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
+import numpy as np
 import requests
 from PIL import Image
 
@@ -241,7 +242,7 @@ class ImageFetcher:
         height: int,
         category: Optional[str] = None,
     ) -> Image.Image:
-        """Create a gradient background.
+        """Create a gradient background using numpy vectorization.
 
         Args:
             width: Image width.
@@ -251,23 +252,20 @@ class ImageFetcher:
         Returns:
             Gradient background image.
         """
-        # Get base color for category
-        base_color = DEFAULT_BACKGROUNDS.get(category, DEFAULT_BACKGROUNDS["default"])
+        base_color = np.array(
+            DEFAULT_BACKGROUNDS.get(category, DEFAULT_BACKGROUNDS["default"]),
+            dtype=np.float64,
+        )
 
-        # Create gradient (top lighter, bottom darker)
-        img = Image.new("RGB", (width, height))
+        # Brightness curve: darker at top and bottom, lighter in middle
+        ratios = np.linspace(0, 1, height)
+        brightness = 1.0 - 0.3 * np.abs(ratios - 0.4)
 
-        for y in range(height):
-            ratio = y / height
-            # Darker at top and bottom, slightly lighter in middle
-            brightness = 1.0 - 0.3 * abs(ratio - 0.4)
-            r = int(base_color[0] * brightness)
-            g = int(base_color[1] * brightness)
-            b = int(base_color[2] * brightness)
-            for x in range(width):
-                img.putpixel((x, y), (r, g, b))
+        # Shape (height, 1, 3) * (height, 1, 1) -> broadcast to (height, width, 3)
+        arr = (base_color.reshape(1, 1, 3) * brightness.reshape(-1, 1, 1)).astype(np.uint8)
+        arr = np.broadcast_to(arr, (height, width, 3)).copy()
 
-        return img
+        return Image.fromarray(arr, "RGB")
 
 
 # Singleton instance

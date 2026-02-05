@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
 
@@ -1341,6 +1341,45 @@ class Database:
             rows = await cursor.fetchall()
             return [self._row_to_content_item(row) for row in rows]
 
+    async def get_delivered_event_clusters(
+        self, target_date: Optional[date] = None, limit: int = 50
+    ) -> list[EventCluster]:
+        """Get event clusters whose members were delivered on the given date.
+
+        Used by video bulletin to generate videos from the same events
+        that were included in the day's email digest.
+
+        Args:
+            target_date: The date to query (default: today)
+            limit: Maximum clusters to return
+
+        Returns:
+            List of EventCluster that had members delivered on that date
+        """
+        if target_date is None:
+            target_date = datetime.now().date()
+
+        date_start = datetime.combine(target_date, time.min).isoformat()
+        date_end = datetime.combine(target_date, time.max).isoformat()
+
+        async with self._connection.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT DISTINCT ec.*
+                FROM event_clusters ec
+                INNER JOIN event_members em ON ec.id = em.event_cluster_id
+                INNER JOIN content_items c ON c.id = em.content_item_id
+                WHERE c.delivered = 1
+                  AND c.delivered_at >= ?
+                  AND c.delivered_at <= ?
+                ORDER BY ec.last_updated_at DESC
+                LIMIT ?
+                """,
+                (date_start, date_end, limit),
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_event_cluster(row) for row in rows]
+
     async def get_undelivered_clustered_items(
         self, min_importance: int = 5, limit: int = 50
     ) -> dict[int, list[ContentItem]]:
@@ -2534,6 +2573,11 @@ class SyncDatabase:
 
     def get_event_members(self, cluster_id: int) -> list[ContentItem]:
         return self._run(self._async_db.get_event_members(cluster_id))
+
+    def get_delivered_event_clusters(
+        self, target_date: Optional[date] = None, limit: int = 50
+    ) -> list[EventCluster]:
+        return self._run(self._async_db.get_delivered_event_clusters(target_date, limit))
 
     def get_undelivered_clustered_items(
         self, min_importance: int = 5, limit: int = 50
