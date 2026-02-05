@@ -614,7 +614,6 @@ class BulletinGenerator:
         """Generate per-slide scripts for precise audio sync.
 
         Generates scripts matching the slide structure:
-        0. Cover slide (thumbnail)
         1. Opening slide
         2. N event cards (using AI-deduplicated scripts)
         3. Summary slide (if N > 1)
@@ -627,17 +626,13 @@ class BulletinGenerator:
             List of script segments, one per slide.
         """
         if not items:
-            return ["巴别情报站。", "暂无巴别情报站。", "感谢收看。"]
+            return ["暂无巴别情报站。", "感谢收看。"]
 
         # Generate deduplicated scripts using AI
         deduped = self._generate_deduped_scripts(items)
 
         segments = []
         n_items = len(items)
-
-        # 0. Cover slide script (brief brand intro)
-        cover = "巴别情报站。"
-        segments.append(cover)
 
         # 1. Opening slide script
         opening = f"欢迎收看巴别情报站，今天有{n_items}件大事值得关注。"

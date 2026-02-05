@@ -804,17 +804,9 @@ class BulletinVideoGenerator:
         """
         slides = []
 
+        # 1. Opening slide
         date_str = bulletin_result.date.strftime("%m月%d日")
         event_count = len(bulletin_result.items)
-
-        # 0. Cover slide (thumbnail, used as first frame)
-        top_headline = ""
-        if bulletin_result.items:
-            top_headline = bulletin_result.items[0].headline
-        cover = self.template.render_cover_slide(date_str, event_count, top_headline)
-        slides.append(cover)
-
-        # 1. Opening slide
         opening = self.template.render_opening_slide(date_str, event_count)
         slides.append(opening)
 
