@@ -100,7 +100,7 @@ class BulletinGenerator:
 {bulletins}
 
 要求：
-1. 开头用一句话点明主题（如：今日科技圈有N件大事）
+1. 开头用一句话点明主题（如：欢迎收看巴别简报，今天有N件大事）
 2. 每条新闻之间用过渡语连接（如：另外/此外/值得关注的是）
 3. 结尾有行动号召
 4. 语气自然、口语化
@@ -507,9 +507,9 @@ class BulletinGenerator:
             Simple script text.
         """
         if not items:
-            return "暂无今日科技快报。"
+            return "暂无巴别简报。"
 
-        parts = [f"今日科技圈有{len(items)}件大事值得关注。"]
+        parts = [f"欢迎收看巴别简报，今天有{len(items)}件大事值得关注。"]
 
         transitions = ["首先，", "另外，", "此外，", "值得关注的是，", "最后，"]
 
@@ -525,7 +525,7 @@ class BulletinGenerator:
             if item.impact:
                 parts.append(f"影响：{item.impact}")
 
-        parts.append("以上就是今日科技快报，关注我们获取更多资讯。")
+        parts.append("以上就是今天的巴别简报，关注我们获取更多资讯。")
 
         return "。".join(parts)
 
@@ -614,6 +614,7 @@ class BulletinGenerator:
         """Generate per-slide scripts for precise audio sync.
 
         Generates scripts matching the slide structure:
+        0. Cover slide (thumbnail)
         1. Opening slide
         2. N event cards (using AI-deduplicated scripts)
         3. Summary slide (if N > 1)
@@ -626,7 +627,7 @@ class BulletinGenerator:
             List of script segments, one per slide.
         """
         if not items:
-            return ["暂无今日科技快报。", "感谢收看。"]
+            return ["巴别简报。", "暂无巴别简报。", "感谢收看。"]
 
         # Generate deduplicated scripts using AI
         deduped = self._generate_deduped_scripts(items)
@@ -634,8 +635,12 @@ class BulletinGenerator:
         segments = []
         n_items = len(items)
 
+        # 0. Cover slide script (brief brand intro)
+        cover = "巴别简报。"
+        segments.append(cover)
+
         # 1. Opening slide script
-        opening = f"今日科技圈有{n_items}件大事值得关注。"
+        opening = f"欢迎收看巴别简报，今天有{n_items}件大事值得关注。"
         segments.append(opening)
 
         # 2. Event card scripts - use deduped scripts if available
@@ -660,7 +665,7 @@ class BulletinGenerator:
             segments.append(summary)
 
         # 4. Closing slide script
-        closing = "感谢收看，关注我们获取更多科技资讯。"
+        closing = "感谢收看巴别简报，关注我们获取更多资讯。"
         segments.append(closing)
 
         return segments

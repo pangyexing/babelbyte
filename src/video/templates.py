@@ -1157,7 +1157,7 @@ class BulletinTemplate(VideoTemplate):
         center_y = cfg.height // 2
 
         # Main title
-        title_text = "今日科技快报"
+        title_text = "巴别简报"
         title_bbox = title_font.getbbox(title_text)
         title_x = (cfg.width - title_bbox[2]) // 2
         title_y = center_y - 100
@@ -1662,7 +1662,7 @@ class BulletinTemplate(VideoTemplate):
         draw.text((text_x, text_y), cta_text, font=cta_font, fill=self.GLOW_WHITE)
 
         # Subtitle below
-        subtitle_text = "每日科技资讯 · 快人一步"
+        subtitle_text = "巴别简报 · 快人一步"
         subtitle_bbox = subtitle_font.getbbox(subtitle_text)
         subtitle_x = (cfg.width - subtitle_bbox[2]) // 2
         subtitle_y = button_y + button_height + 40
@@ -1670,6 +1670,162 @@ class BulletinTemplate(VideoTemplate):
         draw.text(
             (subtitle_x, subtitle_y), subtitle_text, font=subtitle_font, fill=self.NEON_PURPLE
         )
+
+        return img
+
+    def render_cover_slide(
+        self,
+        date_str: str,
+        event_count: int,
+        top_headline: str = "",
+    ) -> Image.Image:
+        """Render cover slide (thumbnail) for the video.
+
+        The cover is optimized for video thumbnails with eye-catching design:
+        - Large brand name "巴别简报"
+        - Date and event count
+        - Top headline preview to attract clicks
+
+        Args:
+            date_str: Date string (e.g., "2月5日").
+            event_count: Number of events in bulletin.
+            top_headline: Top headline to preview (optional).
+
+        Returns:
+            Cover slide image.
+        """
+        cfg = self.config
+        img = self._create_neon_gradient_background()
+        draw = ImageDraw.Draw(img)
+
+        # Add scan lines
+        self._draw_scan_lines(img)
+
+        # Fonts
+        brand_font = self._get_font(cfg.title_font_size + 50, bold=True)
+        count_font = self._get_font(cfg.big_number_size, bold=True)
+        headline_font = self._get_font(cfg.body_font_size + 10, bold=True)
+        date_font = self._get_font(cfg.body_font_size)
+        caption_font = self._get_font(cfg.caption_font_size)
+
+        # Center position
+        center_x = cfg.width // 2
+        center_y = cfg.height // 2
+
+        # Brand name "巴别简报" at top with large glow effect
+        brand_text = "巴别简报"
+        brand_bbox = brand_font.getbbox(brand_text)
+        brand_x = (cfg.width - brand_bbox[2]) // 2
+        brand_y = cfg.padding + 150
+
+        # Strong glow effect for brand
+        for offset in range(6, 0, -1):
+            glow_alpha = int(255 * (1 - offset / 6) * 0.4)
+            glow_color = (
+                min(255, self.NEON_CYAN[0] + glow_alpha),
+                min(255, self.NEON_CYAN[1] + glow_alpha),
+                min(255, self.NEON_CYAN[2] + glow_alpha),
+            )
+            draw.text(
+                (brand_x - offset // 2, brand_y),
+                brand_text,
+                font=brand_font,
+                fill=glow_color,
+            )
+        draw.text((brand_x, brand_y), brand_text, font=brand_font, fill=self.GLOW_WHITE)
+
+        # Decorative line below brand
+        line_width = 250
+        line_y = brand_y + brand_bbox[3] + 30
+        line_x = (cfg.width - line_width) // 2
+        draw.rectangle(
+            [line_x, line_y, line_x + line_width, line_y + 4],
+            fill=self.NEON_PURPLE,
+        )
+
+        # Big event count in center with circle background
+        count_y = center_y - 80
+        circle_radius = 100
+
+        # Outer glow circle
+        draw.ellipse(
+            [
+                center_x - circle_radius - 20,
+                count_y - 20,
+                center_x + circle_radius + 20,
+                count_y + circle_radius * 2 + 20,
+            ],
+            fill=(self.NEON_CYAN[0] // 3, self.NEON_CYAN[1] // 3, self.NEON_CYAN[2] // 3),
+        )
+
+        # Main circle
+        draw.ellipse(
+            [
+                center_x - circle_radius,
+                count_y,
+                center_x + circle_radius,
+                count_y + circle_radius * 2,
+            ],
+            fill=self.NEON_CYAN,
+        )
+
+        # Event count number
+        count_text = str(event_count)
+        count_bbox = count_font.getbbox(count_text)
+        count_text_x = center_x - count_bbox[2] // 2
+        count_text_y = count_y + circle_radius - count_bbox[3] // 2 - 10
+        draw.text((count_text_x, count_text_y), count_text, font=count_font, fill=self.DARK_BG)
+
+        # "件要闻" label below the number
+        label_text = "件要闻"
+        label_bbox = caption_font.getbbox(label_text)
+        label_x = center_x - label_bbox[2] // 2
+        label_y = count_y + circle_radius * 2 + 20
+        draw.text((label_x, label_y), label_text, font=date_font, fill=self.GLOW_WHITE)
+
+        # Date below
+        date_y = label_y + 50
+        date_bbox = date_font.getbbox(date_str)
+        date_x = center_x - date_bbox[2] // 2
+        draw.text((date_x, date_y), date_str, font=date_font, fill=self.NEON_PURPLE)
+
+        # Top headline preview at bottom (if provided)
+        if top_headline:
+            # Semi-transparent card for headline
+            card_margin = 50
+            card_top = cfg.height - cfg.padding - 200
+            card_bottom = cfg.height - cfg.padding - 60
+
+            card_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            card_draw = ImageDraw.Draw(card_overlay)
+            card_draw.rounded_rectangle(
+                [card_margin, card_top, cfg.width - card_margin, card_bottom],
+                radius=cfg.card_radius,
+                fill=(15, 15, 35, 220),
+            )
+
+            # Left accent bar
+            card_draw.rectangle(
+                [card_margin, card_top + 15, card_margin + 6, card_bottom - 15],
+                fill=(*self.NEON_BLUE, 255),
+            )
+
+            img = Image.alpha_composite(img.convert("RGBA"), card_overlay).convert("RGB")
+            draw = ImageDraw.Draw(img)
+
+            # Headline text
+            headline_lines = self._wrap_text(
+                top_headline, headline_font, cfg.width - 2 * card_margin - 60
+            )
+            text_y = card_top + 25
+            for line in headline_lines[:2]:
+                draw.text(
+                    (card_margin + 25, text_y),
+                    line,
+                    font=headline_font,
+                    fill=self.GLOW_WHITE,
+                )
+                text_y += int((cfg.body_font_size + 10) * cfg.line_spacing)
 
         return img
 

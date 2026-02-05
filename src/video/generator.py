@@ -342,8 +342,8 @@ class VideoGenerator:
         # Slide 5: CTA
         slides.append(
             SlideContent(
-                title="关注我们",
-                body="获取更多科技资讯",
+                title="关注巴别简报",
+                body="获取更多资讯",
                 category=category,
                 duration=2.0,
                 content_url=content_url,
@@ -357,7 +357,7 @@ class VideoGenerator:
         parts = []
 
         # Opening
-        parts.append(f"今日科技速报。{item.title}")
+        parts.append(f"欢迎收看巴别简报。{item.title}")
 
         # Summary
         if item.summary:
@@ -382,7 +382,7 @@ class VideoGenerator:
             parts.append(f"总结来说，{item.one_liner}")
 
         # Closing
-        parts.append("感谢收看，关注我们获取更多资讯。")
+        parts.append("感谢收看巴别简报，关注我们获取更多资讯。")
 
         return "。".join(parts)
 
@@ -804,9 +804,17 @@ class BulletinVideoGenerator:
         """
         slides = []
 
-        # 1. Opening slide
         date_str = bulletin_result.date.strftime("%m月%d日")
         event_count = len(bulletin_result.items)
+
+        # 0. Cover slide (thumbnail, used as first frame)
+        top_headline = ""
+        if bulletin_result.items:
+            top_headline = bulletin_result.items[0].headline
+        cover = self.template.render_cover_slide(date_str, event_count, top_headline)
+        slides.append(cover)
+
+        # 1. Opening slide
         opening = self.template.render_opening_slide(date_str, event_count)
         slides.append(opening)
 
