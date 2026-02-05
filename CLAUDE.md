@@ -91,6 +91,16 @@ bb cluster --parallel --workers 4   # Parallel event clustering
 bb digest --parallel                # Parallel digest generation
 ```
 
+**Video Generation (Phase 7):**
+```bash
+bb video generate --limit 5         # Generate videos from recent content
+bb video generate --template key_points --platform shipinhao  # 视频号格式
+bb video generate-event 123         # Generate video from event cluster
+bb video voices                     # List available TTS voices
+bb video test-tts "测试文本"         # Test TTS output
+bb video preview 123                # Preview slide for content item
+```
+
 **Code quality:**
 ```bash
 black .                                    # Format (line length: 100)
@@ -162,6 +172,10 @@ Fetchers                                         Rule Classifier
   - `models.py` - All data models (ContentItem, EventCluster, Topic, ActionItem, etc.)
   - `database.py` - Async/sync interfaces with all CRUD operations
 - `src/delivery/` - SMTP email with Jinja2 HTML templates
+- `src/video/` - Short video generation (open source, no API costs)
+  - `tts.py` - Edge TTS wrapper (Microsoft free TTS)
+  - `templates.py` - Video templates (news_brief, key_points, deep_analysis, data_card)
+  - `generator.py` - MoviePy-based video composition
 - `src/scheduler/` - APScheduler for periodic fetch and daily digest jobs
 - `config/settings.py` - Dataclass-based configuration from environment variables
 - `config/ai_models.yaml` - Model tier configuration (heavy/light models)
@@ -174,6 +188,7 @@ Fetchers                                         Rule Classifier
 5. Action extraction → Create actionable items from high-importance content
 6. Generate HTML → Send email digest
 7. Periodic reports → Weekly/monthly summaries
+8. Video generation → Short videos for Douyin/视频号 (optional)
 
 ## Daily Usage
 
@@ -322,6 +337,7 @@ Cost estimation supports Haiku ($0.25/$1.25), Sonnet ($3/$15), Opus ($15/$75) pe
 - **Topic discovery:** Entity frequency analysis, keyword bigram clustering, trend spike detection (3x week-over-week)
 - **Automated preprocessing:** Digest job automatically runs embeddings + topic discovery before sending (zero extra LLM cost)
 - **Two-stage processing (Ollama):** Optional 8B screening + 32B refinement mode (`OLLAMA_MODEL_SCREEN`) for 20-40% time savings
+- **Video generation:** Open source stack (edge-tts + MoviePy + Pillow), zero API cost, supports Douyin (9:16) and 视频号 (6:7)
 
 ## Data Models
 

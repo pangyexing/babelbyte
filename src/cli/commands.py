@@ -8,7 +8,7 @@ import logging
 
 import click
 
-from src.cli import actions, db, embeddings, events, fetch, reports, search, subscribe, topics, validation
+from src.cli import actions, db, embeddings, events, fetch, reports, search, subscribe, topics, validation, video
 
 
 def setup_logging():
@@ -48,6 +48,9 @@ actions.register_commands(cli)
 reports.register_commands(cli)
 validation.register_commands(cli)
 embeddings.register_commands(cli)
+
+# Video generation commands
+cli.add_command(video.video)
 
 
 if __name__ == "__main__":

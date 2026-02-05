@@ -56,3 +56,9 @@ htmlcov/
 # Distribution
 *.tar.gz
 *.whl
+
+# Video generation
+videos/
+test_*.png
+test_*.mp3
+*TEMP_MPY*.mp4

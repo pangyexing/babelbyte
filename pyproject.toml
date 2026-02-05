@@ -52,6 +52,11 @@ extract = [
 openai = [
     "openai>=1.0.0",  # OpenAI embedding API (alternative to sentence-transformers)
 ]
+video = [
+    "edge-tts>=6.1.0",  # Microsoft Edge TTS (free, no API key)
+    "moviepy>=1.0.3",  # Video editing and composition
+    "pillow>=10.0.0",  # Image generation for video frames
+]
 
 [project.scripts]
 bb = "src.cli.commands:cli"
