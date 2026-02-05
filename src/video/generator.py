@@ -222,9 +222,10 @@ class VideoGenerator:
                 fps=self.config.fps,
                 codec="libx264",
                 audio_codec="aac",
+                preset="slow",
                 threads=4,
-                preset="medium",
                 logger="bar",  # "bar" for progress bar, None for silent
+                ffmpeg_params=["-crf", "10"],
             )
 
             # Cleanup
@@ -689,18 +690,14 @@ class BulletinVideoGenerator:
                 segment_audios = []
                 slides_with_durations = []
 
-                for i, (img, script_segment) in enumerate(
-                    zip(slide_images, segment_scripts)
-                ):
+                for i, (img, script_segment) in enumerate(zip(slide_images, segment_scripts)):
                     segment_audio_dir = audio_dir / f"segment_{i}"
                     segment_audio_path, _ = self.tts.synthesize_with_timestamps(
                         script_segment, segment_audio_dir
                     )
                     segment_duration = self._get_audio_duration(segment_audio_path)
                     # Ensure minimum duration
-                    segment_duration = max(
-                        self.config.min_slide_duration, segment_duration
-                    )
+                    segment_duration = max(self.config.min_slide_duration, segment_duration)
                     segment_audios.append(segment_audio_path)
                     slides_with_durations.append((img, segment_duration))
 
@@ -740,9 +737,10 @@ class BulletinVideoGenerator:
                 fps=self.config.fps,
                 codec="libx264",
                 audio_codec="aac",
+                preset="slow",
                 threads=4,
-                preset="medium",
                 logger="bar",
+                ffmpeg_params=["-crf", "10"],
             )
 
             # Cleanup
@@ -773,6 +771,32 @@ class BulletinVideoGenerator:
                 error=str(e),
             )
 
+    def _generate_illustration(
+        self, category: str, headline: str, image_prompt: str = ""
+    ) -> Optional["PILImage"]:
+        """Generate an illustration for an event card if image generator is available.
+
+        Args:
+            category: Event category.
+            headline: Event headline.
+            image_prompt: Pre-generated prompt from LLM (falls back to template).
+
+        Returns:
+            PIL Image illustration, or None if generation fails or is unavailable.
+        """
+        ig = self.template._image_generator
+        if ig is None:
+            return None
+
+        try:
+            return ig.generate_illustration(
+                category=category,
+                headline=headline,
+                prompt=image_prompt,
+            )
+        except Exception:
+            return None
+
     def _render_bulletin_slides(
         self,
         bulletin_result: "BulletinResult",
@@ -794,18 +818,19 @@ class BulletinVideoGenerator:
         slides.append((opening, 4.0))
 
         # 2. Event cards
-        total_events = len(bulletin_result.items)
-        for i, item in enumerate(bulletin_result.items, 1):
+        for item in bulletin_result.items:
+            category = item.cluster.category or "资讯"
+            illustration = self._generate_illustration(category, item.headline, item.image_prompt)
+
             card = self.template.render_event_card(
                 headline=item.headline,
                 summary=item.summary,
-                category=item.cluster.category or "资讯",
+                category=category,
                 source_count=item.cluster.article_count,
-                event_number=i,
-                total_events=total_events,
                 one_liner=item.one_liner,
                 impact=item.impact,
                 actions=item.actions,
+                illustration=illustration,
             )
             # Duration based on content length (estimate reading time)
             # ~5 chars/sec for Chinese TTS (faster rate)
@@ -850,18 +875,19 @@ class BulletinVideoGenerator:
         slides.append(opening)
 
         # 2. Event cards
-        total_events = len(bulletin_result.items)
-        for i, item in enumerate(bulletin_result.items, 1):
+        for item in bulletin_result.items:
+            category = item.cluster.category or "资讯"
+            illustration = self._generate_illustration(category, item.headline, item.image_prompt)
+
             card = self.template.render_event_card(
                 headline=item.headline,
                 summary=item.summary,
-                category=item.cluster.category or "资讯",
+                category=category,
                 source_count=item.cluster.article_count,
-                event_number=i,
-                total_events=total_events,
                 one_liner=item.one_liner,
                 impact=item.impact,
                 actions=item.actions,
+                illustration=illustration,
             )
             slides.append(card)
 

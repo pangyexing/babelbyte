@@ -16,23 +16,89 @@ logger = logging.getLogger(__name__)
 # Cache directory for AI-generated images
 AI_IMAGE_CACHE_DIR = Path("./videos/cache/ai_images")
 
-# Category-specific prompt styles (dark, moody backgrounds for text overlay)
-CATEGORY_STYLES = {
-    "AI": (
-        "abstract dark background, deep navy blue, "
-        "subtle neural network patterns, glowing data streams"
-    ),
-    "科技": "dark tech background, faint circuit lines, deep midnight tones",
-    "金融": "dark background, abstract golden geometric shapes, subtle grid lines",
-    "创业": "dark background, subtle teal light streaks, smooth gradients",
-    "创新": "dark background, subtle teal light streaks, smooth gradients",
-    "default": (
-        "dark abstract fluid art, deep midnight blue and dark purple, " "subtle light particles"
-    ),
+# Category-specific background variants (dark, moody backgrounds for text overlay)
+# Each category has 3 variants; selection uses headline hash to avoid repetition.
+BACKGROUND_VARIANTS = {
+    "AI": [
+        ("abstract dark background, deep navy, " "neural network patterns, data streams"),
+        "dark space, constellation of connected nodes, blue glow",
+        "midnight black, holographic grid lines, subtle blue light",
+    ],
+    "科技": [
+        "dark tech background, faint circuit lines, deep midnight tones",
+        "dark background, satellite dish silhouette, starfield",
+        "dark background, glowing fiber optic strands, cool blue",
+    ],
+    "金融": [
+        "dark background, abstract golden geometric shapes, subtle grid lines",
+        "dark background, stock chart silhouette, warm amber glow",
+        "dark background, stacked coins silhouette, golden light rays",
+    ],
+    "创业": [
+        "dark background, subtle teal light streaks, smooth gradients",
+        "dark background, ascending staircase silhouette, teal glow",
+        "dark background, sprouting seedling, warm teal highlight",
+    ],
+    "创新": [
+        "dark background, interlocking gears silhouette, green accents",
+        "dark background, lightbulb filament glow, warm orange highlight",
+        "dark background, molecular structure, cyan glow",
+    ],
+    "技术": [
+        "dark background, server rack silhouettes, subtle LED dots",
+        "dark background, binary code rain, green on black",
+        "dark background, ethernet cables and ports, blue indicators",
+    ],
+    "default": [
+        ("dark abstract fluid art, deep midnight blue and dark purple, " "subtle light particles"),
+        "dark background, soft bokeh circles, deep blue and violet",
+        "dark background, ink wash texture, charcoal and indigo",
+    ],
 }
 
 # Appended to all prompts to ensure usability as text background
 PROMPT_SUFFIX = "dark background, moody atmosphere, cinematic lighting, no text, no objects"
+
+# Category-specific illustration styles (comic/manga art for bulletin cards)
+ILLUSTRATION_STYLES = {
+    "AI": (
+        "comic book panel, robot head with glowing eyes, bold black ink outlines, "
+        "halftone dot shading, blue and cyan pop art colors"
+    ),
+    "科技": (
+        "manga style panel, futuristic device close-up, bold ink strokes, "
+        "speed lines, screen glow, blue and white pop art"
+    ),
+    "金融": (
+        "comic book panel, coins and rising arrow, bold black outlines, "
+        "halftone dots, golden yellow and amber pop art colors"
+    ),
+    "创业": (
+        "manga style panel, rocket launching upward, dynamic motion lines, "
+        "bold ink outlines, teal and green pop art energy"
+    ),
+    "创新": (
+        "comic book panel, gears and mechanical parts, bold black ink lines, "
+        "halftone shading, green and cyan pop art colors"
+    ),
+    "技术": (
+        "manga style panel, terminal screen with code, bold outlines, "
+        "dramatic lighting, purple and blue pop art"
+    ),
+    "default": (
+        "comic book panel, newspaper and megaphone, bold black ink outlines, "
+        "halftone dot pattern, bright pop art colors"
+    ),
+}
+
+# Suffix for LLM-generated prompts (style already specified by LLM)
+ILLUSTRATION_SUFFIX = "no text, no words, no letters, no numbers"
+
+# Full suffix for template-based fallback prompts (no LLM context)
+ILLUSTRATION_FALLBACK_SUFFIX = (
+    "comic book art, bold black ink outlines, halftone dots, flat vibrant colors, "
+    "manga-inspired, clean composition, no text, no words, no letters"
+)
 
 
 class ImageGenerator:
@@ -101,6 +167,7 @@ class ImageGenerator:
                     )
 
             import time
+
             time.sleep(2)
             logger.info("Ollama models unloaded, GPU memory freed")
         except Exception as e:
@@ -180,6 +247,65 @@ class ImageGenerator:
         img = self._prepare_as_background(img)
         return img
 
+    def generate_illustration(
+        self,
+        category: str,
+        headline: str,
+        width: int = 900,
+        height: int = 340,
+        prompt: str = "",
+    ) -> Optional[Image.Image]:
+        """Generate a bright illustration for display inside an event card.
+
+        Unlike generate_background(), this produces vibrant, visible imagery
+        without heavy darkening—suitable for inline card display.
+
+        Args:
+            category: Content category (AI, 科技, 金融, etc.).
+            headline: Headline text (adds context to the prompt).
+            width: Image width.
+            height: Image height.
+            prompt: Pre-generated prompt from LLM. Falls back to template if empty.
+
+        Returns:
+            Illustration image, or None if generation fails.
+        """
+        if prompt:
+            full_prompt = f"{prompt}, {ILLUSTRATION_SUFFIX}"
+        else:
+            full_prompt = self._build_illustration_prompt(category, headline)
+        img = self.generate(full_prompt, width, height)
+
+        if img is None:
+            return None
+
+        # Light post-processing: gentle blur to soften noise, no darkening
+        img = img.filter(ImageFilter.GaussianBlur(radius=1.5))
+        return img
+
+    def _build_illustration_prompt(self, category: str, headline: str) -> str:
+        """Build an illustration prompt from category and headline.
+
+        Uses more headline context (50 chars) to differentiate images for
+        events in the same category.
+
+        Args:
+            category: Content category.
+            headline: News headline.
+
+        Returns:
+            Full prompt string.
+        """
+        style = ILLUSTRATION_STYLES.get(category, ILLUSTRATION_STYLES["default"])
+
+        if headline:
+            context = headline[:50]
+            prompt = f"{style}, inspired by: {context}, " f"{ILLUSTRATION_FALLBACK_SUFFIX}"
+        else:
+            prompt = f"{style}, {ILLUSTRATION_FALLBACK_SUFFIX}"
+
+        return prompt
+
     def unload(self):
         """Unload the pipeline and release GPU memory for Ollama."""
         if self._pipeline is not None:
@@ -194,6 +320,9 @@ class ImageGenerator:
     def _build_prompt(self, category: str, headline: str) -> str:
         """Build an image generation prompt from category and headline.
 
+        Uses headline hash to select among variants, ensuring different
+        headlines in the same category get different backgrounds.
+
         Args:
             category: Content category.
             headline: News headline.
@@ -201,11 +330,12 @@ class ImageGenerator:
         Returns:
             Full prompt string.
         """
-        style = CATEGORY_STYLES.get(category, CATEGORY_STYLES["default"])
+        variants = BACKGROUND_VARIANTS.get(category, BACKGROUND_VARIANTS["default"])
+        idx = int(hashlib.md5(headline.encode()).hexdigest(), 16) % len(variants)
+        style = variants[idx]
 
         # Add headline context (keep it abstract)
         if headline:
-            # Take first few words for context, keep abstract
             context = headline[:20]
             prompt = f"{style}, inspired by: {context}, {PROMPT_SUFFIX}"
         else:

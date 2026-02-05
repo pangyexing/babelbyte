@@ -1,12 +1,20 @@
 """Text-to-Speech using edge-tts (completely free, no API key needed)."""
 
 import asyncio
-import tempfile
+import logging
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import edge_tts
+from edge_tts.exceptions import NoAudioReceived
+
+logger = logging.getLogger(__name__)
+
+# Minimum interval between TTS requests (seconds) to avoid Microsoft throttling
+_MIN_REQUEST_INTERVAL = 1.0
 
 
 @dataclass
@@ -17,6 +25,7 @@ class TTSConfig:
     rate: str = "+10%"  # 语速稍快
     volume: str = "+0%"
     pitch: str = "+0Hz"
+    max_retries: int = 3  # Retry on NoAudioReceived
 
 
 # Available Chinese voices (edge-tts)
@@ -36,11 +45,41 @@ CHINESE_VOICES = {
 }
 
 
+def _has_speakable_content(text: str) -> bool:
+    """Check if text has actual language content (not just punctuation/whitespace)."""
+    clean = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
+    return len(clean) > 0
+
+
 class EdgeTTS:
     """Edge TTS wrapper for text-to-speech synthesis."""
 
     def __init__(self, config: Optional[TTSConfig] = None):
         self.config = config or TTSConfig()
+        self._last_request_time = 0.0
+
+    async def _throttle(self):
+        """Wait if needed to avoid hitting Microsoft's rate limit."""
+        elapsed = time.monotonic() - self._last_request_time
+        if elapsed < _MIN_REQUEST_INTERVAL:
+            await asyncio.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+        self._last_request_time = time.monotonic()
+
+    def _resolve_voice(self, voice: Optional[str] = None) -> str:
+        """Resolve voice name to full voice ID."""
+        if voice:
+            return CHINESE_VOICES.get(voice, voice)
+        return self.config.voice
+
+    def _create_communicate(self, text: str, voice_id: str) -> edge_tts.Communicate:
+        """Create a new Communicate instance (each can only be streamed once)."""
+        return edge_tts.Communicate(
+            text=text,
+            voice=voice_id,
+            rate=self.config.rate,
+            volume=self.config.volume,
+            pitch=self.config.pitch,
+        )
 
     async def synthesize_async(
         self,
@@ -59,28 +98,29 @@ class EdgeTTS:
         Returns:
             Path to generated audio file
         """
-        # Resolve voice name
-        if voice:
-            voice_id = CHINESE_VOICES.get(voice, voice)
-        else:
-            voice_id = self.config.voice
+        if not _has_speakable_content(text):
+            raise ValueError(f"Text has no speakable content: {text!r}")
 
-        # Create communicate object
-        communicate = edge_tts.Communicate(
-            text=text,
-            voice=voice_id,
-            rate=self.config.rate,
-            volume=self.config.volume,
-            pitch=self.config.pitch,
-        )
-
-        # Ensure output directory exists
+        voice_id = self._resolve_voice(voice)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Save audio
-        await communicate.save(str(output_path))
+        last_error = None
+        for attempt in range(self.config.max_retries):
+            await self._throttle()
+            try:
+                communicate = self._create_communicate(text, voice_id)
+                await communicate.save(str(output_path))
+                return output_path
+            except NoAudioReceived as e:
+                last_error = e
+                wait = 2**attempt
+                logger.warning(
+                    f"TTS attempt {attempt + 1}/{self.config.max_retries} failed "
+                    f"(NoAudioReceived), retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
 
-        return output_path
+        raise last_error
 
     def synthesize(
         self,
@@ -118,40 +158,48 @@ class EdgeTTS:
         Returns:
             Tuple of (audio_path, word_timestamps)
         """
-        if voice:
-            voice_id = CHINESE_VOICES.get(voice, voice)
-        else:
-            voice_id = self.config.voice
+        if not _has_speakable_content(text):
+            raise ValueError(f"Text has no speakable content: {text!r}")
 
-        communicate = edge_tts.Communicate(
-            text=text,
-            voice=voice_id,
-            rate=self.config.rate,
-            volume=self.config.volume,
-            pitch=self.config.pitch,
-        )
-
+        voice_id = self._resolve_voice(voice)
         output_dir.mkdir(parents=True, exist_ok=True)
         audio_path = output_dir / "voice.mp3"
         srt_path = output_dir / "voice.srt"
 
-        # Generate with subtitles
-        submaker = edge_tts.SubMaker()
-        with open(audio_path, "wb") as audio_file:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_file.write(chunk["data"])
-                elif chunk["type"] == "WordBoundary":
-                    submaker.feed(chunk)
+        last_error = None
+        for attempt in range(self.config.max_retries):
+            await self._throttle()
+            try:
+                communicate = self._create_communicate(text, voice_id)
 
-        # Save SRT file
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(submaker.get_srt())
+                # Generate with subtitles
+                submaker = edge_tts.SubMaker()
+                with open(audio_path, "wb") as audio_file:
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            audio_file.write(chunk["data"])
+                        elif chunk["type"] == "WordBoundary":
+                            submaker.feed(chunk)
 
-        # Parse timestamps
-        timestamps = self._parse_srt(srt_path)
+                # Save SRT file
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    f.write(submaker.get_srt())
 
-        return audio_path, timestamps
+                # Parse timestamps
+                timestamps = self._parse_srt(srt_path)
+
+                return audio_path, timestamps
+
+            except NoAudioReceived as e:
+                last_error = e
+                wait = 2**attempt
+                logger.warning(
+                    f"TTS attempt {attempt + 1}/{self.config.max_retries} failed "
+                    f"(NoAudioReceived), retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
+
+        raise last_error
 
     def synthesize_with_timestamps(
         self,
@@ -160,9 +208,7 @@ class EdgeTTS:
         voice: Optional[str] = None,
     ) -> tuple[Path, list[dict]]:
         """Sync wrapper for synthesize_with_timestamps_async."""
-        return asyncio.run(
-            self.synthesize_with_timestamps_async(text, output_dir, voice)
-        )
+        return asyncio.run(self.synthesize_with_timestamps_async(text, output_dir, voice))
 
     def _parse_srt(self, srt_path: Path) -> list[dict]:
         """Parse SRT file to timestamp list."""

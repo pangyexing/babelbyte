@@ -30,6 +30,7 @@ class BulletinItem:
     impact: str = ""  # Short/long term impact combined (40 chars max)
     actions: list[str] = field(default_factory=list)  # Actionable items (max 2, 25 chars each)
     order: int = 0  # Display order in bulletin
+    image_prompt: str = ""  # LLM-generated English prompt for FLUX illustration
 
 
 @dataclass
@@ -114,6 +115,24 @@ class BulletinGenerator:
 7. 每句话必须包含明确主语（公司名/产品名/人物名），不要省略主体
 
 直接返回脚本文本："""
+
+    # Prompt for generating English image prompts for FLUX illustration
+    IMAGE_PROMPT_PROMPT = (
+        "为以下{count}个新闻事件各生成一段英文配图描述(image prompt)，"
+        "用于AI图像生成模型生成漫画风格配图。\n\n"
+        "事件列表：\n{events_json}\n\n"
+        "要求：\n"
+        "1. 每个描述30-50个英文单词\n"
+        "2. 漫画插画风格：bold ink outlines, flat vibrant colors, "
+        "pop art, clean composition\n"
+        "3. 描述具体的视觉元素和场景，必须与新闻内容直接相关\n"
+        "4. 不要在画面中包含任何文字、字母、数字\n"
+        "5. 每个事件的配图必须有明显差异，不要重复使用相同的视觉元素\n"
+        "6. 指定与分类匹配的色调（AI=蓝青色, 科技=蓝银色, 金融=金琥珀色, "
+        "创业=青绿色, 创新=绿青色, 技术=紫蓝色）\n\n"
+        '返回JSON数组：[{{"id": 事件ID, "prompt": "英文描述"}}]\n\n'
+        "仅返回JSON，无其他文字："
+    )
 
     def __init__(self, processor=None):
         """Initialize BulletinGenerator.
@@ -319,6 +338,9 @@ class BulletinGenerator:
         # Generate combined script and segment scripts
         script = self._generate_combined_script(items)
         segment_scripts = self._generate_segment_scripts(items)
+
+        # Generate LLM image prompts (Ollama still on GPU, before FLUX phase)
+        self._generate_image_prompts(items)
 
         return BulletinResult(
             items=items,
@@ -751,3 +773,100 @@ class BulletinGenerator:
         segments.append(closing)
 
         return segments
+
+    def _generate_image_prompts(self, items: list[BulletinItem]) -> None:
+        """Generate English image prompts for all bulletin items using LLM.
+
+        Writes prompts directly into each item's image_prompt field.
+        Fails silently — items keep empty image_prompt (template fallback).
+
+        Args:
+            items: List of bulletin items to generate prompts for.
+        """
+        if not items:
+            return
+
+        # Build events JSON for the prompt
+        events = []
+        for item in items:
+            events.append(
+                {
+                    "id": item.cluster.id,
+                    "headline": item.headline,
+                    "summary": item.summary,
+                    "category": item.cluster.category or "资讯",
+                }
+            )
+
+        prompt = self.IMAGE_PROMPT_PROMPT.format(
+            count=len(items),
+            events_json=json.dumps(events, ensure_ascii=False, indent=2),
+        )
+
+        processor = self._get_processor()
+        start_time = time.time()
+
+        if not hasattr(processor, "_call_api"):
+            logger.debug("Processor has no _call_api, skipping image prompts")
+            return
+
+        success, response, error = processor._call_api(
+            prompt,
+            model=processor.model,
+            max_tokens=1024,
+            disable_thinking=True,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        record_ai_call(
+            call_type=AICallType.DIGEST_GENERATE,
+            cached=False,
+            input_chars=len(prompt),
+            output_chars=len(response) if success else 0,
+            duration_ms=duration_ms,
+            success=success,
+            error=error[:100] if error else None,
+        )
+
+        if not success:
+            logger.warning(f"Image prompt generation failed: {error}")
+            return
+
+        try:
+            # Clean response
+            response = response.strip()
+            if response.startswith("```"):
+                lines = response.split("\n")
+                response = "\n".join(line for line in lines if not line.strip().startswith("```"))
+
+            # Find JSON array
+            json_start = response.find("[")
+            json_end = response.rfind("]") + 1
+            if json_start == -1 or json_end <= json_start:
+                logger.warning("No JSON array found in image prompt response")
+                return
+
+            data = json.loads(response[json_start:json_end])
+            if not isinstance(data, list):
+                return
+
+            # Build lookup: cluster_id -> prompt
+            prompt_map = {
+                entry.get("id"): entry.get("prompt", "")
+                for entry in data
+                if entry.get("id") and entry.get("prompt")
+            }
+
+            # Write prompts into items
+            for item in items:
+                prompt_text = prompt_map.get(item.cluster.id, "")
+                if prompt_text:
+                    item.image_prompt = prompt_text
+                    logger.debug(
+                        f"Image prompt for cluster {item.cluster.id}: " f"{prompt_text[:60]}..."
+                    )
+
+            logger.info(f"Generated {len(prompt_map)} image prompts " f"for {len(items)} items")
+
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            logger.warning(f"Failed to parse image prompt response: {e}")

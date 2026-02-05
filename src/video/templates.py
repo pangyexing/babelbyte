@@ -1049,6 +1049,11 @@ class BulletinTemplate(VideoTemplate):
     TEXT_SECONDARY = (190, 195, 210)
     SHADOW_COLOR = (0, 0, 0)
 
+    # Comic/manga style colors
+    CARD_WHITE = (250, 250, 245)  # Cream-white comic paper
+    COMIC_BLACK = (20, 20, 20)  # Ink black for outlines/borders
+    TEXT_DARK = (30, 30, 40)  # Dark text on white card
+
     def __init__(self, config: Optional[TemplateConfig] = None, image_generator=None):
         super().__init__(config)
         self._image_generator = image_generator
@@ -1100,21 +1105,6 @@ class BulletinTemplate(VideoTemplate):
             return bg
         return self._create_category_gradient(category)
 
-    def _draw_progress_bar(self, draw: ImageDraw.ImageDraw, current: int, total: int, color: tuple):
-        """Draw a thin progress bar at the top of the slide."""
-        cfg = self.config
-        bar_height = 4
-        bar_y = 0
-        full_width = cfg.width
-
-        # Background bar (dim)
-        draw.rectangle([0, bar_y, full_width, bar_y + bar_height], fill=(40, 40, 60))
-
-        # Progress bar (colored)
-        if total > 0:
-            progress_width = int(full_width * current / total)
-            draw.rectangle([0, bar_y, progress_width, bar_y + bar_height], fill=color)
-
     def _draw_text_shadow(
         self,
         draw: ImageDraw.ImageDraw,
@@ -1132,8 +1122,240 @@ class BulletinTemplate(VideoTemplate):
         # Main text
         draw.text((x, y), text, font=font, fill=fill)
 
+    def _draw_stroked_text(
+        self,
+        draw: ImageDraw.ImageDraw,
+        position: tuple,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        fill: tuple,
+        stroke_color: tuple = (20, 20, 20),
+        stroke_width: int = 3,
+    ):
+        """Draw text with comic-style outline/stroke.
+
+        Draws text at 8 directional offsets in stroke_color, then the main text
+        on top for bold outlined lettering.
+        """
+        x, y = position
+        # 8 directional offsets: N, NE, E, SE, S, SW, W, NW
+        for dx, dy in [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ]:
+            draw.text(
+                (x + dx * stroke_width, y + dy * stroke_width),
+                text,
+                font=font,
+                fill=stroke_color,
+            )
+        draw.text((x, y), text, font=font, fill=fill)
+
+    def _draw_halftone_overlay(
+        self,
+        img: Image.Image,
+        coords: tuple,
+        color: tuple,
+        dot_radius: int = 3,
+        spacing: int = 18,
+        opacity: int = 40,
+    ) -> Image.Image:
+        """Draw a halftone dot pattern overlay for comic paper texture.
+
+        Creates an RGBA overlay with a grid of small circles in the accent color,
+        then composites it onto the image within the given bounds.
+
+        Returns:
+            Modified image with halftone overlay applied.
+        """
+        x1, y1, x2, y2 = coords
+
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ov_draw = ImageDraw.Draw(overlay)
+
+        dot_color = (*color[:3], opacity)
+        for row_y in range(y1 + spacing, y2, spacing):
+            # Offset every other row for classic halftone stagger
+            offset = spacing // 2 if ((row_y - y1) // spacing) % 2 else 0
+            for col_x in range(x1 + spacing + offset, x2, spacing):
+                ov_draw.ellipse(
+                    [
+                        col_x - dot_radius,
+                        row_y - dot_radius,
+                        col_x + dot_radius,
+                        row_y + dot_radius,
+                    ],
+                    fill=dot_color,
+                )
+
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        return img
+
+    def _draw_speech_bubble(
+        self,
+        img: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        y: int,
+        width: int,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        fill: tuple = (255, 255, 255),
+        border_color: tuple = (20, 20, 20),
+    ) -> tuple:
+        """Draw a speech bubble with rounded body and triangular tail.
+
+        Returns:
+            (img, draw, new_y) tuple — image/draw are refreshed due to alpha composite.
+        """
+        text_lines = self._wrap_text(text, font, width - 50)
+        line_h = int(font.getbbox("A")[3] * 1.4)
+        body_h = len(text_lines[:3]) * line_h + 30
+        tail_h = 20
+
+        total_h = body_h + tail_h
+        bubble_right = x + width
+
+        # Build bubble on RGBA overlay
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        bub_draw = ImageDraw.Draw(overlay)
+
+        # Body: rounded rectangle
+        border_w = 3
+        body_coords = (x, y, bubble_right, y + body_h)
+        bub_draw.rounded_rectangle(
+            body_coords,
+            radius=18,
+            fill=(*fill, 255),
+            outline=(*border_color, 255),
+            width=border_w,
+        )
+
+        # Triangular tail at bottom-left
+        tail_x = x + 50
+        tail_points = [
+            (tail_x, y + body_h - 2),
+            (tail_x + 30, y + body_h - 2),
+            (tail_x + 5, y + body_h + tail_h),
+        ]
+        bub_draw.polygon(tail_points, fill=(*fill, 255), outline=(*border_color, 255))
+        # Cover the outline along the body bottom where tail meets body
+        bub_draw.line(
+            [(tail_x + 2, y + body_h - 1), (tail_x + 28, y + body_h - 1)],
+            fill=(*fill, 255),
+            width=border_w + 1,
+        )
+
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(img)
+
+        # Draw text inside bubble
+        text_y = y + 15
+        for line in text_lines[:3]:
+            draw.text((x + 25, text_y), line, font=font, fill=self.TEXT_DARK)
+            text_y += line_h
+
+        return img, draw, y + total_h
+
+    def _draw_speed_lines(
+        self,
+        draw: ImageDraw.ImageDraw,
+        center_x: int,
+        y_start: int,
+        y_end: int,
+        width: int,
+        color: tuple,
+        num_lines: int = 12,
+    ):
+        """Draw radiating speed/action lines behind headline for dramatic emphasis.
+
+        Short lines emanate outward from center in semi-transparent accent color.
+        """
+        for i in range(num_lines):
+            # Distribute lines on left and right sides
+            side = -1 if i % 2 == 0 else 1
+            # Vary vertical position
+            frac = (i / max(num_lines - 1, 1)) * 0.8 + 0.1
+            line_y = y_start + int(frac * (y_end - y_start))
+
+            # Lines go from card edge outward
+            inner_x = center_x + side * (width // 2 - 40)
+            outer_x = center_x + side * (width // 2 + 10)
+
+            draw.line(
+                [(inner_x, line_y), (outer_x, line_y)],
+                fill=color,
+                width=2,
+            )
+
+    def _draw_starburst(
+        self,
+        draw: ImageDraw.ImageDraw,
+        center_x: int,
+        center_y: int,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        color: tuple,
+        text_color: tuple = (20, 20, 20),
+    ):
+        """Draw a starburst badge with text centered inside.
+
+        12-point starburst polygon with alternating inner/outer radii.
+        """
+        import math
+
+        # Size based on text
+        text_bbox = font.getbbox(text)
+        text_w = text_bbox[2]
+        outer_r = max(text_w // 2 + 30, 60)
+        inner_r = int(outer_r * 0.65)
+        num_points = 12
+
+        points = []
+        for i in range(num_points * 2):
+            angle = math.pi * i / num_points - math.pi / 2
+            r = outer_r if i % 2 == 0 else inner_r
+            px = center_x + int(r * math.cos(angle))
+            py = center_y + int(r * math.sin(angle))
+            points.append((px, py))
+
+        draw.polygon(points, fill=color, outline=self.COMIC_BLACK)
+
+        # Center text
+        tx = center_x - text_w // 2
+        ty = center_y - text_bbox[3] // 2
+        draw.text((tx, ty), text, font=font, fill=text_color)
+
+    def _create_comic_background(self, category: str = "default") -> Image.Image:
+        """Create a comic-style background: white with subtle halftone.
+
+        Used by all slides for visual consistency.
+        """
+        cfg = self.config
+        accent = self._get_accent_color(category)
+
+        # Light background with subtle gradient tint
+        top = np.array(self.CARD_WHITE, dtype=np.float64)
+        bottom = np.array((235, 235, 230), dtype=np.float64)  # Slightly darker at bottom
+        ratios = np.linspace(0, 1, cfg.height).reshape(-1, 1, 1)
+        arr = (top * (1 - ratios) + bottom * ratios).astype(np.uint8)
+        arr = np.broadcast_to(arr, (cfg.height, cfg.width, 3)).copy()
+        img = Image.fromarray(arr, "RGB")
+
+        # Full-page halftone for comic texture
+        img = self._draw_halftone_overlay(
+            img, (0, 0, cfg.width, cfg.height), accent, dot_radius=2, spacing=24, opacity=25
+        )
+        return img
+
     def render_opening_slide(self, date_str: str, event_count: int) -> Image.Image:
-        """Render opening slide with title and date.
+        """Render comic-style opening slide with title and date.
 
         Args:
             date_str: Date string (e.g., "2月5日").
@@ -1144,36 +1366,84 @@ class BulletinTemplate(VideoTemplate):
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._get_bulletin_background("default", "巴别情报站")
+        img = self._create_comic_background()
         draw = ImageDraw.Draw(img)
 
         # Fonts
         title_font = self._get_font(cfg.title_font_size + 30, bold=True)
         date_font = self._get_font(cfg.body_font_size)
+        caption_font = self._get_font(cfg.caption_font_size)
 
         center_y = cfg.height // 2
 
-        # Main title - clean white, single shadow
+        # Thick black panel frame around the entire slide
+        frame_margin = 30
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=5,
+        )
+
+        # Speed lines behind title for dramatic feel
+        self._draw_speed_lines(
+            draw,
+            center_x=cfg.width // 2,
+            y_start=center_y - 120,
+            y_end=center_y + 40,
+            width=cfg.width - 200,
+            color=(*accent, 100) if len(accent) == 3 else accent,
+            num_lines=16,
+        )
+
+        # Main title — stroked comic text
         title_text = "巴别情报站"
         title_bbox = title_font.getbbox(title_text)
         title_x = (cfg.width - title_bbox[2]) // 2
         title_y = center_y - 100
 
-        self._draw_text_shadow(draw, (title_x, title_y), title_text, title_font, self.TEXT_WHITE)
+        self._draw_stroked_text(
+            draw,
+            (title_x, title_y),
+            title_text,
+            title_font,
+            fill=self.COMIC_BLACK,
+            stroke_color=(255, 255, 255),
+            stroke_width=3,
+        )
 
-        # Date and count - accent color
+        # Date and count in a speech bubble style box
         info_text = f"{date_str} · {event_count}件要闻"
         info_bbox = date_font.getbbox(info_text)
         info_x = (cfg.width - info_bbox[2]) // 2
-        info_y = title_y + title_bbox[3] + 40
+        info_y = title_y + title_bbox[3] + 50
 
-        draw.text((info_x, info_y), info_text, font=date_font, fill=accent)
+        # Pill-shaped box behind info text
+        pill_pad = 20
+        draw.rounded_rectangle(
+            [
+                info_x - pill_pad * 2,
+                info_y - pill_pad,
+                info_x + info_bbox[2] + pill_pad * 2,
+                info_y + info_bbox[3] + pill_pad,
+            ],
+            radius=30,
+            fill=accent,
+            outline=self.COMIC_BLACK,
+            width=2,
+        )
+        draw.text((info_x, info_y), info_text, font=date_font, fill=self.COMIC_BLACK)
 
-        # Simple decorative line
-        line_width = 200
-        line_y = info_y + 60
-        line_x = (cfg.width - line_width) // 2
-        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 3], fill=accent)
+        # Starburst decoration at bottom
+        self._draw_starburst(
+            draw,
+            cfg.width // 2,
+            cfg.height - 250,
+            "每日情报",
+            caption_font,
+            accent,
+            text_color=self.COMIC_BLACK,
+        )
 
         return img
 
@@ -1183,24 +1453,22 @@ class BulletinTemplate(VideoTemplate):
         summary: str,
         category: str,
         source_count: int,
-        event_number: int,
-        total_events: int,
         one_liner: str = "",
         impact: str = "",
         actions: list[str] = None,
+        illustration: Optional[Image.Image] = None,
     ) -> Image.Image:
-        """Render an event card slide.
+        """Render a comic/manga-style event card slide.
 
         Args:
             headline: Short headline (10 chars).
             summary: Event summary (50 chars).
             category: Event category.
             source_count: Number of source articles.
-            event_number: Current event number (1-based).
-            total_events: Total number of events.
             one_liner: One sentence conclusion.
             impact: Impact assessment text.
             actions: List of actionable items.
+            illustration: Optional AI-generated illustration to display inside the card.
 
         Returns:
             Event card image.
@@ -1210,181 +1478,247 @@ class BulletinTemplate(VideoTemplate):
         cfg = self.config
         accent = self._get_accent_color(category)
 
-        # Background: AI-generated per event (each event gets unique visual)
-        img = self._get_bulletin_background(category, headline)
+        # Comic-style background (consistent with other slides)
+        img = self._create_comic_background(category)
         draw = ImageDraw.Draw(img)
 
-        # Progress bar at top
-        self._draw_progress_bar(draw, event_number, total_events, accent)
-
-        # Fonts
-        headline_font = self._get_font(cfg.title_font_size + 20, bold=True)
-        summary_font = self._get_font(cfg.body_font_size + 8)
-        fact_font = self._get_font(cfg.body_font_size)
+        # Fonts — compact sizes to prevent overflow
+        headline_font = self._get_font(cfg.title_font_size + 10, bold=True)
+        summary_font = self._get_font(cfg.body_font_size)
+        fact_font = self._get_font(cfg.body_font_size - 4)
         caption_font = self._get_font(cfg.caption_font_size)
 
-        # Main card area - frosted glass
-        card_margin = 50
-        card_top = cfg.padding + 80
-        card_bottom = cfg.height - cfg.padding - 150
+        # --- Comic card panel with thick black border ---
+        card_margin = 40
+        card_top = cfg.padding + 40
+        card_bottom = cfg.height - cfg.padding - 120
         card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
+        content_x = card_margin + 35
+        content_width = cfg.width - 2 * card_margin - 70
+        max_y = card_bottom - 25  # Hard stop: never render past this
 
-        # Frosted glass card
-        img = self._draw_glass_card(img, draw, card_coords, opacity=0.65)
-        draw = ImageDraw.Draw(img)
-
-        # Simple rounded border in accent color
+        # White/cream card fill
         draw.rounded_rectangle(
             card_coords,
             radius=cfg.card_radius,
-            outline=(*accent, 180) if len(accent) == 3 else accent,
-            width=2,
+            fill=self.CARD_WHITE,
         )
 
-        # Content inside card
-        content_x = card_margin + 40
-        content_y = card_top + 40
+        # Thick black panel border (4px) — the most iconic comic trait
+        draw.rounded_rectangle(
+            card_coords,
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=4,
+        )
 
-        # Category tag with accent background
+        # Halftone dot pattern overlay for comic paper texture
+        img = self._draw_halftone_overlay(img, card_coords, accent)
+        draw = ImageDraw.Draw(img)
+
+        # --- Content inside card ---
+        content_y = card_top + 30
+
+        # Category tag: accent fill with thick black border
         tag_text = f"#{category}"
         tag_bbox = caption_font.getbbox(tag_text)
-        tag_padding = 12
+        tag_padding = 10
         tag_height = tag_bbox[3] + tag_padding * 2
-
-        self._draw_rounded_rect(
-            draw,
-            (
-                content_x,
-                content_y,
-                content_x + tag_bbox[2] + tag_padding * 2,
-                content_y + tag_height,
-            ),
+        tag_coords = (
+            content_x,
+            content_y,
+            content_x + tag_bbox[2] + tag_padding * 2,
+            content_y + tag_height,
+        )
+        draw.rounded_rectangle(
+            tag_coords,
             radius=tag_height // 2,
             fill=accent,
+            outline=self.COMIC_BLACK,
+            width=2,
         )
         draw.text(
             (content_x + tag_padding, content_y + tag_padding - 2),
             tag_text,
             font=caption_font,
-            fill=self.DARK_BG,
+            fill=self.COMIC_BLACK,
         )
 
-        content_y += tag_height + 30
+        content_y += tag_height + 20
 
-        # Headline - white, clean
-        headline_lines = self._wrap_text(headline, headline_font, cfg.width - 2 * card_margin - 80)
+        # Speed lines behind headline area
+        head_line_h = int((cfg.title_font_size + 10) * cfg.line_spacing)
+        headline_lines = self._wrap_text(headline, headline_font, content_width)
+        headline_block_h = len(headline_lines[:2]) * head_line_h
+        self._draw_speed_lines(
+            draw,
+            center_x=cfg.width // 2,
+            y_start=content_y,
+            y_end=content_y + headline_block_h,
+            width=content_width,
+            color=(*accent, 120) if len(accent) == 3 else accent,
+        )
+
+        # Headline with comic stroke/outline
         for line in headline_lines[:2]:
-            self._draw_text_shadow(
-                draw, (content_x, content_y), line, headline_font, self.TEXT_WHITE
+            self._draw_stroked_text(
+                draw,
+                (content_x, content_y),
+                line,
+                headline_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=2,
             )
-            content_y += int((cfg.title_font_size + 20) * cfg.line_spacing)
+            content_y += head_line_h
 
-        content_y += 20
+        content_y += 15
 
-        # Summary
-        if summary:
-            summary_lines = self._wrap_text(summary, summary_font, cfg.width - 2 * card_margin - 80)
-            for line in summary_lines[:3]:
-                draw.text((content_x, content_y), line, font=summary_font, fill=self.TEXT_SECONDARY)
-                content_y += int((cfg.body_font_size + 8) * cfg.line_spacing)
+        # Illustration with thick black border (adaptive height)
+        if illustration is not None:
+            remaining = max_y - content_y
+            # Reserve space for at least summary + one-liner
+            min_after_illust = 200
+            max_illust_h = min(260, remaining - min_after_illust)
+            if max_illust_h >= 140:
+                illust_width = content_width
+                illust_height = min(max_illust_h, illustration.size[1])
 
-        content_y += 20
-
-        # One-liner (highlighted box)
-        if one_liner:
-            one_liner_lines = self._wrap_text(
-                one_liner, fact_font, cfg.width - 2 * card_margin - 100
-            )
-            ol_height = len(one_liner_lines[:2]) * int(cfg.body_font_size * 1.3) + 30
-
-            # Semi-transparent highlight box
-            ol_overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            ol_draw = ImageDraw.Draw(ol_overlay)
-            ol_draw.rounded_rectangle(
-                (content_x, content_y, cfg.width - card_margin - 40, content_y + ol_height),
-                radius=12,
-                fill=(accent[0] // 6, accent[1] // 6, accent[2] // 6, 160),
-            )
-            img = Image.alpha_composite(img.convert("RGBA"), ol_overlay).convert("RGB")
-            draw = ImageDraw.Draw(img)
-
-            # Left accent bar
-            draw.rectangle(
-                [content_x, content_y + 8, content_x + 5, content_y + ol_height - 8],
-                fill=accent,
-            )
-
-            ol_text_y = content_y + 12
-            for line in one_liner_lines[:2]:
-                draw.text((content_x + 20, ol_text_y), line, font=fact_font, fill=self.TEXT_WHITE)
-                ol_text_y += int(cfg.body_font_size * 1.3)
-            content_y += ol_height + 15
-
-        # Impact assessment
-        if impact:
-            text_bbox = fact_font.getbbox("影响")
-            text_height = text_bbox[3] - text_bbox[1]
-            bullet_size = 10
-            bullet_top = content_y + 2 + text_bbox[1] + (text_height - bullet_size) // 2
-            draw.ellipse(
-                [content_x, bullet_top, content_x + bullet_size, bullet_top + bullet_size],
-                fill=accent,
-            )
-            impact_text = f"影响：{impact}"
-            impact_lines = self._wrap_text(
-                impact_text, fact_font, cfg.width - 2 * card_margin - 100
-            )
-            for line in impact_lines[:2]:
-                draw.text(
-                    (content_x + 20, content_y + 2), line, font=fact_font, fill=self.TEXT_SECONDARY
+                illust_resized = illustration.resize(
+                    (illust_width, illust_height), Image.Resampling.LANCZOS
                 )
-                content_y += int(cfg.body_font_size * 1.3)
+
+                # Rounded corner mask
+                illust_radius = 10
+                illust_mask = Image.new("L", (illust_width, illust_height), 0)
+                ImageDraw.Draw(illust_mask).rounded_rectangle(
+                    [0, 0, illust_width, illust_height], radius=illust_radius, fill=255
+                )
+
+                # Thick black border (3px) behind the image
+                border_w = 3
+                bordered_w = illust_width + border_w * 2
+                bordered_h = illust_height + border_w * 2
+                border_img = Image.new("RGB", (bordered_w, bordered_h), self.COMIC_BLACK)
+                border_img.paste(illust_resized.convert("RGB"), (border_w, border_w), illust_mask)
+
+                border_mask = Image.new("L", (bordered_w, bordered_h), 0)
+                ImageDraw.Draw(border_mask).rounded_rectangle(
+                    [0, 0, bordered_w, bordered_h],
+                    radius=illust_radius + border_w,
+                    fill=255,
+                )
+
+                img.paste(border_img, (content_x, content_y), border_mask)
+                draw = ImageDraw.Draw(img)
+
+                content_y += bordered_h + 15
+
+        # Summary: dark text on white card (overflow-aware)
+        if summary and content_y < max_y - 60:
+            sum_line_h = int(cfg.body_font_size * cfg.line_spacing)
+            remaining = max_y - content_y
+            max_sum_lines = min(3, max(1, (remaining - 100) // sum_line_h))
+            summary_lines = self._wrap_text(summary, summary_font, content_width)
+            for line in summary_lines[:max_sum_lines]:
+                draw.text(
+                    (content_x, content_y),
+                    line,
+                    font=summary_font,
+                    fill=self.TEXT_DARK,
+                )
+                content_y += sum_line_h
+
+        content_y += 10
+
+        # One-liner in speech bubble (overflow-aware)
+        if one_liner and content_y < max_y - 80:
+            img, draw, content_y = self._draw_speech_bubble(
+                img,
+                draw,
+                content_x,
+                content_y,
+                content_width,
+                one_liner,
+                fact_font,
+                fill=(255, 255, 255),
+                border_color=self.COMIC_BLACK,
+            )
             content_y += 10
 
-        # Actions
-        if actions:
-            text_bbox = fact_font.getbbox("建议")
-            text_height = text_bbox[3] - text_bbox[1]
-            bullet_size = 10
-            bullet_top = content_y + 2 + text_bbox[1] + (text_height - bullet_size) // 2
-            draw.ellipse(
-                [content_x, bullet_top, content_x + bullet_size, bullet_top + bullet_size],
+        # Impact assessment with thick left bar (overflow-aware)
+        fact_line_h = int((cfg.body_font_size - 4) * 1.3)
+        if impact and content_y < max_y - fact_line_h:
+            impact_text = f"影响：{impact}"
+            impact_lines = self._wrap_text(impact_text, fact_font, content_width - 18)
+            remaining = max_y - content_y
+            max_imp_lines = min(2, max(1, remaining // fact_line_h))
+            block_h = min(len(impact_lines), max_imp_lines) * fact_line_h
+            draw.rectangle(
+                [content_x, content_y, content_x + 5, content_y + block_h],
                 fill=accent,
             )
-            draw.text((content_x + 20, content_y + 2), "建议:", font=fact_font, fill=accent)
-            content_y += int(cfg.body_font_size * 1.3) + 5
-
-            arrow_indent = content_x + 20
-            for action in actions[:2]:
-                prefix = "→ "
-                draw.text((arrow_indent, content_y + 2), prefix, font=fact_font, fill=accent)
-                prefix_width = fact_font.getbbox(prefix)[2]
-                action_lines = self._wrap_text(
-                    action, fact_font, cfg.width - 2 * card_margin - 100 - prefix_width
+            for line in impact_lines[:max_imp_lines]:
+                draw.text(
+                    (content_x + 18, content_y),
+                    line,
+                    font=fact_font,
+                    fill=self.TEXT_DARK,
                 )
+                content_y += fact_line_h
+            content_y += 8
+
+        # Actions with thick left bar (overflow-aware)
+        if actions and content_y < max_y - fact_line_h:
+            draw.rectangle(
+                [content_x, content_y, content_x + 5, content_y + fact_line_h],
+                fill=accent,
+            )
+            draw.text(
+                (content_x + 18, content_y),
+                "建议:",
+                font=fact_font,
+                fill=accent,
+            )
+            content_y += fact_line_h + 3
+
+            for action in actions[:2]:
+                if content_y >= max_y - fact_line_h:
+                    break
+                prefix = "→ "
+                draw.text(
+                    (content_x + 18, content_y),
+                    prefix,
+                    font=fact_font,
+                    fill=accent,
+                )
+                prefix_width = fact_font.getbbox(prefix)[2]
+                action_lines = self._wrap_text(action, fact_font, content_width - 18 - prefix_width)
                 for line in action_lines[:2]:
+                    if content_y >= max_y:
+                        break
                     draw.text(
-                        (arrow_indent + prefix_width, content_y + 2),
+                        (content_x + 18 + prefix_width, content_y),
                         line,
                         font=fact_font,
-                        fill=self.TEXT_WHITE,
+                        fill=self.TEXT_DARK,
                     )
-                    content_y += int(cfg.body_font_size * 1.3)
-                content_y += 5
+                    content_y += fact_line_h
+                content_y += 3
 
-        # Source badge at bottom right
+        # Source badge: starburst below the card
         badge_text = f"综合{source_count}家报道"
-        badge_bbox = caption_font.getbbox(badge_text)
-        badge_x = cfg.width - card_margin - badge_bbox[2] - 60
-        badge_y = card_bottom - 60
-
-        self._draw_rounded_rect(
+        badge_center_x = cfg.width // 2
+        badge_center_y = card_bottom + 60
+        self._draw_starburst(
             draw,
-            (badge_x, badge_y, badge_x + badge_bbox[2] + 30, badge_y + badge_bbox[3] + 16),
-            radius=20,
-            fill=accent,
+            badge_center_x,
+            badge_center_y,
+            badge_text,
+            caption_font,
+            accent,
+            text_color=self.COMIC_BLACK,
         )
-        draw.text((badge_x + 15, badge_y + 5), badge_text, font=caption_font, fill=self.DARK_BG)
 
         return img
 
@@ -1394,7 +1728,7 @@ class BulletinTemplate(VideoTemplate):
         label: str,
         description: str,
     ) -> Image.Image:
-        """Render a data highlight slide with large number.
+        """Render a comic-style data highlight slide with large number.
 
         Args:
             number: The big number to display (e.g., "100%", "$5B").
@@ -1406,7 +1740,7 @@ class BulletinTemplate(VideoTemplate):
         """
         cfg = self.config
         accent = self._get_accent_color("金融")
-        img = self._get_bulletin_background("金融")
+        img = self._create_comic_background("金融")
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1416,20 +1750,39 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # Big number - clean white with shadow
-        number_bbox = number_font.getbbox(number)
-        number_x = (cfg.width - number_bbox[2]) // 2
-        number_y = center_y - 100
-
-        self._draw_text_shadow(
-            draw, (number_x, number_y), number, number_font, self.TEXT_WHITE, shadow_offset=3
+        # Thick black panel frame
+        frame_margin = 30
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=5,
         )
 
-        # Label
+        # Big number in starburst
+        self._draw_starburst(
+            draw,
+            cfg.width // 2,
+            center_y - 60,
+            number,
+            number_font,
+            accent,
+            text_color=self.COMIC_BLACK,
+        )
+
+        # Label — stroked text below
         label_bbox = label_font.getbbox(label)
         label_x = (cfg.width - label_bbox[2]) // 2
-        label_y = number_y + number_bbox[3] + 30
-        draw.text((label_x, label_y), label, font=label_font, fill=accent)
+        label_y = center_y + 100
+        self._draw_stroked_text(
+            draw,
+            (label_x, label_y),
+            label,
+            label_font,
+            fill=self.COMIC_BLACK,
+            stroke_color=(255, 255, 255),
+            stroke_width=2,
+        )
 
         # Description
         if description:
@@ -1438,7 +1791,7 @@ class BulletinTemplate(VideoTemplate):
             for line in desc_lines[:2]:
                 line_bbox = desc_font.getbbox(line)
                 line_x = (cfg.width - line_bbox[2]) // 2
-                draw.text((line_x, desc_y), line, font=desc_font, fill=self.TEXT_SECONDARY)
+                draw.text((line_x, desc_y), line, font=desc_font, fill=self.TEXT_DARK)
                 desc_y += int(cfg.body_font_size * cfg.line_spacing)
 
         return img
@@ -1447,7 +1800,7 @@ class BulletinTemplate(VideoTemplate):
         self,
         headlines: list[str],
     ) -> Image.Image:
-        """Render summary slide with all headlines.
+        """Render comic-style summary slide with all headlines.
 
         Args:
             headlines: List of event headlines.
@@ -1456,7 +1809,7 @@ class BulletinTemplate(VideoTemplate):
             Summary slide image.
         """
         cfg = self.config
-        img = self._create_category_gradient()
+        img = self._create_comic_background()
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1464,35 +1817,52 @@ class BulletinTemplate(VideoTemplate):
         item_font = self._get_font(cfg.body_font_size + 4)
         badge_number_font = self._get_font(cfg.body_font_size + 6, bold=True)
 
+        # Thick black panel frame
+        frame_margin = 30
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=5,
+        )
+
         y_pos = cfg.padding + 80
 
-        # Header
+        # Header — stroked comic text
         header_text = "今日要点回顾"
         header_bbox = title_font.getbbox(header_text)
         header_x = (cfg.width - header_bbox[2]) // 2
 
-        self._draw_text_shadow(draw, (header_x, y_pos), header_text, title_font, self.TEXT_WHITE)
+        self._draw_stroked_text(
+            draw,
+            (header_x, y_pos),
+            header_text,
+            title_font,
+            fill=self.COMIC_BLACK,
+            stroke_color=(255, 255, 255),
+            stroke_width=2,
+        )
         y_pos += header_bbox[3] + 50
 
-        # Simple accent line
-        accent = self._get_accent_color("default")
-        line_width = 150
+        # Divider line
+        line_width = 200
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle([line_x, y_pos, line_x + line_width, y_pos + 3], fill=accent)
+        draw.rectangle([line_x, y_pos, line_x + line_width, y_pos + 4], fill=self.COMIC_BLACK)
         y_pos += 50
 
-        # Headlines list - use per-item category colors for badge
+        # Headlines list in comic panel style
         for i, headline in enumerate(headlines[:5]):
-            # Cycle through category colors for visual variety
             color_keys = ["AI", "金融", "创业", "default", "科技"]
             color = self._get_accent_color(color_keys[i % len(color_keys)])
 
-            # Number badge
-            badge_size = 44
-            badge_x = cfg.padding + 30
+            # Number badge with thick border
+            badge_size = 48
+            badge_x = cfg.padding + 50
             draw.ellipse(
                 [badge_x, y_pos + 3, badge_x + badge_size, y_pos + 3 + badge_size],
                 fill=color,
+                outline=self.COMIC_BLACK,
+                width=2,
             )
 
             # Number text centered in badge
@@ -1502,80 +1872,112 @@ class BulletinTemplate(VideoTemplate):
             num_height = num_bbox[3] - num_bbox[1]
             num_x = badge_x + (badge_size - num_width) // 2 - num_bbox[0]
             num_y = y_pos + 3 + (badge_size - num_height) // 2 - num_bbox[1]
-            draw.text((num_x, num_y), num_text, font=badge_number_font, fill=self.DARK_BG)
+            draw.text((num_x, num_y), num_text, font=badge_number_font, fill=self.COMIC_BLACK)
 
-            # Headline text
+            # Headline text — dark on white
             text_x = badge_x + badge_size + 20
-            text_max_width = cfg.width - text_x - cfg.padding - 20
+            text_max_width = cfg.width - text_x - cfg.padding - 40
             text_lines = self._wrap_text(headline, item_font, text_max_width)
             line_height = int((cfg.body_font_size + 4) * 1.3)
 
             if len(text_lines) <= 1:
-                # Single line: center vertically with badge
                 headline_bbox = item_font.getbbox(text_lines[0] if text_lines else "A")
                 text_height = headline_bbox[3] - headline_bbox[1]
                 text_y = y_pos + 3 + (badge_size - text_height) // 2 - headline_bbox[1]
                 if text_lines:
-                    draw.text((text_x, text_y), text_lines[0], font=item_font, fill=self.TEXT_WHITE)
+                    draw.text(
+                        (text_x, text_y),
+                        text_lines[0],
+                        font=item_font,
+                        fill=self.TEXT_DARK,
+                    )
                 y_pos += badge_size + 30
             else:
-                # Multi-line: align top with badge
                 text_y = y_pos + 5
                 for line in text_lines[:2]:
-                    draw.text((text_x, text_y), line, font=item_font, fill=self.TEXT_WHITE)
+                    draw.text((text_x, text_y), line, font=item_font, fill=self.TEXT_DARK)
                     text_y += line_height
                 y_pos += max(badge_size, line_height * min(len(text_lines), 2)) + 20
+
+            # Divider line between items
+            if i < len(headlines[:5]) - 1:
+                draw.line(
+                    [(badge_x, y_pos - 10), (cfg.width - cfg.padding - 50, y_pos - 10)],
+                    fill=(200, 200, 195),
+                    width=1,
+                )
 
         return img
 
     def render_closing_slide(self) -> Image.Image:
-        """Render closing slide with CTA.
+        """Render comic-style closing slide with CTA.
 
         Returns:
             Closing slide image.
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._get_bulletin_background("default")
+        img = self._create_comic_background()
         draw = ImageDraw.Draw(img)
 
         # Fonts
         cta_font = self._get_font(cfg.title_font_size, bold=True)
         subtitle_font = self._get_font(cfg.body_font_size)
+        caption_font = self._get_font(cfg.caption_font_size)
 
         center_y = cfg.height // 2
 
-        # CTA button - simple rounded rect with accent border
+        # Thick black panel frame
+        frame_margin = 30
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=5,
+        )
+
+        # CTA in a speech bubble
         cta_text = "关注了解更多"
-        cta_bbox = cta_font.getbbox(cta_text)
-        button_padding = 40
-        button_width = cta_bbox[2] + button_padding * 2
-        button_height = cta_bbox[3] + button_padding
+        bubble_width = cfg.width - 200
+        bubble_x = (cfg.width - bubble_width) // 2
+        img, draw, new_y = self._draw_speech_bubble(
+            img,
+            draw,
+            bubble_x,
+            center_y - 60,
+            bubble_width,
+            cta_text,
+            cta_font,
+            fill=(255, 255, 255),
+            border_color=self.COMIC_BLACK,
+        )
 
-        button_x = (cfg.width - button_width) // 2
-        button_y = center_y - button_height // 2
-
-        button_coords = (button_x, button_y, button_x + button_width, button_y + button_height)
-
-        # Frosted glass button
-        img = self._draw_glass_card(img, draw, button_coords, opacity=0.6)
-        draw = ImageDraw.Draw(img)
-
-        # Simple border
-        draw.rounded_rectangle(button_coords, radius=cfg.card_radius, outline=accent, width=2)
-
-        # CTA text
-        text_x = (cfg.width - cta_bbox[2]) // 2
-        text_y = button_y + (button_height - cta_bbox[3]) // 2 - 5
-        draw.text((text_x, text_y), cta_text, font=cta_font, fill=self.TEXT_WHITE)
-
-        # Subtitle below
+        # Subtitle below — stroked text
         subtitle_text = "巴别情报站 · 快人一步"
         subtitle_bbox = subtitle_font.getbbox(subtitle_text)
         subtitle_x = (cfg.width - subtitle_bbox[2]) // 2
-        subtitle_y = button_y + button_height + 40
+        subtitle_y = new_y + 40
 
-        draw.text((subtitle_x, subtitle_y), subtitle_text, font=subtitle_font, fill=accent)
+        self._draw_stroked_text(
+            draw,
+            (subtitle_x, subtitle_y),
+            subtitle_text,
+            subtitle_font,
+            fill=self.COMIC_BLACK,
+            stroke_color=(255, 255, 255),
+            stroke_width=2,
+        )
+
+        # Starburst decoration at top
+        self._draw_starburst(
+            draw,
+            cfg.width // 2,
+            cfg.padding + 200,
+            "THE END",
+            caption_font,
+            accent,
+            text_color=self.COMIC_BLACK,
+        )
 
         return img
 
@@ -1585,7 +1987,7 @@ class BulletinTemplate(VideoTemplate):
         event_count: int,
         top_headline: str = "",
     ) -> Image.Image:
-        """Render cover slide (thumbnail) for the video.
+        """Render comic-style cover slide (thumbnail) for the video.
 
         Args:
             date_str: Date string (e.g., "2月5日").
@@ -1597,7 +1999,7 @@ class BulletinTemplate(VideoTemplate):
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._get_bulletin_background("default", top_headline or "巴别情报站")
+        img = self._create_comic_background()
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1605,100 +2007,88 @@ class BulletinTemplate(VideoTemplate):
         count_font = self._get_font(cfg.big_number_size, bold=True)
         headline_font = self._get_font(cfg.body_font_size + 10, bold=True)
         date_font = self._get_font(cfg.body_font_size)
-        caption_font = self._get_font(cfg.caption_font_size)
 
         center_x = cfg.width // 2
-        center_y = cfg.height // 2
 
-        # Brand name - clean white with shadow
+        # Thick black panel frame
+        frame_margin = 30
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=self.COMIC_BLACK,
+            width=5,
+        )
+
+        # Brand name — stroked comic text
         brand_text = "巴别情报站"
         brand_bbox = brand_font.getbbox(brand_text)
         brand_x = (cfg.width - brand_bbox[2]) // 2
         brand_y = cfg.padding + 150
 
-        self._draw_text_shadow(
-            draw, (brand_x, brand_y), brand_text, brand_font, self.TEXT_WHITE, shadow_offset=3
+        self._draw_stroked_text(
+            draw,
+            (brand_x, brand_y),
+            brand_text,
+            brand_font,
+            fill=self.COMIC_BLACK,
+            stroke_color=(255, 255, 255),
+            stroke_width=3,
         )
 
         # Decorative line below brand
         line_width = 250
         line_y = brand_y + brand_bbox[3] + 30
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 4], fill=accent)
+        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 4], fill=self.COMIC_BLACK)
 
-        # Big event count in center with circle
-        count_y = center_y - 80
-        circle_radius = 100
-
-        # Outer glow circle (subtle)
-        draw.ellipse(
-            [
-                center_x - circle_radius - 15,
-                count_y - 15,
-                center_x + circle_radius + 15,
-                count_y + circle_radius * 2 + 15,
-            ],
-            fill=(accent[0] // 4, accent[1] // 4, accent[2] // 4),
+        # Big event count in starburst
+        count_y = cfg.height // 2 - 30
+        count_label = f"{event_count}件要闻"
+        self._draw_starburst(
+            draw,
+            center_x,
+            count_y,
+            count_label,
+            count_font,
+            accent,
+            text_color=self.COMIC_BLACK,
         )
 
-        # Main circle
-        draw.ellipse(
-            [
-                center_x - circle_radius,
-                count_y,
-                center_x + circle_radius,
-                count_y + circle_radius * 2,
-            ],
-            fill=accent,
-        )
-
-        # Event count number
-        count_text = str(event_count)
-        count_bbox = count_font.getbbox(count_text)
-        count_text_x = center_x - count_bbox[2] // 2
-        count_text_y = count_y + circle_radius - count_bbox[3] // 2 - 10
-        draw.text((count_text_x, count_text_y), count_text, font=count_font, fill=self.DARK_BG)
-
-        # "件要闻" label below
-        label_text = "件要闻"
-        label_bbox = caption_font.getbbox(label_text)
-        label_x = center_x - label_bbox[2] // 2
-        label_y = count_y + circle_radius * 2 + 20
-        draw.text((label_x, label_y), label_text, font=date_font, fill=self.TEXT_WHITE)
-
-        # Date below
-        date_y = label_y + 50
+        # Date below starburst
+        date_y = count_y + 120
         date_bbox = date_font.getbbox(date_str)
         date_x = center_x - date_bbox[2] // 2
-        draw.text((date_x, date_y), date_str, font=date_font, fill=accent)
 
-        # Top headline preview at bottom
+        # Date in a pill
+        pill_pad = 15
+        draw.rounded_rectangle(
+            [
+                date_x - pill_pad * 2,
+                date_y - pill_pad,
+                date_x + date_bbox[2] + pill_pad * 2,
+                date_y + date_bbox[3] + pill_pad,
+            ],
+            radius=25,
+            fill=self.COMIC_BLACK,
+        )
+        draw.text((date_x, date_y), date_str, font=date_font, fill=self.CARD_WHITE)
+
+        # Top headline preview at bottom in speech bubble style
         if top_headline:
-            card_margin = 50
-            card_top = cfg.height - cfg.padding - 200
-            card_bottom = cfg.height - cfg.padding - 60
-            card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
-
-            # Frosted glass card
-            img = self._draw_glass_card(img, draw, card_coords, opacity=0.7)
-            draw = ImageDraw.Draw(img)
-
-            # Left accent bar
-            draw.rectangle(
-                [card_margin, card_top + 15, card_margin + 5, card_bottom - 15],
-                fill=accent,
+            card_margin = 60
+            bubble_y = cfg.height - cfg.padding - 220
+            bubble_width = cfg.width - 2 * card_margin
+            img, draw, _ = self._draw_speech_bubble(
+                img,
+                draw,
+                card_margin,
+                bubble_y,
+                bubble_width,
+                top_headline,
+                headline_font,
+                fill=(255, 255, 255),
+                border_color=self.COMIC_BLACK,
             )
-
-            # Headline text
-            headline_lines = self._wrap_text(
-                top_headline, headline_font, cfg.width - 2 * card_margin - 60
-            )
-            text_y = card_top + 25
-            for line in headline_lines[:2]:
-                draw.text(
-                    (card_margin + 25, text_y), line, font=headline_font, fill=self.TEXT_WHITE
-                )
-                text_y += int((cfg.body_font_size + 10) * cfg.line_spacing)
 
         return img
 
@@ -1712,8 +2102,6 @@ class BulletinTemplate(VideoTemplate):
             summary=slide.body[:50] if slide.body else "",
             category=slide.category or "资讯",
             source_count=1,
-            event_number=1,
-            total_events=1,
         )
 
 
