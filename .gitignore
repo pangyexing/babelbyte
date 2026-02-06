@@ -61,6 +61,7 @@ htmlcov/
 videos/
 *.png
 *.mp3
+*.wav
 *TEMP_MPY*.mp4
 
 # AI model weights and configs (no longer needed for LocalAI)
