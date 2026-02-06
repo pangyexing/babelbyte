@@ -251,8 +251,8 @@ class ImageGenerator:
         self,
         category: str,
         headline: str,
-        width: int = 900,
-        height: int = 340,
+        width: int = 896,
+        height: int = 336,
         prompt: str = "",
     ) -> Optional[Image.Image]:
         """Generate a bright illustration for display inside an event card.
