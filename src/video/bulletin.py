@@ -106,10 +106,10 @@ class BulletinGenerator:
 {bulletins}
 
 要求：
-1. 开头用一句话点明主题（如：欢迎收看巴别情报站，今天有N件大事）
+1. 开头用一句话点明主题（如：欢迎收看巴别情报站，今天有N件动态需要关注）
 2. 每条新闻之间用过渡语连接（如：另外/此外/值得关注的是）
-3. 结尾有行动号召
-4. 语气自然、口语化
+3. 结尾简短有力（如：感谢收看巴别情报站，保持关注，保持思考）
+4. 语气沉稳干练，像资深专家做战略简报
 5. 不要使用emoji
 6. 总字数300-400字
 7. 每句话必须包含明确主语（公司名/产品名/人物名），不要省略主体
@@ -616,7 +616,7 @@ class BulletinGenerator:
         if not items:
             return "暂无巴别情报站。"
 
-        parts = [f"欢迎收看巴别情报站，今天有{len(items)}件大事值得关注。"]
+        parts = [f"欢迎收看巴别情报站，今天有{len(items)}件动态需要关注。"]
 
         transitions = ["首先，", "另外，", "此外，", "值得关注的是，", "最后，"]
 
@@ -632,7 +632,7 @@ class BulletinGenerator:
             if item.impact:
                 parts.append(f"影响：{item.impact}")
 
-        parts.append("以上就是今天的巴别情报站，关注我们获取更多资讯。")
+        parts.append("感谢收看巴别情报站，保持关注，保持思考。")
 
         return "。".join(parts)
 
@@ -744,7 +744,7 @@ class BulletinGenerator:
         n_items = len(items)
 
         # 1. Opening slide script
-        opening = f"欢迎收看巴别情报站，今天有{n_items}件大事值得关注。"
+        opening = f"欢迎收看巴别情报站，今天有{n_items}件动态需要关注。"
         segments.append(opening)
 
         # 2. Event card scripts - use deduped scripts if available
@@ -769,7 +769,7 @@ class BulletinGenerator:
             segments.append(summary)
 
         # 4. Closing slide script
-        closing = "感谢收看巴别情报站，关注我们获取更多资讯。"
+        closing = "感谢收看巴别情报站，保持关注，保持思考。"
         segments.append(closing)
 
         return segments

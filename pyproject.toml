@@ -56,6 +56,15 @@ video = [
     "edge-tts>=6.1.0",  # Microsoft Edge TTS (free, no API key)
     "moviepy>=1.0.3",  # Video editing and composition
     "pillow>=10.0.0",  # Image generation for video frames
+    "soundfile>=0.12.0",  # Audio file I/O (WAV read/write)
+    "diffusers>=0.36.0",  # FLUX image generation pipeline
+    "torch>=2.0.0",  # GPU operations for FLUX pipeline
+    "accelerate>=0.20.0",  # Required by diffusers enable_model_cpu_offload()
+]
+tts-qwen = [
+    "qwen-tts>=0.1.0",  # Qwen3-TTS local GPU TTS
+    "soundfile>=0.12.0",  # WAV file output for Qwen3-TTS
+    "torch>=2.0.0",  # GPU operations for Qwen3-TTS model
 ]
 
 [project.scripts]

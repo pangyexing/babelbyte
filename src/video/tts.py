@@ -1,4 +1,4 @@
-"""Text-to-Speech using edge-tts (completely free, no API key needed)."""
+"""Text-to-Speech providers: EdgeTTS (free, network) and QwenTTS (local GPU)."""
 
 import asyncio
 import logging
@@ -12,6 +12,9 @@ import edge_tts
 from edge_tts.exceptions import NoAudioReceived
 
 logger = logging.getLogger(__name__)
+
+# Audio file extension per provider
+AUDIO_EXT = {"edge": ".mp3", "qwen": ".wav"}
 
 # Minimum interval between TTS requests (seconds) to avoid Microsoft throttling
 _MIN_REQUEST_INTERVAL = 1.0
@@ -250,3 +253,187 @@ async def list_voices(language: str = "zh") -> list[dict]:
     """List available voices for a language."""
     voices = await edge_tts.list_voices()
     return [v for v in voices if v["Locale"].startswith(language)]
+
+
+# Qwen3-TTS available speakers
+# Character aliases:
+#   "linhuaiyue" (林怀岳/冷面笑匠) → Uncle_Fu: 一本正经的反差幽默
+#   "dushe" (毒舌主播) → Vivian: 明快犀利的毒舌风格
+QWEN_SPEAKERS = {
+    "vivian": "Vivian",
+    "serena": "Serena",
+    "uncle_fu": "Uncle_Fu",
+    "dylan": "Dylan",
+    "eric": "Eric",
+    "ryan": "Ryan",
+    "aiden": "Aiden",
+    "linhuaiyue": "Uncle_Fu",
+    "dushe": "Vivian",
+}
+
+
+class QwenTTS:
+    """Qwen3-TTS wrapper for local GPU-based text-to-speech synthesis.
+
+    Lazy-loads the model on first synthesis call, and can unload to free GPU
+    memory for other models (Ollama, FLUX). Outputs .wav files via soundfile.
+    """
+
+    def __init__(self, speaker: str = "Vivian", language: str = "Chinese", instruct: str = ""):
+        self.speaker = QWEN_SPEAKERS.get(speaker.lower(), speaker)
+        self.language = language
+        self.instruct = instruct
+        self._model = None
+        self._auto_release = True
+
+    def _load_model(self):
+        """Load Qwen3-TTS model to GPU (lazy, first call only)."""
+        if self._model is not None:
+            return
+
+        self._unload_ollama_models()
+
+        import torch
+        from qwen_tts import Qwen3TTSModel
+
+        from config.settings import get_settings
+
+        cfg = get_settings().qwen_tts
+        logger.info(f"Loading Qwen3-TTS model: {cfg.model_id}")
+        self._model = Qwen3TTSModel.from_pretrained(
+            cfg.model_id,
+            device_map="cuda:0",
+            dtype=torch.bfloat16,
+        )
+        logger.info("Qwen3-TTS model loaded on GPU")
+
+    def unload(self):
+        """Unload model from GPU to free VRAM."""
+        if self._model is None:
+            return
+
+        import gc
+
+        import torch
+
+        del self._model
+        self._model = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info("Qwen3-TTS model unloaded, GPU memory freed")
+
+    def _unload_ollama_models(self):
+        """Ask Ollama to unload all loaded models to free GPU memory."""
+        try:
+            import requests
+
+            from config.settings import get_settings
+
+            base_url = get_settings().ollama.base_url
+
+            resp = requests.get(f"{base_url}/api/ps", timeout=5)
+            if resp.status_code != 200:
+                return
+
+            models = resp.json().get("models", [])
+            if not models:
+                return
+
+            for m in models:
+                name = m.get("name", "")
+                if name:
+                    logger.info(f"Unloading Ollama model: {name}")
+                    requests.post(
+                        f"{base_url}/api/generate",
+                        json={"model": name, "keep_alive": 0},
+                        timeout=10,
+                    )
+
+            time.sleep(2)
+            logger.info("Ollama models unloaded, GPU memory freed")
+        except Exception as e:
+            logger.debug(f"Ollama unload skipped: {e}")
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        voice: Optional[str] = None,
+    ) -> Path:
+        """Synthesize text to speech.
+
+        Args:
+            text: Text to synthesize.
+            output_path: Output audio file path (.wav).
+            voice: Speaker name override (from QWEN_SPEAKERS keys).
+
+        Returns:
+            Path to generated audio file.
+        """
+        if not _has_speakable_content(text):
+            raise ValueError(f"Text has no speakable content: {text!r}")
+
+        import soundfile as sf
+
+        self._load_model()
+
+        speaker = QWEN_SPEAKERS.get(voice.lower(), voice) if voice else self.speaker
+        output_path = output_path.with_suffix(".wav")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Qwen3-TTS synthesizing ({len(text)} chars, speaker={speaker})")
+
+        # Build generation kwargs
+        gen_kwargs = {
+            "text": text,
+            "speaker": speaker,
+            "language": self.language,
+        }
+        if self.instruct:
+            gen_kwargs["instruct"] = self.instruct
+
+        wavs, sample_rate = self._model.generate_custom_voice(**gen_kwargs)
+        sf.write(str(output_path), wavs[0], sample_rate)
+
+        if self._auto_release:
+            self.unload()
+
+        return output_path
+
+    def synthesize_with_timestamps(
+        self,
+        text: str,
+        output_dir: Path,
+        voice: Optional[str] = None,
+    ) -> tuple[Path, list[dict]]:
+        """Synthesize text to speech (no timestamp support).
+
+        Returns:
+            Tuple of (audio_path, empty_list). Callers always discard timestamps.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = output_dir / "voice.wav"
+        self.synthesize(text, audio_path, voice)
+        return audio_path, []
+
+
+def get_tts(voice: str = "yunxi", rate: str = "+10%") -> EdgeTTS | QwenTTS:
+    """Factory function to create the appropriate TTS provider.
+
+    Reads TTS_PROVIDER from settings (qwen_tts.enabled).
+    Returns QwenTTS for qwen provider, EdgeTTS for edge (default).
+    """
+    from config.settings import get_settings
+
+    cfg = get_settings().qwen_tts
+
+    if cfg.enabled:
+        return QwenTTS(
+            speaker=cfg.speaker,
+            language=cfg.language,
+            instruct=cfg.instruct,
+        )
+
+    # Default: EdgeTTS
+    voice_id = CHINESE_VOICES.get(voice, voice)
+    return EdgeTTS(TTSConfig(voice=voice_id, rate=rate))

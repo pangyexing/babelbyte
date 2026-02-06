@@ -28,7 +28,7 @@ from src.video.templates import (
     VideoTemplate,
     get_template,
 )
-from src.video.tts import EdgeTTS, TTSConfig
+from src.video.tts import QwenTTS, get_tts
 
 
 @dataclass
@@ -92,16 +92,7 @@ class VideoGenerator:
 
     def __init__(self, config: Optional[VideoConfig] = None):
         self.config = config or VideoConfig()
-        self.tts = EdgeTTS(
-            TTSConfig(
-                voice=(
-                    f"zh-CN-{self.config.voice.capitalize()}Neural"
-                    if self.config.voice in ["yunxi", "yunyang", "xiaoxiao"]
-                    else self.config.voice
-                ),
-                rate=self.config.speech_rate,
-            )
-        )
+        self.tts = get_tts(voice=self.config.voice, rate=self.config.speech_rate)
 
         # Initialize template config (template may be selected per-item if auto_template)
         self._template_config = TemplateConfig(
@@ -565,16 +556,7 @@ class BulletinVideoGenerator:
 
     def __init__(self, config: Optional[VideoConfig] = None, ai_bg: bool = False):
         self.config = config or VideoConfig()
-        self.tts = EdgeTTS(
-            TTSConfig(
-                voice=(
-                    f"zh-CN-{self.config.voice.capitalize()}Neural"
-                    if self.config.voice in ["yunxi", "yunyang", "xiaoxiao"]
-                    else self.config.voice
-                ),
-                rate=self.config.speech_rate,
-            )
-        )
+        self.tts = get_tts(voice=self.config.voice, rate=self.config.speech_rate)
 
         # Template config
         self._template_config = TemplateConfig(
@@ -668,6 +650,16 @@ class BulletinVideoGenerator:
         output_path = self.config.output_dir / f"{output_name}.mp4"
         audio_dir = self.config.output_dir / "temp" / output_name
 
+        # Determine audio extension based on TTS provider
+        is_qwen = isinstance(self.tts, QwenTTS)
+        audio_ext = ".wav" if is_qwen else ".mp3"
+
+        # Disable auto_release for multi-segment generation (load once, unload at end)
+        saved_auto_release = None
+        if is_qwen:
+            saved_auto_release = self.tts._auto_release
+            self.tts._auto_release = False
+
         try:
             # 1. Render all slides (returns list of PIL images)
             slide_images = self._render_bulletin_slides_images(bulletin_result)
@@ -704,7 +696,7 @@ class BulletinVideoGenerator:
                 # Concatenate audio segments
                 audio_clips = [AudioFileClip(str(p)) for p in segment_audios]
                 combined_audio = concatenate_audioclips(audio_clips)
-                audio_path = audio_dir / "voice.mp3"
+                audio_path = audio_dir / f"voice{audio_ext}"
                 combined_audio.write_audiofile(str(audio_path), logger=None)
                 combined_audio.close()
                 for clip in audio_clips:
@@ -749,6 +741,9 @@ class BulletinVideoGenerator:
 
             # Release GPU memory if auto_release is enabled
             self._auto_release_image_generator()
+            if is_qwen and saved_auto_release:
+                self.tts._auto_release = saved_auto_release
+                self.tts.unload()
 
             return BulletinVideoResult(
                 video_path=output_path,
@@ -761,9 +756,13 @@ class BulletinVideoGenerator:
 
         except Exception as e:
             self._auto_release_image_generator()
+            if is_qwen:
+                if saved_auto_release is not None:
+                    self.tts._auto_release = saved_auto_release
+                self.tts.unload()
             return BulletinVideoResult(
                 video_path=output_path,
-                audio_path=audio_dir / "voice.mp3",
+                audio_path=audio_dir / f"voice{audio_ext}",
                 duration=0,
                 event_count=0,
                 script="",

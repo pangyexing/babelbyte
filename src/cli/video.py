@@ -605,12 +605,21 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit, ai
             console.print(f"\n[red]✗[/red] Video generation failed: {video_result.error}")
 
     finally:
-        # Always release GPU memory from image generator
+        # Always release GPU memory from image generator and TTS
         try:
             ig = getattr(getattr(video_gen, "template", None), "_image_generator", None)
             if ig is not None:
                 ig.unload()
-                console.print("[dim]GPU memory released.[/dim]")
+                console.print("[dim]Image generator GPU memory released.[/dim]")
+        except NameError:
+            pass
+        try:
+            from src.video.tts import QwenTTS
+
+            tts = getattr(video_gen, "tts", None)
+            if isinstance(tts, QwenTTS):
+                tts.unload()
+                console.print("[dim]Qwen TTS GPU memory released.[/dim]")
         except NameError:
             pass
         db.close()
@@ -668,14 +677,19 @@ def list_voices():
     """List available TTS voices."""
     import asyncio
 
-    from src.video.tts import CHINESE_VOICES
+    from src.video.tts import CHINESE_VOICES, QWEN_SPEAKERS
     from src.video.tts import list_voices as async_list_voices
 
-    console.print("[bold]Built-in voice shortcuts:[/bold]\n")
+    console.print("[bold]Edge TTS voice shortcuts:[/bold]\n")
     for name, voice_id in CHINESE_VOICES.items():
         console.print(f"  {name:12} -> {voice_id}")
 
-    console.print("\n\n[bold]Fetching all available voices...[/bold]")
+    console.print("\n[bold]Qwen3-TTS speakers:[/bold]\n")
+    for shortcut, speaker_name in QWEN_SPEAKERS.items():
+        console.print(f"  {shortcut:12} -> {speaker_name}")
+    console.print("  [dim]Set TTS_PROVIDER=qwen to use Qwen3-TTS[/dim]")
+
+    console.print("\n\n[bold]Fetching all Edge TTS voices...[/bold]")
     try:
         voices = asyncio.run(async_list_voices("zh"))
         console.print(f"\nFound {len(voices)} Chinese voices:\n")
@@ -690,23 +704,48 @@ def list_voices():
 
 @video.command("test-tts")
 @click.argument("text")
-@click.option("--voice", default="yunxi", help="Voice to use")
-@click.option("--output", default="./test_voice.mp3", help="Output file")
-def test_tts(text, voice, output):
+@click.option("--voice", default="yunxi", help="Voice to use (edge) or speaker name (qwen)")
+@click.option("--output", default=None, help="Output file (default: auto based on provider)")
+@click.option(
+    "--provider",
+    type=click.Choice(["edge", "qwen", "auto"]),
+    default="auto",
+    help="TTS provider (auto reads TTS_PROVIDER env var)",
+)
+def test_tts(text, voice, output, provider):
     """Test TTS with a sample text."""
-    from src.video.tts import EdgeTTS
+    import os
 
-    console.print(f"Generating TTS with voice: {voice}")
+    from src.video.tts import QwenTTS, get_tts
+
+    # Override TTS_PROVIDER if explicit --provider given
+    if provider != "auto":
+        os.environ["TTS_PROVIDER"] = provider
+        import config.settings as _cs
+
+        _cs._settings = None  # force re-read with new env var
+
+    tts = get_tts(voice=voice)
+    is_qwen = isinstance(tts, QwenTTS)
+    provider_name = "qwen" if is_qwen else "edge"
+
+    if output is None:
+        output = f"./test_voice{'.wav' if is_qwen else '.mp3'}"
+
+    console.print(f"Provider: {provider_name}")
+    console.print(f"Voice: {voice}")
     console.print(f"Text: {text}")
 
-    tts = EdgeTTS()
     output_path = Path(output)
 
     try:
-        result = tts.synthesize(text, output_path, voice)
+        result = tts.synthesize(text, output_path, voice if not is_qwen else None)
         console.print(f"\n[green]✓[/green] Audio saved to: {result}")
     except Exception as e:
         console.print(f"\n[red]✗[/red] Error: {e}")
+    finally:
+        if is_qwen:
+            tts.unload()
 
 
 @video.command("preview")

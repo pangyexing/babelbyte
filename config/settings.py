@@ -440,6 +440,40 @@ class ImageGenConfig:
 
 
 @dataclass
+class QwenTTSConfig:
+    """Qwen3-TTS configuration for local GPU-based text-to-speech.
+
+    Uses Qwen3-TTS model running on local GPU. Supports custom voice cloning
+    and emotion control via instruct parameter. Auto-release frees GPU memory
+    after generation for coexistence with Ollama/FLUX.
+    """
+
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("TTS_PROVIDER", "edge").lower() == "qwen"
+    )
+    model_id: str = field(
+        default_factory=lambda: os.getenv(
+            "QWEN_TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+        )
+    )
+    speaker: str = field(default_factory=lambda: os.getenv("QWEN_TTS_SPEAKER", "linhuaiyue"))
+    language: str = field(default_factory=lambda: os.getenv("QWEN_TTS_LANGUAGE", "Chinese"))
+    instruct: str = field(
+        default_factory=lambda: os.getenv(
+            "QWEN_TTS_INSTRUCT",
+            "用一本正经的严肃口吻播报新闻，语气越正经越好，语速偏快节奏紧凑",
+        )
+    )
+    auto_release: bool = field(
+        default_factory=lambda: os.getenv("QWEN_TTS_AUTO_RELEASE", "true").lower() == "true"
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        return self.enabled
+
+
+@dataclass
 class DigestConfig:
     """Digest generation configuration."""
 
@@ -670,6 +704,7 @@ class Settings:
     rule_optimization: RuleOptimizationConfig = field(default_factory=RuleOptimizationConfig)
     digest: DigestConfig = field(default_factory=DigestConfig)
     image_gen: ImageGenConfig = field(default_factory=ImageGenConfig)
+    qwen_tts: QwenTTSConfig = field(default_factory=QwenTTSConfig)
 
 
 # Global settings instance
