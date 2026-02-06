@@ -275,14 +275,27 @@ QWEN_SPEAKERS = {
 class QwenTTS:
     """Qwen3-TTS wrapper for local GPU-based text-to-speech synthesis.
 
+    Supports two model types:
+    - custom_voice: Preset speakers with emotion control via instruct.
+    - voice_design: Design a voice from scratch using natural language description.
+
     Lazy-loads the model on first synthesis call, and can unload to free GPU
     memory for other models (Ollama, FLUX). Outputs .wav files via soundfile.
     """
 
-    def __init__(self, speaker: str = "Vivian", language: str = "Chinese", instruct: str = ""):
+    def __init__(
+        self,
+        speaker: str = "Vivian",
+        language: str = "Chinese",
+        instruct: str = "",
+        model_type: str = "custom_voice",
+        voice_design_instruct: str = "",
+    ):
         self.speaker = QWEN_SPEAKERS.get(speaker.lower(), speaker)
         self.language = language
-        self.instruct = instruct
+        self.instruct = instruct  # emotion/style control for custom_voice
+        self.voice_design_instruct = voice_design_instruct  # voice description for voice_design
+        self.model_type = model_type
         self._model = None
         self._auto_release = True
 
@@ -299,9 +312,15 @@ class QwenTTS:
         from config.settings import get_settings
 
         cfg = get_settings().qwen_tts
-        logger.info(f"Loading Qwen3-TTS model: {cfg.model_id}")
+        model_id = cfg.model_id
+
+        # Derive VoiceDesign model ID from CustomVoice model ID
+        if self.model_type == "voice_design":
+            model_id = model_id.replace("CustomVoice", "VoiceDesign")
+
+        logger.info(f"Loading Qwen3-TTS model: {model_id} (type={self.model_type})")
         self._model = Qwen3TTSModel.from_pretrained(
-            cfg.model_id,
+            model_id,
             device_map="cuda:0",
             dtype=torch.bfloat16,
         )
@@ -354,6 +373,18 @@ class QwenTTS:
         except Exception as e:
             logger.debug(f"Ollama unload skipped: {e}")
 
+    def _get_gen_params(self) -> dict:
+        """Read generation parameters from config."""
+        from config.settings import get_settings
+
+        cfg = get_settings().qwen_tts
+        return {
+            "temperature": cfg.temperature,
+            "top_k": cfg.top_k,
+            "top_p": cfg.top_p,
+            "repetition_penalty": cfg.repetition_penalty,
+        }
+
     def synthesize(
         self,
         text: str,
@@ -377,22 +408,42 @@ class QwenTTS:
 
         self._load_model()
 
-        speaker = QWEN_SPEAKERS.get(voice.lower(), voice) if voice else self.speaker
         output_path = output_path.with_suffix(".wav")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Qwen3-TTS synthesizing ({len(text)} chars, speaker={speaker})")
+        gen_params = self._get_gen_params()
 
-        # Build generation kwargs
-        gen_kwargs = {
-            "text": text,
-            "speaker": speaker,
-            "language": self.language,
-        }
-        if self.instruct:
-            gen_kwargs["instruct"] = self.instruct
+        if self.model_type == "voice_design":
+            # VoiceDesign: voice_design_instruct describes the desired voice characteristics
+            vd_instruct = self.voice_design_instruct
+            logger.info(
+                f"Qwen3-TTS voice_design synthesizing ({len(text)} chars, "
+                f"instruct={vd_instruct!r})"
+            )
+            gen_kwargs = {
+                "text": text,
+                "instruct": vd_instruct,
+                "language": self.language,
+                **gen_params,
+            }
+            wavs, sample_rate = self._model.generate_voice_design(**gen_kwargs)
+        else:
+            # CustomVoice: preset speakers with optional emotion instruct
+            speaker = QWEN_SPEAKERS.get(voice.lower(), voice) if voice else self.speaker
+            logger.info(
+                f"Qwen3-TTS custom_voice synthesizing ({len(text)} chars, "
+                f"speaker={speaker})"
+            )
+            gen_kwargs = {
+                "text": text,
+                "speaker": speaker,
+                "language": self.language,
+                **gen_params,
+            }
+            if self.instruct:
+                gen_kwargs["instruct"] = self.instruct
+            wavs, sample_rate = self._model.generate_custom_voice(**gen_kwargs)
 
-        wavs, sample_rate = self._model.generate_custom_voice(**gen_kwargs)
         sf.write(str(output_path), wavs[0], sample_rate)
 
         if self._auto_release:
@@ -432,6 +483,8 @@ def get_tts(voice: str = "yunxi", rate: str = "+10%") -> EdgeTTS | QwenTTS:
             speaker=cfg.speaker,
             language=cfg.language,
             instruct=cfg.instruct,
+            model_type=cfg.model_type,
+            voice_design_instruct=cfg.voice_design_instruct,
         )
 
     # Default: EdgeTTS

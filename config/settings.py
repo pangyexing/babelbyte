@@ -467,6 +467,27 @@ class QwenTTSConfig:
     auto_release: bool = field(
         default_factory=lambda: os.getenv("QWEN_TTS_AUTO_RELEASE", "true").lower() == "true"
     )
+    # Model type: "custom_voice" (preset speakers) or "voice_design" (describe voice)
+    model_type: str = field(
+        default_factory=lambda: os.getenv("QWEN_TTS_MODEL_TYPE", "custom_voice")
+    )
+    # Voice description for voice_design mode (natural language, e.g. "成熟稳重的男性新闻主播")
+    voice_design_instruct: str = field(
+        default_factory=lambda: os.getenv("QWEN_TTS_VOICE_DESIGN_INSTRUCT", "")
+    )
+    # Generation parameters
+    temperature: float = field(
+        default_factory=lambda: float(os.getenv("QWEN_TTS_TEMPERATURE", "0.7"))
+    )
+    top_k: int = field(
+        default_factory=lambda: int(os.getenv("QWEN_TTS_TOP_K", "30"))
+    )
+    top_p: float = field(
+        default_factory=lambda: float(os.getenv("QWEN_TTS_TOP_P", "0.9"))
+    )
+    repetition_penalty: float = field(
+        default_factory=lambda: float(os.getenv("QWEN_TTS_REPETITION_PENALTY", "1.05"))
+    )
 
     @property
     def is_configured(self) -> bool:

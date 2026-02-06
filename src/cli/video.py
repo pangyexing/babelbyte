@@ -712,7 +712,18 @@ def list_voices():
     default="auto",
     help="TTS provider (auto reads TTS_PROVIDER env var)",
 )
-def test_tts(text, voice, output, provider):
+@click.option(
+    "--model-type",
+    type=click.Choice(["custom_voice", "voice_design"]),
+    default=None,
+    help="Qwen model type: custom_voice (preset speakers) or voice_design (describe voice)",
+)
+@click.option(
+    "--instruct",
+    default=None,
+    help="Override instruct text (voice description for voice_design, emotion for custom_voice)",
+)
+def test_tts(text, voice, output, provider, model_type, instruct):
     """Test TTS with a sample text."""
     import os
 
@@ -725,15 +736,46 @@ def test_tts(text, voice, output, provider):
 
         _cs._settings = None  # force re-read with new env var
 
+    # Override model_type if specified
+    if model_type is not None:
+        os.environ["QWEN_TTS_MODEL_TYPE"] = model_type
+        import config.settings as _cs
+
+        _cs._settings = None
+
     tts = get_tts(voice=voice)
     is_qwen = isinstance(tts, QwenTTS)
     provider_name = "qwen" if is_qwen else "edge"
+
+    # Override instruct if specified — write to the correct field per model_type
+    if instruct is not None and is_qwen:
+        if tts.model_type == "voice_design":
+            tts.voice_design_instruct = instruct
+        else:
+            tts.instruct = instruct
+
+    # VoiceDesign requires voice_design_instruct
+    if is_qwen and tts.model_type == "voice_design" and not tts.voice_design_instruct:
+        console.print(
+            "[red]Error:[/red] --instruct is required for voice_design model type.\n"
+            'Example: --instruct "成熟稳重的男性新闻主播，中低音，语速适中"'
+        )
+        return
 
     if output is None:
         output = f"./test_voice{'.wav' if is_qwen else '.mp3'}"
 
     console.print(f"Provider: {provider_name}")
-    console.print(f"Voice: {voice}")
+    if is_qwen:
+        console.print(f"Model type: {tts.model_type}")
+        if tts.model_type == "voice_design":
+            console.print(f"Voice design: {tts.voice_design_instruct}")
+        else:
+            console.print(f"Speaker: {tts.speaker}")
+            if tts.instruct:
+                console.print(f"Instruct: {tts.instruct}")
+    else:
+        console.print(f"Voice: {voice}")
     console.print(f"Text: {text}")
 
     output_path = Path(output)
