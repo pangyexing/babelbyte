@@ -488,6 +488,34 @@ class QwenTTSConfig:
     repetition_penalty: float = field(
         default_factory=lambda: float(os.getenv("QWEN_TTS_REPETITION_PENALTY", "1.05"))
     )
+    # Voice clone: reference audio file for cloning
+    voice_clone_ref_audio: str = field(
+        default_factory=lambda: os.getenv("QWEN_TTS_VOICE_CLONE_REF_AUDIO", "")
+    )
+    # Voice clone: optional transcript of reference audio (for ICL mode)
+    voice_clone_ref_text: str = field(
+        default_factory=lambda: os.getenv("QWEN_TTS_VOICE_CLONE_REF_TEXT", "")
+    )
+    # Voice clone: True = fast x-vector embedding, False = ICL (slower, higher quality)
+    voice_clone_x_vector_only: bool = field(
+        default_factory=lambda: os.getenv(
+            "QWEN_TTS_VOICE_CLONE_X_VECTOR_ONLY", "true"
+        ).lower() == "true"
+    )
+
+    def __post_init__(self):
+        valid_types = {"custom_voice", "voice_design", "voice_clone"}
+        if self.model_type not in valid_types:
+            raise ValueError(
+                f"QWEN_TTS_MODEL_TYPE must be one of {valid_types}, "
+                f"got '{self.model_type}'"
+            )
+        if self.model_type == "voice_clone" and not self.voice_clone_ref_audio:
+            raise ValueError(
+                "QWEN_TTS_VOICE_CLONE_REF_AUDIO is required when "
+                "QWEN_TTS_MODEL_TYPE=voice_clone. "
+                "Can be a file path or a directory of audio files."
+            )
 
     @property
     def is_configured(self) -> bool:

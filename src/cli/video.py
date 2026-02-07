@@ -714,31 +714,45 @@ def list_voices():
 )
 @click.option(
     "--model-type",
-    type=click.Choice(["custom_voice", "voice_design"]),
+    type=click.Choice(["custom_voice", "voice_design", "voice_clone"]),
     default=None,
-    help="Qwen model type: custom_voice (preset speakers) or voice_design (describe voice)",
+    help="Qwen model type: custom_voice, voice_design, or voice_clone",
 )
 @click.option(
     "--instruct",
     default=None,
     help="Override instruct text (voice description for voice_design, emotion for custom_voice)",
 )
-def test_tts(text, voice, output, provider, model_type, instruct):
+@click.option(
+    "--ref-audio",
+    type=click.Path(exists=True),
+    default=None,
+    help="Reference audio file for voice_clone mode",
+)
+@click.option(
+    "--ref-text",
+    default=None,
+    help="Transcript of reference audio for voice_clone ICL mode",
+)
+def test_tts(text, voice, output, provider, model_type, instruct, ref_audio, ref_text):
     """Test TTS with a sample text."""
     import os
 
     from src.video.tts import QwenTTS, get_tts
 
-    # Override TTS_PROVIDER if explicit --provider given
+    # Override env vars before re-creating settings
+    need_reset = False
     if provider != "auto":
         os.environ["TTS_PROVIDER"] = provider
-        import config.settings as _cs
-
-        _cs._settings = None  # force re-read with new env var
-
-    # Override model_type if specified
+        need_reset = True
     if model_type is not None:
         os.environ["QWEN_TTS_MODEL_TYPE"] = model_type
+        need_reset = True
+    if ref_audio is not None:
+        os.environ["QWEN_TTS_VOICE_CLONE_REF_AUDIO"] = ref_audio
+        need_reset = True
+
+    if need_reset:
         import config.settings as _cs
 
         _cs._settings = None
@@ -754,11 +768,25 @@ def test_tts(text, voice, output, provider, model_type, instruct):
         else:
             tts.instruct = instruct
 
+    # Override voice_clone fields if specified
+    if ref_audio is not None and is_qwen:
+        tts.voice_clone_ref_audio = ref_audio
+    if ref_text is not None and is_qwen:
+        tts.voice_clone_ref_text = ref_text
+
     # VoiceDesign requires voice_design_instruct
     if is_qwen and tts.model_type == "voice_design" and not tts.voice_design_instruct:
         console.print(
             "[red]Error:[/red] --instruct is required for voice_design model type.\n"
             'Example: --instruct "成熟稳重的男性新闻主播，中低音，语速适中"'
+        )
+        return
+
+    # VoiceClone requires ref_audio
+    if is_qwen and tts.model_type == "voice_clone" and not tts.voice_clone_ref_audio:
+        console.print(
+            "[red]Error:[/red] --ref-audio is required for voice_clone model type.\n"
+            "Example: --ref-audio ./ref_voice.wav"
         )
         return
 
@@ -768,7 +796,13 @@ def test_tts(text, voice, output, provider, model_type, instruct):
     console.print(f"Provider: {provider_name}")
     if is_qwen:
         console.print(f"Model type: {tts.model_type}")
-        if tts.model_type == "voice_design":
+        if tts.model_type == "voice_clone":
+            clone_mode = "x-vector" if tts.voice_clone_x_vector_only else "ICL"
+            console.print(f"Ref audio: {tts.voice_clone_ref_audio}")
+            console.print(f"Clone mode: {clone_mode}")
+            if tts.voice_clone_ref_text:
+                console.print(f"Ref text: {tts.voice_clone_ref_text}")
+        elif tts.model_type == "voice_design":
             console.print(f"Voice design: {tts.voice_design_instruct}")
         else:
             console.print(f"Speaker: {tts.speaker}")

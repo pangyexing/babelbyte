@@ -830,6 +830,7 @@ class BulletinVideoGenerator:
                 impact=item.impact,
                 actions=item.actions,
                 illustration=illustration,
+                date_str=date_str,
             )
             # Duration based on content length (estimate reading time)
             # ~5 chars/sec for Chinese TTS (faster rate)
@@ -844,11 +845,11 @@ class BulletinVideoGenerator:
         # 3. Summary slide
         headlines = [item.headline for item in bulletin_result.items]
         if len(headlines) > 1:
-            summary = self.template.render_summary_slide(headlines)
+            summary = self.template.render_summary_slide(headlines, date_str=date_str)
             slides.append((summary, 4.0))
 
         # 4. Closing slide
-        closing = self.template.render_closing_slide()
+        closing = self.template.render_closing_slide(date_str=date_str)
         slides.append((closing, 3.0))
 
         return slides
@@ -887,17 +888,18 @@ class BulletinVideoGenerator:
                 impact=item.impact,
                 actions=item.actions,
                 illustration=illustration,
+                date_str=date_str,
             )
             slides.append(card)
 
         # 3. Summary slide (only if more than 1 item)
         headlines = [item.headline for item in bulletin_result.items]
         if len(headlines) > 1:
-            summary = self.template.render_summary_slide(headlines)
+            summary = self.template.render_summary_slide(headlines, date_str=date_str)
             slides.append(summary)
 
         # 4. Closing slide
-        closing = self.template.render_closing_slide()
+        closing = self.template.render_closing_slide(date_str=date_str)
         slides.append(closing)
 
         return slides

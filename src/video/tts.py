@@ -275,9 +275,10 @@ QWEN_SPEAKERS = {
 class QwenTTS:
     """Qwen3-TTS wrapper for local GPU-based text-to-speech synthesis.
 
-    Supports two model types:
+    Supports three model types:
     - custom_voice: Preset speakers with emotion control via instruct.
     - voice_design: Design a voice from scratch using natural language description.
+    - voice_clone: Clone a voice from a reference audio file.
 
     Lazy-loads the model on first synthesis call, and can unload to free GPU
     memory for other models (Ollama, FLUX). Outputs .wav files via soundfile.
@@ -290,13 +291,20 @@ class QwenTTS:
         instruct: str = "",
         model_type: str = "custom_voice",
         voice_design_instruct: str = "",
+        voice_clone_ref_audio: str = "",
+        voice_clone_ref_text: str = "",
+        voice_clone_x_vector_only: bool = True,
     ):
         self.speaker = QWEN_SPEAKERS.get(speaker.lower(), speaker)
         self.language = language
         self.instruct = instruct  # emotion/style control for custom_voice
         self.voice_design_instruct = voice_design_instruct  # voice description for voice_design
         self.model_type = model_type
+        self.voice_clone_ref_audio = voice_clone_ref_audio
+        self.voice_clone_ref_text = voice_clone_ref_text
+        self.voice_clone_x_vector_only = voice_clone_x_vector_only
         self._model = None
+        self._voice_clone_prompt = None
         self._auto_release = True
 
     def _load_model(self):
@@ -314,9 +322,11 @@ class QwenTTS:
         cfg = get_settings().qwen_tts
         model_id = cfg.model_id
 
-        # Derive VoiceDesign model ID from CustomVoice model ID
+        # Derive model ID variant from CustomVoice base
         if self.model_type == "voice_design":
             model_id = model_id.replace("CustomVoice", "VoiceDesign")
+        elif self.model_type == "voice_clone":
+            model_id = model_id.replace("CustomVoice", "Base")
 
         logger.info(f"Loading Qwen3-TTS model: {model_id} (type={self.model_type})")
         self._model = Qwen3TTSModel.from_pretrained(
@@ -337,6 +347,7 @@ class QwenTTS:
 
         del self._model
         self._model = None
+        self._voice_clone_prompt = None
         gc.collect()
         torch.cuda.empty_cache()
         logger.info("Qwen3-TTS model unloaded, GPU memory freed")
@@ -385,6 +396,73 @@ class QwenTTS:
             "repetition_penalty": cfg.repetition_penalty,
         }
 
+    def _resolve_ref_audio(self) -> str:
+        """Resolve reference audio path — pick daily from directory.
+
+        If voice_clone_ref_audio is a directory, selects one audio file
+        deterministically by date hash (same day = same voice).
+        If it's a file, returns it as-is.
+        """
+        import hashlib
+        from datetime import date
+
+        ref = Path(self.voice_clone_ref_audio)
+        if not ref.is_dir():
+            return self.voice_clone_ref_audio
+
+        audio_exts = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+        files = sorted(
+            f for f in ref.iterdir()
+            if f.is_file() and f.suffix.lower() in audio_exts
+        )
+        if not files:
+            raise ValueError(
+                f"No audio files found in {ref} "
+                f"(supported: {', '.join(audio_exts)})"
+            )
+
+        today = date.today().isoformat()
+        idx = int(hashlib.md5(today.encode()).hexdigest(), 16) % len(files)
+        chosen = str(files[idx])
+        logger.info(
+            f"Daily voice clone: picked {files[idx].name} "
+            f"({idx + 1}/{len(files)}) for {today}"
+        )
+        return chosen
+
+    def _ensure_voice_clone_prompt(self):
+        """Create and cache the voice clone prompt from the reference audio.
+
+        The prompt is cached so it can be reused across multiple synthesize()
+        calls (e.g. bulletin segments) without re-processing the reference.
+        """
+        if self._voice_clone_prompt is not None:
+            return
+
+        self._load_model()
+
+        ref_audio = self._resolve_ref_audio()
+        ref_text = self.voice_clone_ref_text or None
+        x_vector_only = self.voice_clone_x_vector_only
+
+        logger.info(
+            f"Creating voice clone prompt from {ref_audio} "
+            f"(x_vector_only={x_vector_only}, "
+            f"ref_text={'yes' if ref_text else 'no'})"
+        )
+
+        kwargs = {
+            "ref_audio": ref_audio,
+            "x_vector_only_mode": x_vector_only,
+        }
+        if ref_text:
+            kwargs["ref_text"] = ref_text
+
+        self._voice_clone_prompt = (
+            self._model.create_voice_clone_prompt(**kwargs)
+        )
+        logger.info("Voice clone prompt cached")
+
     def synthesize(
         self,
         text: str,
@@ -413,7 +491,19 @@ class QwenTTS:
 
         gen_params = self._get_gen_params()
 
-        if self.model_type == "voice_design":
+        if self.model_type == "voice_clone":
+            # Voice clone: use cached prompt from reference audio
+            self._ensure_voice_clone_prompt()
+            logger.info(
+                f"Qwen3-TTS voice_clone synthesizing ({len(text)} chars)"
+            )
+            wavs, sample_rate = self._model.generate_voice_clone(
+                text=text,
+                language=self.language,
+                voice_clone_prompt=self._voice_clone_prompt,
+                **gen_params,
+            )
+        elif self.model_type == "voice_design":
             # VoiceDesign: voice_design_instruct describes the desired voice characteristics
             vd_instruct = self.voice_design_instruct
             logger.info(
@@ -485,6 +575,9 @@ def get_tts(voice: str = "yunxi", rate: str = "+10%") -> EdgeTTS | QwenTTS:
             instruct=cfg.instruct,
             model_type=cfg.model_type,
             voice_design_instruct=cfg.voice_design_instruct,
+            voice_clone_ref_audio=cfg.voice_clone_ref_audio,
+            voice_clone_ref_text=cfg.voice_clone_ref_text,
+            voice_clone_x_vector_only=cfg.voice_clone_x_vector_only,
         )
 
     # Default: EdgeTTS

@@ -59,6 +59,30 @@ BACKGROUND_VARIANTS = {
 # Appended to all prompts to ensure usability as text background
 PROMPT_SUFFIX = "dark background, moody atmosphere, cinematic lighting, no text, no objects"
 
+# Opening/cover/summary/closing slide backgrounds (dark cinematic, date-hash selected)
+OPENING_BACKGROUND_PROMPTS = [
+    (
+        "dark cinematic cityscape at night, neon reflections on wet streets, "
+        "deep blue and purple atmosphere, moody fog"
+    ),
+    (
+        "dark abstract cosmic scene, distant galaxies, nebula dust, "
+        "deep indigo and violet tones, cinematic depth"
+    ),
+    (
+        "dark futuristic control room, holographic displays, "
+        "dim ambient lighting, teal and midnight blue"
+    ),
+    (
+        "dark atmospheric ocean scene, bioluminescent waves, "
+        "deep navy and cyan glow, cinematic mood"
+    ),
+    (
+        "dark industrial interior, steel beams and glass, "
+        "warm amber spotlights on dark background, cinematic shadows"
+    ),
+]
+
 # Category-specific illustration styles (comic/manga art for bulletin cards)
 ILLUSTRATION_STYLES = {
     "AI": (
@@ -195,10 +219,14 @@ class ImageGenerator:
         try:
             self._load_pipeline()
 
+            # Align to 16px multiples (FLUX requirement)
+            gen_w = (width // 16) * 16
+            gen_h = (height // 16) * 16
+
             result = self._pipeline(
                 prompt=prompt,
-                width=width,
-                height=height,
+                width=gen_w,
+                height=gen_h,
                 num_inference_steps=self.num_inference_steps,
                 guidance_scale=0.0,
             )
@@ -251,8 +279,8 @@ class ImageGenerator:
         self,
         category: str,
         headline: str,
-        width: int = 896,
-        height: int = 336,
+        width: int = 960,
+        height: int = 528,
         prompt: str = "",
     ) -> Optional[Image.Image]:
         """Generate a bright illustration for display inside an event card.
@@ -281,6 +309,52 @@ class ImageGenerator:
 
         # Light post-processing: gentle blur to soften noise, no darkening
         img = img.filter(ImageFilter.GaussianBlur(radius=1.5))
+        return img
+
+    def generate_opening_background(
+        self,
+        date_str: str,
+        width: int = 1080,
+        height: int = 1920,
+    ) -> Optional[Image.Image]:
+        """Generate a dark cinematic background for opening/cover/summary/closing slides.
+
+        Uses date_str hash to select a prompt variant, ensuring the same date always
+        gets the same background (and cache hits across slides sharing the same date).
+
+        Args:
+            date_str: Date string (e.g., "02月05日") used for variant selection.
+            width: Image width.
+            height: Image height.
+
+        Returns:
+            Darkened background image, or None if generation fails.
+        """
+        idx = int(hashlib.md5(date_str.encode()).hexdigest(), 16) % len(
+            OPENING_BACKGROUND_PROMPTS
+        )
+        prompt = f"{OPENING_BACKGROUND_PROMPTS[idx]}, {PROMPT_SUFFIX}"
+        img = self.generate(prompt, width, height)
+
+        if img is None:
+            return None
+
+        return self._prepare_as_opening_background(img)
+
+    def _prepare_as_opening_background(self, img: Image.Image) -> Image.Image:
+        """Lightly blur and darken an image for opening/cover slides.
+
+        Gentler than _prepare_as_background — keeps more visual detail.
+
+        Args:
+            img: Source image.
+
+        Returns:
+            Prepared background image.
+        """
+        img = img.filter(ImageFilter.GaussianBlur(radius=2))
+        dark = Image.new("RGB", img.size, (0, 0, 0))
+        img = Image.blend(img, dark, alpha=0.55)
         return img
 
     def _build_illustration_prompt(self, category: str, headline: str) -> str:

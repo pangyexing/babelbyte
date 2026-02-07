@@ -1354,6 +1354,38 @@ class BulletinTemplate(VideoTemplate):
         )
         return img
 
+    def _get_flux_background(
+        self,
+        date_str: str = "",
+    ) -> tuple[Image.Image, bool]:
+        """Get FLUX AI-generated dark background or fall back to comic background.
+
+        All slides (opening, event cards, summary, closing) share the same
+        FLUX background keyed by date_str. Event cards are mostly covered by
+        a glass card, so a unique background per card wastes GPU time.
+
+        Args:
+            date_str: Date string for prompt variant selection.
+
+        Returns:
+            (image, is_dark_bg) — is_dark_bg=True when FLUX background was used.
+        """
+        if self._image_generator is None:
+            return self._create_comic_background(), False
+
+        try:
+            bg = self._image_generator.generate_opening_background(
+                date_str=date_str,
+                width=self.config.width,
+                height=self.config.height,
+            )
+            if bg is not None:
+                return bg, True
+        except Exception:
+            pass
+
+        return self._create_comic_background(), False
+
     def render_opening_slide(self, date_str: str, event_count: int) -> Image.Image:
         """Render comic-style opening slide with title and date.
 
@@ -1366,7 +1398,7 @@ class BulletinTemplate(VideoTemplate):
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._create_comic_background()
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1376,23 +1408,28 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # Thick black panel frame around the entire slide
+        # Panel frame
         frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
         draw.rounded_rectangle(
             [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
             radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=5,
+            outline=frame_color,
+            width=frame_width,
         )
 
-        # Speed lines behind title for dramatic feel
+        # Speed lines behind title
+        speed_color = (255, 255, 255, 50) if is_dark else (
+            (*accent, 100) if len(accent) == 3 else accent
+        )
         self._draw_speed_lines(
             draw,
             center_x=cfg.width // 2,
             y_start=center_y - 120,
             y_end=center_y + 40,
             width=cfg.width - 200,
-            color=(*accent, 100) if len(accent) == 3 else accent,
+            color=speed_color,
             num_lines=16,
         )
 
@@ -1402,24 +1439,29 @@ class BulletinTemplate(VideoTemplate):
         title_x = (cfg.width - title_bbox[2]) // 2
         title_y = center_y - 100
 
-        self._draw_stroked_text(
-            draw,
-            (title_x, title_y),
-            title_text,
-            title_font,
-            fill=self.COMIC_BLACK,
-            stroke_color=(255, 255, 255),
-            stroke_width=3,
-        )
+        if is_dark:
+            self._draw_stroked_text(
+                draw, (title_x, title_y), title_text, title_font,
+                fill=self.TEXT_WHITE,
+                stroke_color=self.COMIC_BLACK,
+                stroke_width=3,
+            )
+        else:
+            self._draw_stroked_text(
+                draw, (title_x, title_y), title_text, title_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=3,
+            )
 
-        # Date and count in a speech bubble style box
+        # Date and count pill
         info_text = f"{date_str} · {event_count}件要闻"
         info_bbox = date_font.getbbox(info_text)
         info_x = (cfg.width - info_bbox[2]) // 2
         info_y = title_y + title_bbox[3] + 50
 
-        # Pill-shaped box behind info text
         pill_pad = 20
+        pill_outline = self.COMIC_BLACK if not is_dark else accent
         draw.rounded_rectangle(
             [
                 info_x - pill_pad * 2,
@@ -1429,7 +1471,7 @@ class BulletinTemplate(VideoTemplate):
             ],
             radius=30,
             fill=accent,
-            outline=self.COMIC_BLACK,
+            outline=pill_outline,
             width=2,
         )
         draw.text((info_x, info_y), info_text, font=date_font, fill=self.COMIC_BLACK)
@@ -1457,6 +1499,7 @@ class BulletinTemplate(VideoTemplate):
         impact: str = "",
         actions: list[str] = None,
         illustration: Optional[Image.Image] = None,
+        date_str: str = "",
     ) -> Image.Image:
         """Render a comic/manga-style event card slide.
 
@@ -1469,6 +1512,7 @@ class BulletinTemplate(VideoTemplate):
             impact: Impact assessment text.
             actions: List of actionable items.
             illustration: Optional AI-generated illustration to display inside the card.
+            date_str: Date string for shared FLUX background.
 
         Returns:
             Event card image.
@@ -1478,8 +1522,8 @@ class BulletinTemplate(VideoTemplate):
         cfg = self.config
         accent = self._get_accent_color(category)
 
-        # Comic-style background (consistent with other slides)
-        img = self._create_comic_background(category)
+        # Background: shared FLUX dark (by date) or comic white
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts — compact sizes to prevent overflow
@@ -1488,7 +1532,7 @@ class BulletinTemplate(VideoTemplate):
         fact_font = self._get_font(cfg.body_font_size - 4)
         caption_font = self._get_font(cfg.caption_font_size)
 
-        # --- Comic card panel with thick black border ---
+        # --- Card panel ---
         card_margin = 40
         card_top = cfg.padding + 40
         card_bottom = cfg.height - cfg.padding - 120
@@ -1497,29 +1541,56 @@ class BulletinTemplate(VideoTemplate):
         content_width = cfg.width - 2 * card_margin - 70
         max_y = card_bottom - 25  # Hard stop: never render past this
 
-        # White/cream card fill
-        draw.rounded_rectangle(
-            card_coords,
-            radius=cfg.card_radius,
-            fill=self.CARD_WHITE,
-        )
+        # Determine text/card colors based on background
+        if is_dark:
+            text_body = self.TEXT_WHITE
+            text_secondary = self.TEXT_SECONDARY
+            border_color = self.TEXT_SECONDARY
+            border_width = 3
+        else:
+            text_body = self.TEXT_DARK
+            text_secondary = self.TEXT_DARK
+            border_color = self.COMIC_BLACK
+            border_width = 4
 
-        # Thick black panel border (4px) — the most iconic comic trait
-        draw.rounded_rectangle(
-            card_coords,
-            radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=4,
-        )
-
-        # Halftone dot pattern overlay for comic paper texture
-        img = self._draw_halftone_overlay(img, card_coords, accent)
-        draw = ImageDraw.Draw(img)
+        if is_dark:
+            # Glass card (frosted semi-transparent)
+            img = self._draw_glass_card(
+                img, draw, card_coords,
+                opacity=0.65, tint=(20, 20, 35), blur_radius=15,
+            )
+            draw = ImageDraw.Draw(img)
+            # Subtle border on glass card
+            draw.rounded_rectangle(
+                card_coords, radius=cfg.card_radius,
+                outline=border_color, width=border_width,
+            )
+        else:
+            # White/cream card fill
+            draw.rounded_rectangle(
+                card_coords, radius=cfg.card_radius,
+                fill=self.CARD_WHITE,
+            )
+            # Thick black panel border (4px)
+            draw.rounded_rectangle(
+                card_coords, radius=cfg.card_radius,
+                outline=border_color, width=border_width,
+            )
+            # Halftone dot pattern overlay for comic paper texture
+            img = self._draw_halftone_overlay(img, card_coords, accent)
+            draw = ImageDraw.Draw(img)
 
         # --- Content inside card ---
         content_y = card_top + 30
 
-        # Category tag: accent fill with thick black border
+        # Progress bar: thin accent line at top of card
+        if is_dark:
+            draw.rectangle(
+                [card_margin + 10, card_top, card_margin + 10 + content_width, card_top + 4],
+                fill=accent,
+            )
+
+        # Category tag: accent fill
         tag_text = f"#{category}"
         tag_bbox = caption_font.getbbox(tag_text)
         tag_padding = 10
@@ -1530,11 +1601,12 @@ class BulletinTemplate(VideoTemplate):
             content_x + tag_bbox[2] + tag_padding * 2,
             content_y + tag_height,
         )
+        tag_outline = accent if is_dark else self.COMIC_BLACK
         draw.rounded_rectangle(
             tag_coords,
             radius=tag_height // 2,
             fill=accent,
-            outline=self.COMIC_BLACK,
+            outline=tag_outline,
             width=2,
         )
         draw.text(
@@ -1550,37 +1622,45 @@ class BulletinTemplate(VideoTemplate):
         head_line_h = int((cfg.title_font_size + 10) * cfg.line_spacing)
         headline_lines = self._wrap_text(headline, headline_font, content_width)
         headline_block_h = len(headline_lines[:2]) * head_line_h
+        speed_color = (255, 255, 255, 50) if is_dark else (
+            (*accent, 120) if len(accent) == 3 else accent
+        )
         self._draw_speed_lines(
             draw,
             center_x=cfg.width // 2,
             y_start=content_y,
             y_end=content_y + headline_block_h,
             width=content_width,
-            color=(*accent, 120) if len(accent) == 3 else accent,
+            color=speed_color,
         )
 
         # Headline with comic stroke/outline
+        if is_dark:
+            h_fill, h_stroke = self.TEXT_WHITE, self.COMIC_BLACK
+        else:
+            h_fill, h_stroke = self.COMIC_BLACK, (255, 255, 255)
         for line in headline_lines[:2]:
             self._draw_stroked_text(
-                draw,
-                (content_x, content_y),
-                line,
-                headline_font,
-                fill=self.COMIC_BLACK,
-                stroke_color=(255, 255, 255),
-                stroke_width=2,
+                draw, (content_x, content_y), line, headline_font,
+                fill=h_fill, stroke_color=h_stroke, stroke_width=2,
             )
             content_y += head_line_h
 
         content_y += 15
 
-        # Illustration with thick black border (adaptive height)
+        # Illustration with border (adaptive height — larger on dark bg)
         if illustration is not None:
             remaining = max_y - content_y
-            # Reserve space for at least summary + one-liner
-            min_after_illust = 200
-            max_illust_h = min(260, remaining - min_after_illust)
-            if max_illust_h >= 140:
+            if is_dark:
+                min_after_illust = 160
+                max_illust_h_cap = 420
+                min_illust_h = 200
+            else:
+                min_after_illust = 200
+                max_illust_h_cap = 260
+                min_illust_h = 140
+            max_illust_h = min(max_illust_h_cap, remaining - min_after_illust)
+            if max_illust_h >= min_illust_h:
                 illust_width = content_width
                 illust_height = min(max_illust_h, illustration.size[1])
 
@@ -1595,11 +1675,12 @@ class BulletinTemplate(VideoTemplate):
                     [0, 0, illust_width, illust_height], radius=illust_radius, fill=255
                 )
 
-                # Thick black border (3px) behind the image
+                # Border behind the image
                 border_w = 3
                 bordered_w = illust_width + border_w * 2
                 bordered_h = illust_height + border_w * 2
-                border_img = Image.new("RGB", (bordered_w, bordered_h), self.COMIC_BLACK)
+                illust_border_color = border_color if is_dark else self.COMIC_BLACK
+                border_img = Image.new("RGB", (bordered_w, bordered_h), illust_border_color)
                 border_img.paste(illust_resized.convert("RGB"), (border_w, border_w), illust_mask)
 
                 border_mask = Image.new("L", (bordered_w, bordered_h), 0)
@@ -1614,7 +1695,7 @@ class BulletinTemplate(VideoTemplate):
 
                 content_y += bordered_h + 15
 
-        # Summary: dark text on white card (overflow-aware)
+        # Summary (overflow-aware)
         if summary and content_y < max_y - 60:
             sum_line_h = int(cfg.body_font_size * cfg.line_spacing)
             remaining = max_y - content_y
@@ -1622,31 +1703,24 @@ class BulletinTemplate(VideoTemplate):
             summary_lines = self._wrap_text(summary, summary_font, content_width)
             for line in summary_lines[:max_sum_lines]:
                 draw.text(
-                    (content_x, content_y),
-                    line,
-                    font=summary_font,
-                    fill=self.TEXT_DARK,
+                    (content_x, content_y), line,
+                    font=summary_font, fill=text_body,
                 )
                 content_y += sum_line_h
 
         content_y += 10
 
-        # One-liner in speech bubble (overflow-aware)
+        # One-liner in speech bubble (overflow-aware) — white bubble on both themes
         if one_liner and content_y < max_y - 80:
             img, draw, content_y = self._draw_speech_bubble(
-                img,
-                draw,
-                content_x,
-                content_y,
-                content_width,
-                one_liner,
-                fact_font,
+                img, draw, content_x, content_y, content_width,
+                one_liner, fact_font,
                 fill=(255, 255, 255),
-                border_color=self.COMIC_BLACK,
+                border_color=border_color if is_dark else self.COMIC_BLACK,
             )
             content_y += 10
 
-        # Impact assessment with thick left bar (overflow-aware)
+        # Impact assessment with left bar (overflow-aware)
         fact_line_h = int((cfg.body_font_size - 4) * 1.3)
         if impact and content_y < max_y - fact_line_h:
             impact_text = f"影响：{impact}"
@@ -1660,25 +1734,21 @@ class BulletinTemplate(VideoTemplate):
             )
             for line in impact_lines[:max_imp_lines]:
                 draw.text(
-                    (content_x + 18, content_y),
-                    line,
-                    font=fact_font,
-                    fill=self.TEXT_DARK,
+                    (content_x + 18, content_y), line,
+                    font=fact_font, fill=text_body,
                 )
                 content_y += fact_line_h
             content_y += 8
 
-        # Actions with thick left bar (overflow-aware)
+        # Actions with left bar (overflow-aware)
         if actions and content_y < max_y - fact_line_h:
             draw.rectangle(
                 [content_x, content_y, content_x + 5, content_y + fact_line_h],
                 fill=accent,
             )
             draw.text(
-                (content_x + 18, content_y),
-                "建议:",
-                font=fact_font,
-                fill=accent,
+                (content_x + 18, content_y), "建议:",
+                font=fact_font, fill=accent,
             )
             content_y += fact_line_h + 3
 
@@ -1687,10 +1757,8 @@ class BulletinTemplate(VideoTemplate):
                     break
                 prefix = "→ "
                 draw.text(
-                    (content_x + 18, content_y),
-                    prefix,
-                    font=fact_font,
-                    fill=accent,
+                    (content_x + 18, content_y), prefix,
+                    font=fact_font, fill=accent,
                 )
                 prefix_width = fact_font.getbbox(prefix)[2]
                 action_lines = self._wrap_text(action, fact_font, content_width - 18 - prefix_width)
@@ -1698,10 +1766,8 @@ class BulletinTemplate(VideoTemplate):
                     if content_y >= max_y:
                         break
                     draw.text(
-                        (content_x + 18 + prefix_width, content_y),
-                        line,
-                        font=fact_font,
-                        fill=self.TEXT_DARK,
+                        (content_x + 18 + prefix_width, content_y), line,
+                        font=fact_font, fill=text_body,
                     )
                     content_y += fact_line_h
                 content_y += 3
@@ -1727,6 +1793,7 @@ class BulletinTemplate(VideoTemplate):
         number: str,
         label: str,
         description: str,
+        date_str: str = "",
     ) -> Image.Image:
         """Render a comic-style data highlight slide with large number.
 
@@ -1734,13 +1801,14 @@ class BulletinTemplate(VideoTemplate):
             number: The big number to display (e.g., "100%", "$5B").
             label: Label for the number.
             description: Brief description.
+            date_str: Date string for shared FLUX background.
 
         Returns:
             Data highlight image.
         """
         cfg = self.config
         accent = self._get_accent_color("金融")
-        img = self._create_comic_background("金融")
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1750,13 +1818,15 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # Thick black panel frame
+        # Panel frame
         frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
         draw.rounded_rectangle(
             [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
             radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=5,
+            outline=frame_color,
+            width=frame_width,
         )
 
         # Big number in starburst
@@ -1774,24 +1844,30 @@ class BulletinTemplate(VideoTemplate):
         label_bbox = label_font.getbbox(label)
         label_x = (cfg.width - label_bbox[2]) // 2
         label_y = center_y + 100
-        self._draw_stroked_text(
-            draw,
-            (label_x, label_y),
-            label,
-            label_font,
-            fill=self.COMIC_BLACK,
-            stroke_color=(255, 255, 255),
-            stroke_width=2,
-        )
+        if is_dark:
+            self._draw_stroked_text(
+                draw, (label_x, label_y), label, label_font,
+                fill=self.TEXT_WHITE,
+                stroke_color=self.COMIC_BLACK,
+                stroke_width=2,
+            )
+        else:
+            self._draw_stroked_text(
+                draw, (label_x, label_y), label, label_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=2,
+            )
 
         # Description
+        desc_color = self.TEXT_WHITE if is_dark else self.TEXT_DARK
         if description:
             desc_lines = self._wrap_text(description, desc_font, cfg.width - 2 * cfg.padding - 100)
             desc_y = label_y + label_bbox[3] + 40
             for line in desc_lines[:2]:
                 line_bbox = desc_font.getbbox(line)
                 line_x = (cfg.width - line_bbox[2]) // 2
-                draw.text((line_x, desc_y), line, font=desc_font, fill=self.TEXT_DARK)
+                draw.text((line_x, desc_y), line, font=desc_font, fill=desc_color)
                 desc_y += int(cfg.body_font_size * cfg.line_spacing)
 
         return img
@@ -1799,17 +1875,19 @@ class BulletinTemplate(VideoTemplate):
     def render_summary_slide(
         self,
         headlines: list[str],
+        date_str: str = "",
     ) -> Image.Image:
         """Render comic-style summary slide with all headlines.
 
         Args:
             headlines: List of event headlines.
+            date_str: Date string for FLUX background selection.
 
         Returns:
             Summary slide image.
         """
         cfg = self.config
-        img = self._create_comic_background()
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1817,13 +1895,15 @@ class BulletinTemplate(VideoTemplate):
         item_font = self._get_font(cfg.body_font_size + 4)
         badge_number_font = self._get_font(cfg.body_font_size + 6, bold=True)
 
-        # Thick black panel frame
+        # Panel frame
         frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
         draw.rounded_rectangle(
             [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
             radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=5,
+            outline=frame_color,
+            width=frame_width,
         )
 
         y_pos = cfg.padding + 80
@@ -1833,35 +1913,45 @@ class BulletinTemplate(VideoTemplate):
         header_bbox = title_font.getbbox(header_text)
         header_x = (cfg.width - header_bbox[2]) // 2
 
-        self._draw_stroked_text(
-            draw,
-            (header_x, y_pos),
-            header_text,
-            title_font,
-            fill=self.COMIC_BLACK,
-            stroke_color=(255, 255, 255),
-            stroke_width=2,
-        )
+        if is_dark:
+            self._draw_stroked_text(
+                draw, (header_x, y_pos), header_text, title_font,
+                fill=self.TEXT_WHITE,
+                stroke_color=self.COMIC_BLACK,
+                stroke_width=2,
+            )
+        else:
+            self._draw_stroked_text(
+                draw, (header_x, y_pos), header_text, title_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=2,
+            )
         y_pos += header_bbox[3] + 50
 
         # Divider line
         line_width = 200
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle([line_x, y_pos, line_x + line_width, y_pos + 4], fill=self.COMIC_BLACK)
+        divider_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        draw.rectangle([line_x, y_pos, line_x + line_width, y_pos + 4], fill=divider_color)
         y_pos += 50
+
+        # Text color for headlines
+        text_color = self.TEXT_WHITE if is_dark else self.TEXT_DARK
 
         # Headlines list in comic panel style
         for i, headline in enumerate(headlines[:5]):
             color_keys = ["AI", "金融", "创业", "default", "科技"]
             color = self._get_accent_color(color_keys[i % len(color_keys)])
 
-            # Number badge with thick border
+            # Number badge
             badge_size = 48
             badge_x = cfg.padding + 50
+            badge_outline = color if is_dark else self.COMIC_BLACK
             draw.ellipse(
                 [badge_x, y_pos + 3, badge_x + badge_size, y_pos + 3 + badge_size],
                 fill=color,
-                outline=self.COMIC_BLACK,
+                outline=badge_outline,
                 width=2,
             )
 
@@ -1874,7 +1964,7 @@ class BulletinTemplate(VideoTemplate):
             num_y = y_pos + 3 + (badge_size - num_height) // 2 - num_bbox[1]
             draw.text((num_x, num_y), num_text, font=badge_number_font, fill=self.COMIC_BLACK)
 
-            # Headline text — dark on white
+            # Headline text
             text_x = badge_x + badge_size + 20
             text_max_width = cfg.width - text_x - cfg.padding - 40
             text_lines = self._wrap_text(headline, item_font, text_max_width)
@@ -1886,38 +1976,40 @@ class BulletinTemplate(VideoTemplate):
                 text_y = y_pos + 3 + (badge_size - text_height) // 2 - headline_bbox[1]
                 if text_lines:
                     draw.text(
-                        (text_x, text_y),
-                        text_lines[0],
-                        font=item_font,
-                        fill=self.TEXT_DARK,
+                        (text_x, text_y), text_lines[0],
+                        font=item_font, fill=text_color,
                     )
                 y_pos += badge_size + 30
             else:
                 text_y = y_pos + 5
                 for line in text_lines[:2]:
-                    draw.text((text_x, text_y), line, font=item_font, fill=self.TEXT_DARK)
+                    draw.text((text_x, text_y), line, font=item_font, fill=text_color)
                     text_y += line_height
                 y_pos += max(badge_size, line_height * min(len(text_lines), 2)) + 20
 
             # Divider line between items
             if i < len(headlines[:5]) - 1:
+                sep_color = (100, 100, 120) if is_dark else (200, 200, 195)
                 draw.line(
                     [(badge_x, y_pos - 10), (cfg.width - cfg.padding - 50, y_pos - 10)],
-                    fill=(200, 200, 195),
+                    fill=sep_color,
                     width=1,
                 )
 
         return img
 
-    def render_closing_slide(self) -> Image.Image:
+    def render_closing_slide(self, date_str: str = "") -> Image.Image:
         """Render comic-style closing slide with CTA.
+
+        Args:
+            date_str: Date string for FLUX background selection.
 
         Returns:
             Closing slide image.
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._create_comic_background()
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -1927,29 +2019,27 @@ class BulletinTemplate(VideoTemplate):
 
         center_y = cfg.height // 2
 
-        # Thick black panel frame
+        # Panel frame
         frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
         draw.rounded_rectangle(
             [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
             radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=5,
+            outline=frame_color,
+            width=frame_width,
         )
 
-        # CTA in a speech bubble
+        # CTA in a speech bubble — white bubble on both themes
         cta_text = "关注了解更多"
         bubble_width = cfg.width - 200
         bubble_x = (cfg.width - bubble_width) // 2
+        bubble_border = frame_color if is_dark else self.COMIC_BLACK
         img, draw, new_y = self._draw_speech_bubble(
-            img,
-            draw,
-            bubble_x,
-            center_y - 60,
-            bubble_width,
-            cta_text,
-            cta_font,
+            img, draw, bubble_x, center_y - 60, bubble_width,
+            cta_text, cta_font,
             fill=(255, 255, 255),
-            border_color=self.COMIC_BLACK,
+            border_color=bubble_border,
         )
 
         # Subtitle below — stroked text
@@ -1958,15 +2048,20 @@ class BulletinTemplate(VideoTemplate):
         subtitle_x = (cfg.width - subtitle_bbox[2]) // 2
         subtitle_y = new_y + 40
 
-        self._draw_stroked_text(
-            draw,
-            (subtitle_x, subtitle_y),
-            subtitle_text,
-            subtitle_font,
-            fill=self.COMIC_BLACK,
-            stroke_color=(255, 255, 255),
-            stroke_width=2,
-        )
+        if is_dark:
+            self._draw_stroked_text(
+                draw, (subtitle_x, subtitle_y), subtitle_text, subtitle_font,
+                fill=self.TEXT_WHITE,
+                stroke_color=self.COMIC_BLACK,
+                stroke_width=2,
+            )
+        else:
+            self._draw_stroked_text(
+                draw, (subtitle_x, subtitle_y), subtitle_text, subtitle_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=2,
+            )
 
         # Starburst decoration at top
         self._draw_starburst(
@@ -1999,7 +2094,7 @@ class BulletinTemplate(VideoTemplate):
         """
         cfg = self.config
         accent = self._get_accent_color("default")
-        img = self._create_comic_background()
+        img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
         # Fonts
@@ -2010,13 +2105,15 @@ class BulletinTemplate(VideoTemplate):
 
         center_x = cfg.width // 2
 
-        # Thick black panel frame
+        # Panel frame
         frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
         draw.rounded_rectangle(
             [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
             radius=cfg.card_radius,
-            outline=self.COMIC_BLACK,
-            width=5,
+            outline=frame_color,
+            width=frame_width,
         )
 
         # Brand name — stroked comic text
@@ -2025,21 +2122,27 @@ class BulletinTemplate(VideoTemplate):
         brand_x = (cfg.width - brand_bbox[2]) // 2
         brand_y = cfg.padding + 150
 
-        self._draw_stroked_text(
-            draw,
-            (brand_x, brand_y),
-            brand_text,
-            brand_font,
-            fill=self.COMIC_BLACK,
-            stroke_color=(255, 255, 255),
-            stroke_width=3,
-        )
+        if is_dark:
+            self._draw_stroked_text(
+                draw, (brand_x, brand_y), brand_text, brand_font,
+                fill=self.TEXT_WHITE,
+                stroke_color=self.COMIC_BLACK,
+                stroke_width=3,
+            )
+        else:
+            self._draw_stroked_text(
+                draw, (brand_x, brand_y), brand_text, brand_font,
+                fill=self.COMIC_BLACK,
+                stroke_color=(255, 255, 255),
+                stroke_width=3,
+            )
 
         # Decorative line below brand
         line_width = 250
         line_y = brand_y + brand_bbox[3] + 30
         line_x = (cfg.width - line_width) // 2
-        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 4], fill=self.COMIC_BLACK)
+        line_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        draw.rectangle([line_x, line_y, line_x + line_width, line_y + 4], fill=line_color)
 
         # Big event count in starburst
         count_y = cfg.height // 2 - 30
@@ -2054,13 +2157,14 @@ class BulletinTemplate(VideoTemplate):
             text_color=self.COMIC_BLACK,
         )
 
-        # Date below starburst
+        # Date below starburst — accent pill on dark, black pill on light
         date_y = count_y + 120
         date_bbox = date_font.getbbox(date_str)
         date_x = center_x - date_bbox[2] // 2
 
-        # Date in a pill
         pill_pad = 15
+        pill_fill = accent if is_dark else self.COMIC_BLACK
+        pill_text = self.COMIC_BLACK if is_dark else self.CARD_WHITE
         draw.rounded_rectangle(
             [
                 date_x - pill_pad * 2,
@@ -2069,25 +2173,21 @@ class BulletinTemplate(VideoTemplate):
                 date_y + date_bbox[3] + pill_pad,
             ],
             radius=25,
-            fill=self.COMIC_BLACK,
+            fill=pill_fill,
         )
-        draw.text((date_x, date_y), date_str, font=date_font, fill=self.CARD_WHITE)
+        draw.text((date_x, date_y), date_str, font=date_font, fill=pill_text)
 
         # Top headline preview at bottom in speech bubble style
         if top_headline:
             card_margin = 60
             bubble_y = cfg.height - cfg.padding - 220
             bubble_width = cfg.width - 2 * card_margin
+            bubble_border = frame_color if is_dark else self.COMIC_BLACK
             img, draw, _ = self._draw_speech_bubble(
-                img,
-                draw,
-                card_margin,
-                bubble_y,
-                bubble_width,
-                top_headline,
-                headline_font,
+                img, draw, card_margin, bubble_y, bubble_width,
+                top_headline, headline_font,
                 fill=(255, 255, 255),
-                border_color=self.COMIC_BLACK,
+                border_color=bubble_border,
             )
 
         return img
