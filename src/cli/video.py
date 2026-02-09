@@ -625,6 +625,205 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit, ai
         db.close()
 
 
+@video.command("douyin")
+@click.option("--limit", default=3, help="Number of videos to generate")
+@click.option("--days", default=1, help="Look back N days for events")
+@click.option("--min-articles", default=2, help="Minimum articles in cluster")
+@click.option("--target-duration", default=20, help="Target duration (seconds)")
+@click.option("--voice", default="yunxi", help="TTS voice")
+@click.option("--output-dir", type=click.Path(), default="./videos/douyin", help="Output directory")
+@click.option("--no-subtitle", is_flag=True, help="Disable subtitles")
+@click.option("--no-motion", is_flag=True, help="Disable Ken Burns motion")
+@click.option("--no-cover", is_flag=True, help="Skip cover generation")
+@click.option("--dry-run", is_flag=True, help="Preview selection without generating")
+@click.option("--all-clusters", is_flag=True, help="Use all recent clusters (not just digest)")
+def douyin(
+    limit, days, min_articles, target_duration, voice, output_dir,
+    no_subtitle, no_motion, no_cover, dry_run, all_clusters,
+):
+    """Generate Douyin-optimized short videos (15-30s single-event).
+
+    Auto-selects top events by hotness and generates videos with:
+    - AI hook (3s attention grab)
+    - Burned-in subtitles synced to TTS
+    - Ken Burns zoom + micro-pan motion
+    - 3-text cover image for Douyin feed
+    - CRF 23 encoding (optimized for Douyin re-encoding)
+
+    Examples:
+        bb video douyin                    # Generate 3 short videos
+        bb video douyin --limit 5          # Generate 5
+        bb video douyin --dry-run          # Preview event selection
+        bb video douyin --no-subtitle      # Without subtitles
+    """
+    from datetime import datetime, timedelta
+
+    from rich.table import Table
+
+    from src.video.bulletin import BulletinGenerator
+
+    db = get_db()
+
+    try:
+        # --- Event selection (reuses bulletin logic) ---
+        if all_clusters:
+            clusters = db.get_recent_event_clusters(days=days, limit=50)
+            if not clusters:
+                console.print(
+                    f"[yellow]No event clusters found in the last {days} day(s).[/yellow]"
+                )
+                return
+
+            cutoff_date = (datetime.now() - timedelta(days=days - 1)).date()
+            filtered_clusters = [
+                c for c in clusters
+                if c.last_updated_at.date() >= cutoff_date
+                and (c.article_count >= min_articles or c.category in ("创新", "创业"))
+            ]
+        else:
+            target_date = (datetime.now() - timedelta(days=days - 1)).date()
+            clusters = db.get_delivered_event_clusters(target_date=target_date, limit=50)
+            if not clusters:
+                console.print(
+                    "[yellow]No delivered event clusters found for today's digest.[/yellow]"
+                )
+                console.print(
+                    "[dim]Run 'bb daily' first, or use --all-clusters.[/dim]"
+                )
+                return
+
+            filtered_clusters = [
+                c for c in clusters
+                if c.article_count >= min_articles or c.category in ("创新", "创业")
+            ]
+
+        if not filtered_clusters:
+            console.print("[yellow]No suitable event clusters found.[/yellow]")
+            return
+
+        # Get members and score by hotness
+        scored = []
+        for cluster in filtered_clusters:
+            members = db.get_event_members(cluster.id)
+            if not members:
+                continue
+            best = max(members, key=lambda m: m.importance_score or 0)
+            importance = best.importance_score or 5
+            score = cluster.article_count * 2 + importance
+            scored.append((cluster, members, score, importance))
+
+        scored.sort(key=lambda x: x[2], reverse=True)
+        selected = scored[:limit]
+
+        if not selected:
+            console.print("[yellow]No events with enough articles found.[/yellow]")
+            return
+
+        # Display preview table
+        table = Table(title=f"Douyin Video Selection (Top {len(selected)})")
+        table.add_column("Score", justify="right", width=6)
+        table.add_column("Articles", justify="center", width=8)
+        table.add_column("Category", width=10)
+        table.add_column("Event Title", width=50)
+
+        for cluster, members, score, importance in selected:
+            table.add_row(
+                f"{score:.0f}",
+                str(cluster.article_count),
+                cluster.category or "未分类",
+                cluster.event_title[:50] if cluster.event_title else "无标题",
+            )
+
+        console.print(table)
+
+        if dry_run:
+            console.print("\n[dim]Dry run mode — previewing content generation...[/dim]")
+            bulletin_gen = BulletinGenerator()
+            for i, (cluster, members, score, _) in enumerate(selected, 1):
+                content = bulletin_gen.generate_douyin_content(cluster, members)
+                if content:
+                    console.print(f"\n[bold]#{i} {cluster.event_title[:40]}[/bold]")
+                    console.print(f"  Hook: {content.hook}")
+                    console.print(f"  Headline: {content.headline}")
+                    console.print(f"  Summary: {content.summary}")
+                    console.print(f"  Impact: {content.impact}")
+                    console.print(f"  Action: {content.action}")
+                    console.print(f"  CTA: {content.cta}")
+                    console.print(f"  Hashtags: {' '.join('#' + t for t in content.hashtags)}")
+                else:
+                    console.print(f"\n[red]#{i} Content generation failed[/red]")
+            return
+
+        # --- Generate videos ---
+        import os
+
+        from src.video.douyin_generator import DouyinVideoGenerator
+        from src.video.generator import VideoConfig
+
+        # Apply overrides from CLI flags
+        if no_subtitle:
+            os.environ["DOUYIN_SUBTITLE_ENABLED"] = "false"
+        if no_motion:
+            os.environ["DOUYIN_MOTION_ENABLED"] = "false"
+        if no_cover:
+            os.environ["DOUYIN_COVER_ENABLED"] = "false"
+
+        # Reset settings to pick up overrides
+        if no_subtitle or no_motion or no_cover:
+            import config.settings as _cs
+            _cs._settings = None
+
+        config = VideoConfig(
+            output_dir=Path(output_dir),
+            voice=voice,
+        )
+
+        console.print(f"\n[cyan]Generating {len(selected)} Douyin short videos...[/cyan]")
+
+        generator = DouyinVideoGenerator(config, ai_bg=True)
+        success_count = 0
+
+        for i, (cluster, members, score, _) in enumerate(selected, 1):
+            console.print(f"\n[{i}/{len(selected)}] {cluster.event_title[:50]}...")
+
+            result = generator.generate_from_event(cluster, members)
+
+            if result.success:
+                success_count += 1
+                console.print(f"  [green]✓[/green] Video: {result.video_path}")
+                console.print(f"    Duration: {result.duration:.1f}s")
+                if result.cover_path:
+                    console.print(f"    Cover: {result.cover_path}")
+                if result.meta_path:
+                    console.print(f"    Meta: {result.meta_path}")
+            else:
+                console.print(f"  [red]✗[/red] Failed: {result.error}")
+
+        console.print(f"\n[green]Generated {success_count}/{len(selected)} videos.[/green]")
+        console.print(f"Output directory: {output_dir}")
+
+    finally:
+        # Release GPU memory
+        try:
+            ig = getattr(
+                getattr(generator, "template", None), "_image_generator", None
+            )
+            if ig is not None:
+                ig.unload()
+                console.print("[dim]Image generator GPU memory released.[/dim]")
+        except NameError:
+            pass
+        try:
+            from src.video.tts import QwenTTS
+            tts = getattr(generator, "tts", None)
+            if isinstance(tts, QwenTTS):
+                tts.unload()
+                console.print("[dim]Qwen TTS GPU memory released.[/dim]")
+        except NameError:
+            pass
+        db.close()
+
+
 @video.command("generate-event")
 @click.argument("cluster_id", type=int)
 @click.option("--output-dir", type=click.Path(), default="./videos", help="Output directory")

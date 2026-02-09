@@ -2192,6 +2192,247 @@ class BulletinTemplate(VideoTemplate):
 
         return img
 
+    def render_hook_slide(
+        self,
+        hook_text: str,
+        category: str,
+        date_str: str = "",
+    ) -> Image.Image:
+        """Render Douyin hook slide — large text on FLUX dark background.
+
+        Args:
+            hook_text: 3-second hook text (8-15 chars).
+            category: Event category for accent color.
+            date_str: Date string for FLUX background selection.
+
+        Returns:
+            Hook slide image.
+        """
+        cfg = self.config
+        accent = self._get_accent_color(category)
+        img, is_dark = self._get_flux_background(date_str=date_str)
+        draw = ImageDraw.Draw(img)
+
+        hook_font = self._get_font(100, bold=True)
+        brand_font = self._get_font(36)
+        caption_font = self._get_font(cfg.caption_font_size)
+
+        center_y = cfg.height // 2
+
+        # Panel frame
+        frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=frame_color,
+            width=frame_width,
+        )
+
+        # Category pill badge at top
+        tag_text = f"#{category}"
+        tag_bbox = caption_font.getbbox(tag_text)
+        tag_padding = 10
+        tag_height = tag_bbox[3] + tag_padding * 2
+        tag_x = (cfg.width - tag_bbox[2] - tag_padding * 2) // 2
+        draw.rounded_rectangle(
+            [tag_x, cfg.padding + 80, tag_x + tag_bbox[2] + tag_padding * 2,
+             cfg.padding + 80 + tag_height],
+            radius=tag_height // 2,
+            fill=accent,
+            outline=accent,
+            width=2,
+        )
+        draw.text(
+            (tag_x + tag_padding, cfg.padding + 80 + tag_padding - 2),
+            tag_text, font=caption_font, fill=self.COMIC_BLACK,
+        )
+
+        # Hook text — large centered with stroke
+        hook_lines = self._wrap_text(hook_text, hook_font, cfg.width - 2 * cfg.padding - 60)
+        line_h = int(100 * 1.4)
+        total_h = len(hook_lines[:3]) * line_h
+        text_y = center_y - total_h // 2
+
+        h_fill = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
+        h_stroke = self.COMIC_BLACK if is_dark else (255, 255, 255)
+        for line in hook_lines[:3]:
+            line_bbox = hook_font.getbbox(line)
+            line_x = (cfg.width - line_bbox[2]) // 2
+            self._draw_stroked_text(
+                draw, (line_x, text_y), line, hook_font,
+                fill=h_fill, stroke_color=h_stroke, stroke_width=3,
+            )
+            text_y += line_h
+
+        # Brand name at bottom
+        brand_text = "巴别情报站"
+        brand_bbox = brand_font.getbbox(brand_text)
+        brand_x = (cfg.width - brand_bbox[2]) // 2
+        brand_y = cfg.height - cfg.padding - 120
+        brand_color = self.TEXT_SECONDARY if is_dark else self.TEXT_DARK
+        draw.text((brand_x, brand_y), brand_text, font=brand_font, fill=brand_color)
+
+        return img
+
+    def render_impact_slide(
+        self,
+        impact: str,
+        category: str,
+        date_str: str = "",
+    ) -> Image.Image:
+        """Render Douyin impact analysis slide.
+
+        Args:
+            impact: Impact analysis text (20-35 chars).
+            category: Event category.
+            date_str: Date string for FLUX background selection.
+
+        Returns:
+            Impact slide image.
+        """
+        cfg = self.config
+        accent = self._get_accent_color(category)
+        img, is_dark = self._get_flux_background(date_str=date_str)
+        draw = ImageDraw.Draw(img)
+
+        title_font = self._get_font(cfg.title_font_size, bold=True)
+        body_font = self._get_font(cfg.body_font_size + 4)
+
+        center_y = cfg.height // 2
+
+        # Panel frame
+        frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=frame_color,
+            width=frame_width,
+        )
+
+        # Glass card for impact content
+        card_margin = 60
+        card_top = center_y - 200
+        card_bottom = center_y + 200
+        card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
+
+        if is_dark:
+            img = self._draw_glass_card(
+                img, draw, card_coords,
+                opacity=0.65, tint=(20, 20, 35), blur_radius=15,
+            )
+            draw = ImageDraw.Draw(img)
+            draw.rounded_rectangle(
+                card_coords, radius=cfg.card_radius,
+                outline=self.TEXT_SECONDARY, width=3,
+            )
+        else:
+            draw.rounded_rectangle(
+                card_coords, radius=cfg.card_radius,
+                fill=self.CARD_WHITE,
+                outline=self.COMIC_BLACK, width=4,
+            )
+
+        content_x = card_margin + 35
+        content_width = cfg.width - 2 * card_margin - 70
+
+        # Accent left bar
+        draw.rectangle(
+            [card_margin + 10, card_top + 25, card_margin + 15, card_bottom - 25],
+            fill=accent,
+        )
+
+        # Title
+        title_text = "影响分析"
+        title_y = card_top + 40
+        title_color = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
+        draw.text((content_x + 20, title_y), title_text, font=title_font, fill=accent)
+
+        # Impact text
+        text_y = title_y + int(cfg.title_font_size * 1.5)
+        text_color = self.TEXT_WHITE if is_dark else self.TEXT_DARK
+        impact_lines = self._wrap_text(impact, body_font, content_width - 30)
+        line_h = int((cfg.body_font_size + 4) * 1.4)
+        for line in impact_lines[:4]:
+            draw.text((content_x + 20, text_y), line, font=body_font, fill=text_color)
+            text_y += line_h
+
+        return img
+
+    def render_cta_slide(
+        self,
+        cta_text: str,
+        date_str: str = "",
+    ) -> Image.Image:
+        """Render Douyin CTA slide with engagement prompt.
+
+        Args:
+            cta_text: Engagement CTA question (10-15 chars).
+            date_str: Date string for FLUX background selection.
+
+        Returns:
+            CTA slide image.
+        """
+        cfg = self.config
+        accent = self._get_accent_color("default")
+        img, is_dark = self._get_flux_background(date_str=date_str)
+        draw = ImageDraw.Draw(img)
+
+        cta_font = self._get_font(80, bold=True)
+        guide_font = self._get_font(cfg.body_font_size)
+        caption_font = self._get_font(cfg.caption_font_size)
+
+        center_y = cfg.height // 2
+
+        # Panel frame
+        frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=frame_color,
+            width=frame_width,
+        )
+
+        # CTA question — large centered text
+        cta_lines = self._wrap_text(cta_text, cta_font, cfg.width - 2 * cfg.padding - 60)
+        line_h = int(80 * 1.4)
+        total_h = len(cta_lines[:3]) * line_h
+        text_y = center_y - total_h // 2 - 60
+
+        h_fill = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
+        h_stroke = self.COMIC_BLACK if is_dark else (255, 255, 255)
+        for line in cta_lines[:3]:
+            line_bbox = cta_font.getbbox(line)
+            line_x = (cfg.width - line_bbox[2]) // 2
+            self._draw_stroked_text(
+                draw, (line_x, text_y), line, cta_font,
+                fill=h_fill, stroke_color=h_stroke, stroke_width=2,
+            )
+            text_y += line_h
+
+        # Follow guide
+        guide_text = "关注 @巴别情报站"
+        guide_bbox = guide_font.getbbox(guide_text)
+        guide_x = (cfg.width - guide_bbox[2]) // 2
+        guide_y = text_y + 60
+        guide_color = self.TEXT_SECONDARY if is_dark else self.TEXT_DARK
+        draw.text((guide_x, guide_y), guide_text, font=guide_font, fill=accent)
+
+        # Engagement hints
+        hint_y = guide_y + int(cfg.body_font_size * 1.6)
+        hint_text = "点赞 + 评论 + 关注"
+        hint_bbox = caption_font.getbbox(hint_text)
+        hint_x = (cfg.width - hint_bbox[2]) // 2
+        hint_color = self.TEXT_SECONDARY if is_dark else self.TEXT_DARK
+        draw.text((hint_x, hint_y), hint_text, font=caption_font, fill=hint_color)
+
+        return img
+
     def render_slide(self, slide: SlideContent) -> Image.Image:
         """Render a generic slide (fallback for base class compatibility).
 

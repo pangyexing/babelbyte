@@ -545,6 +545,36 @@ class QwenTTSConfig:
 
 
 @dataclass
+class DouyinConfig:
+    """Douyin short video optimization configuration."""
+
+    target_duration: int = field(
+        default_factory=lambda: int(os.getenv("DOUYIN_TARGET_DURATION", "20"))
+    )
+    hook_enabled: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_HOOK_ENABLED", "true").lower() == "true"
+    )
+    cta_enabled: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_CTA_ENABLED", "true").lower() == "true"
+    )
+    subtitle_enabled: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_SUBTITLE_ENABLED", "true").lower() == "true"
+    )
+    cover_enabled: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_COVER_ENABLED", "true").lower() == "true"
+    )
+    encoding_crf: int = field(
+        default_factory=lambda: int(os.getenv("DOUYIN_ENCODING_CRF", "23"))
+    )
+    encoding_preset: str = field(
+        default_factory=lambda: os.getenv("DOUYIN_ENCODING_PRESET", "faster")
+    )
+    motion_enabled: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_MOTION_ENABLED", "true").lower() == "true"
+    )
+
+
+@dataclass
 class DigestConfig:
     """Digest generation configuration."""
 
@@ -777,6 +807,7 @@ class Settings:
     image_gen: ImageGenConfig = field(default_factory=ImageGenConfig)
     qwen_tts: QwenTTSConfig = field(default_factory=QwenTTSConfig)
     wechat_mp: WechatMPConfig = field(default_factory=WechatMPConfig)
+    douyin: DouyinConfig = field(default_factory=DouyinConfig)
 
 
 # Global settings instance

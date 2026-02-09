@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class DouyinContent:
+    """Content for a single Douyin short video (15-30s)."""
+
+    hook: str  # 3-second hook (8-15 chars)
+    headline: str  # Title (8-15 chars)
+    summary: str  # Core fact (40-50 chars)
+    impact: str  # Impact analysis (20-35 chars)
+    action: str  # Actionable advice (15-25 chars)
+    cta: str  # Engagement CTA (10-15 chars)
+    image_prompt: str  # FLUX illustration prompt (English)
+    segment_scripts: list[str]  # 5-segment TTS scripts
+    hashtags: list[str] = field(default_factory=list)  # 5 topic hashtags
+
+
+@dataclass
 class BulletinItem:
     """A single item in the news bulletin."""
 
@@ -120,6 +135,39 @@ class BulletinGenerator:
 8. 幽默要克制，冷幽默为主，绝不尬笑不硬搞笑，宁可正经也不要刻意搞笑
 
 直接返回脚本文本："""
+
+    # Prompt for Douyin single-event content generation
+    DOUYIN_CONTENT_PROMPT = """你是抖音科技号运营专家。为以下单条新闻事件生成15-30秒短视频的全部内容。
+
+事件信息：
+{event_json}
+
+要求：
+1. hook: 3秒钩子文案（8-15个中文字），使用疑问/冲突/震惊/悬念角度，直入主题
+2. headline: 标题（8-15个中文字）
+3. summary: 核心事实（40-50字，正经讲事实）
+4. impact: 影响分析（20-35字，如"短期利好XX，长期推动XX"）
+5. action: 行动建议（15-25字，具体可操作的完整句子）
+6. cta: 评论引导问题（10-15字），让观众想在评论区表达看法
+7. image_prompt: 英文配图描述（30-50单词），用于AI图像生成，漫画插画风格
+8. segment_scripts: 5段TTS脚本数组，分别对应：
+   - [0] hook播报（8-15字，直接抛出悬念/问题）
+   - [1] 核心事实播报（40-50字）
+   - [2] 影响分析播报（20-35字）
+   - [3] 行动建议播报（15-25字）
+   - [4] CTA引导（15-20字，如"你觉得呢？评论区聊聊"）
+9. hashtags: 5个相关话题标签（混合热门+垂直，不带#号）
+
+【重要】每个字段都必须包含明确主语（公司名/产品名/人物名），禁止省略主体。
+image_prompt中不要包含任何文字、字母、数字。
+
+返回JSON格式：
+{{"hook": "...", "headline": "...", "summary": "...", "impact": "...",
+  "action": "...", "cta": "...", "image_prompt": "...",
+  "segment_scripts": ["...", "...", "...", "...", "..."],
+  "hashtags": ["...", "...", "...", "...", "..."]}}
+
+仅返回JSON，无其他文字："""
 
     # Prompt for generating English image prompts for FLUX illustration
     IMAGE_PROMPT_PROMPT = (
@@ -875,3 +923,173 @@ class BulletinGenerator:
 
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             logger.warning(f"Failed to parse image prompt response: {e}")
+
+    def generate_douyin_content(
+        self,
+        cluster: "EventCluster",
+        members: list["ContentItem"],
+    ) -> Optional[DouyinContent]:
+        """Generate Douyin short video content for a single event.
+
+        Produces hook, headline, summary, impact, action, CTA, image prompt,
+        5-segment TTS scripts, and hashtags in one Ollama call.
+
+        Args:
+            cluster: Event cluster.
+            members: Member content items.
+
+        Returns:
+            DouyinContent or None on failure.
+        """
+        if not members:
+            return None
+
+        rep = max(members, key=lambda m: m.importance_score or 0)
+
+        event = {
+            "title": cluster.event_title,
+            "category": cluster.category or "资讯",
+            "article_count": cluster.article_count,
+            "summary": rep.summary[:400] if rep.summary else "",
+            "one_liner": rep.one_liner[:100] if rep.one_liner else "",
+            "importance": rep.importance_score or 5,
+        }
+
+        if rep.key_points:
+            try:
+                kp_data = json.loads(rep.key_points)
+                event["key_points"] = [
+                    kp.get("value", "")[:60]
+                    for kp in kp_data[:3]
+                    if kp.get("value")
+                ]
+            except json.JSONDecodeError:
+                pass
+
+        if rep.impact_assessment:
+            try:
+                impact_data = json.loads(rep.impact_assessment)
+                event["impact_info"] = {
+                    "short_term": impact_data.get("short_term", "")[:80],
+                    "long_term": impact_data.get("long_term", "")[:80],
+                }
+            except json.JSONDecodeError:
+                pass
+
+        prompt = self.DOUYIN_CONTENT_PROMPT.format(
+            event_json=json.dumps(event, ensure_ascii=False, indent=2),
+        )
+
+        processor = self._get_processor()
+        start_time = time.time()
+
+        if not hasattr(processor, "_call_api"):
+            logger.warning("Processor has no _call_api, using fallback")
+            return self._fallback_douyin_content(cluster, rep)
+
+        success, response, error = processor._call_api(
+            prompt,
+            model=processor.model,
+            max_tokens=1024,
+            disable_thinking=True,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        record_ai_call(
+            call_type=AICallType.DIGEST_GENERATE,
+            cached=False,
+            input_chars=len(prompt),
+            output_chars=len(response) if success else 0,
+            duration_ms=duration_ms,
+            success=success,
+            error=error[:100] if error else None,
+        )
+
+        if not success:
+            logger.warning(f"Douyin content generation failed: {error}")
+            return self._fallback_douyin_content(cluster, rep)
+
+        try:
+            response = response.strip()
+            if response.startswith("```"):
+                lines = response.split("\n")
+                response = "\n".join(
+                    line for line in lines if not line.strip().startswith("```")
+                )
+
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+            if json_start == -1 or json_end <= json_start:
+                return self._fallback_douyin_content(cluster, rep)
+
+            data = json.loads(response[json_start:json_end])
+
+            scripts = data.get("segment_scripts", [])
+            if len(scripts) < 5:
+                # Pad with defaults
+                defaults = [
+                    data.get("hook", ""),
+                    data.get("summary", ""),
+                    data.get("impact", ""),
+                    data.get("action", ""),
+                    data.get("cta", "你觉得呢？评论区聊聊"),
+                ]
+                scripts = (scripts + defaults)[:5]
+
+            return DouyinContent(
+                hook=data.get("hook", "")[:15],
+                headline=data.get("headline", "")[:15],
+                summary=data.get("summary", "")[:60],
+                impact=data.get("impact", "")[:40],
+                action=data.get("action", "")[:30],
+                cta=data.get("cta", "你觉得呢？")[:20],
+                image_prompt=data.get("image_prompt", ""),
+                segment_scripts=scripts,
+                hashtags=data.get("hashtags", [])[:5],
+            )
+
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            logger.warning(f"Failed to parse douyin content response: {e}")
+            return self._fallback_douyin_content(cluster, rep)
+
+    def _fallback_douyin_content(
+        self,
+        cluster: "EventCluster",
+        rep: "ContentItem",
+    ) -> DouyinContent:
+        """Create fallback Douyin content without AI."""
+        headline = self._extract_headline(cluster, rep)
+        summary = rep.summary[:60] if rep.summary else headline
+        one_liner = rep.one_liner[:30] if rep.one_liner else ""
+
+        impact = ""
+        if rep.impact_assessment:
+            try:
+                impact_data = json.loads(rep.impact_assessment)
+                short_term = impact_data.get("short_term", "")
+                if short_term:
+                    impact = short_term[:40]
+            except json.JSONDecodeError:
+                pass
+
+        hook = headline[:15]
+        cta = "你觉得呢？评论区聊聊"
+        action = one_liner[:25] if one_liner else "关注后续发展"
+
+        return DouyinContent(
+            hook=hook,
+            headline=headline,
+            summary=summary,
+            impact=impact or "值得持续关注",
+            action=action,
+            cta=cta,
+            image_prompt="",
+            segment_scripts=[
+                hook,
+                summary,
+                impact or "值得持续关注",
+                action,
+                cta,
+            ],
+            hashtags=[cluster.category or "科技", "AI", "科技前沿", "每日科技", "巴别情报站"],
+        )
