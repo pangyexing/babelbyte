@@ -311,6 +311,23 @@ def daily(ctx, dry_run, skip_fetch, min_importance):
             else:
                 console.print(f"[red]✗ {result.message}[/red]")
 
+            # Step 5b: WeChat MP (if enabled)
+            settings = get_settings()
+            if settings.wechat_mp.enabled and settings.wechat_mp.is_configured:
+                console.print("\n[bold cyan]Step 5b: Publishing to WeChat MP...[/bold cyan]")
+                try:
+                    from src.delivery.wechat_mp import WechatMPPublisher
+
+                    publisher = WechatMPPublisher()
+                    draft_only = not settings.wechat_mp.auto_publish
+                    mp_result = publisher.publish_digest(digest_result, draft_only=draft_only)
+                    if mp_result.success:
+                        console.print(f"  [green]✓ 公众号: {mp_result.message}[/green]")
+                    else:
+                        console.print(f"  [red]✗ 公众号: {mp_result.message}[/red]")
+                except Exception as e:
+                    console.print(f"  [red]✗ 公众号发布失败: {e}[/red]")
+
         finally:
             db.close()
 

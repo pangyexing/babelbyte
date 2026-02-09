@@ -8,7 +8,7 @@ import logging
 
 import click
 
-from src.cli import actions, db, embeddings, events, fetch, reports, search, subscribe, topics, validation, video
+from src.cli import actions, db, embeddings, events, fetch, reports, search, subscribe, topics, validation, video, wechat
 
 
 def setup_logging():
@@ -58,6 +58,9 @@ embeddings.register_commands(cli)
 
 # Video generation commands
 cli.add_command(video.video)
+
+# WeChat Official Account commands
+cli.add_command(wechat.wechat)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,28 @@ class EmailConfig:
 
 
 @dataclass
+class WechatMPConfig:
+    """WeChat Official Account (公众号) configuration."""
+
+    appid: str = field(default_factory=lambda: os.getenv("WECHAT_MP_APPID", ""))
+    appsecret: str = field(default_factory=lambda: os.getenv("WECHAT_MP_APPSECRET", ""))
+    author: str = field(default_factory=lambda: os.getenv("WECHAT_MP_AUTHOR", "BabelByte"))
+    default_thumb_path: str = field(
+        default_factory=lambda: os.getenv("WECHAT_MP_DEFAULT_THUMB", "./assets/wechat_cover.jpg")
+    )
+    auto_publish: bool = field(
+        default_factory=lambda: os.getenv("WECHAT_MP_AUTO_PUBLISH", "false").lower() == "true"
+    )
+    enabled: bool = field(
+        default_factory=lambda: os.getenv("WECHAT_MP_ENABLED", "false").lower() == "true"
+    )
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.appid and self.appsecret)
+
+
+@dataclass
 class DatabaseConfig:
     """Database configuration."""
 
@@ -754,6 +776,7 @@ class Settings:
     digest: DigestConfig = field(default_factory=DigestConfig)
     image_gen: ImageGenConfig = field(default_factory=ImageGenConfig)
     qwen_tts: QwenTTSConfig = field(default_factory=QwenTTSConfig)
+    wechat_mp: WechatMPConfig = field(default_factory=WechatMPConfig)
 
 
 # Global settings instance
