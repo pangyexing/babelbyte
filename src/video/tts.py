@@ -400,10 +400,10 @@ class QwenTTS:
         """Resolve reference audio path — pick daily from directory.
 
         If voice_clone_ref_audio is a directory, selects one audio file
-        deterministically by date hash (same day = same voice).
+        via sequential daily rotation (toordinal % N), guaranteeing a
+        different voice on consecutive days.
         If it's a file, returns it as-is.
         """
-        import hashlib
         from datetime import date
 
         ref = Path(self.voice_clone_ref_audio)
@@ -413,7 +413,9 @@ class QwenTTS:
         audio_exts = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
         files = sorted(
             f for f in ref.iterdir()
-            if f.is_file() and f.suffix.lower() in audio_exts
+            if f.is_file()
+            and f.suffix.lower() in audio_exts
+            and not f.name.startswith("._")
         )
         if not files:
             raise ValueError(
@@ -421,12 +423,12 @@ class QwenTTS:
                 f"(supported: {', '.join(audio_exts)})"
             )
 
-        today = date.today().isoformat()
-        idx = int(hashlib.md5(today.encode()).hexdigest(), 16) % len(files)
+        today = date.today()
+        idx = today.toordinal() % len(files)
         chosen = str(files[idx])
         logger.info(
             f"Daily voice clone: picked {files[idx].name} "
-            f"({idx + 1}/{len(files)}) for {today}"
+            f"({idx + 1}/{len(files)}) for {today.isoformat()}"
         )
         return chosen
 
