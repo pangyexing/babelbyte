@@ -13,7 +13,7 @@
 
 {% macro render_key_points(enhanced_data) %}
 {% if enhanced_data and enhanced_data.key_points %}
-<section style="margin:8px 0;">
+<section style="margin:8px 0;word-break:break-word;overflow-wrap:break-word;">
     {% for kp in enhanced_data.key_points %}
     <span style="display:inline-block;background:#f0f0f0;padding:3px 8px;border-radius:12px;font-size:12px;margin:2px 4px 2px 0;border:1px solid #e0e0e0;">
         <strong style="color:#5a6c7d;">{{ kp.type }}:</strong>
@@ -42,7 +42,7 @@
 
 {% macro render_actionable_items(enhanced_data) %}
 {% if enhanced_data and enhanced_data.actionable_items %}
-<section style="margin:8px 0;background:#f8f9fa;border-radius:6px;padding:8px 10px;">
+<section style="margin:8px 0;background:#f8f9fa;border-radius:6px;padding:8px 10px;word-break:break-word;overflow-wrap:break-word;">
     <section style="font-weight:bold;color:#2c3e50;margin-bottom:4px;font-size:12px;">行动建议</section>
     {% for action in enhanced_data.actionable_items %}
     <section style="margin:4px 0;padding:4px 8px;border-left:3px solid {% if action.priority == '高' %}#ff6b6b{% elif action.priority == '中' %}#ffa502{% else %}#95a5a6{% endif %};background:#fff;border-radius:0 4px 4px 0;font-size:13px;">
@@ -55,8 +55,13 @@
 {% endif %}
 {% endmacro %}
 
+{# ── Control variables (with defaults for standalone preview) ── #}
+{% set _max_sources = max_sources | default(5) %}
+{% set _show_details = show_details | default(true) %}
+{% set _show_summary = show_summary | default(true) %}
+
 {# ── Template Body ── #}
-<section style="max-width:600px;margin:0 auto;padding:12px;font-family:'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif;color:#2c3e50;line-height:1.6;font-size:14px;">
+<section style="max-width:600px;margin:0 auto;padding:12px;font-family:'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif;color:#2c3e50;line-height:1.6;font-size:14px;word-break:break-word;overflow-wrap:break-word;">
 
     {# ── Header ── #}
     <section style="text-align:center;padding:16px 0;margin-bottom:16px;">
@@ -65,25 +70,25 @@
     </section>
 
     {# ── Stats Bar ── #}
-    <section style="background:#f8f9fa;border-radius:8px;padding:12px 8px;margin-bottom:16px;text-align:center;border:1px solid #e8e8e8;">
-        <span style="display:inline-block;min-width:60px;text-align:center;padding:0 10px;">
+    <section style="display:flex;flex-wrap:wrap;justify-content:center;background:#f8f9fa;border-radius:8px;padding:12px 8px;margin-bottom:16px;border:1px solid #e8e8e8;">
+        <span style="min-width:60px;text-align:center;padding:0 10px;">
             <strong style="display:block;color:#4a90d9;font-size:20px;line-height:1.3;">{{ total_items }}</strong>
             <span style="font-size:11px;color:#95a5a6;">总内容</span>
         </span>
         {% if event_count > 0 %}
-        <span style="display:inline-block;min-width:60px;text-align:center;padding:0 10px;">
+        <span style="min-width:60px;text-align:center;padding:0 10px;">
             <strong style="display:block;color:#4a90d9;font-size:20px;line-height:1.3;">{{ event_count }}</strong>
             <span style="font-size:11px;color:#95a5a6;">事件</span>
         </span>
         {% endif %}
         {% if individual_count > 0 %}
-        <span style="display:inline-block;min-width:60px;text-align:center;padding:0 10px;">
+        <span style="min-width:60px;text-align:center;padding:0 10px;">
             <strong style="display:block;color:#00b894;font-size:20px;line-height:1.3;">{{ individual_count }}</strong>
             <span style="font-size:11px;color:#95a5a6;">资讯</span>
         </span>
         {% endif %}
         {% if paper_count > 0 %}
-        <span style="display:inline-block;min-width:60px;text-align:center;padding:0 10px;">
+        <span style="min-width:60px;text-align:center;padding:0 10px;">
             <strong style="display:block;color:#6c5ce7;font-size:20px;line-height:1.3;">{{ paper_count }}</strong>
             <span style="font-size:11px;color:#95a5a6;">论文</span>
         </span>
@@ -100,9 +105,12 @@
     {# ===== SECTION 1: Event Clusters ===== #}
     {% if events_by_category %}
     {# Section divider #}
-    <section style="margin:24px 0 16px 0;text-align:center;">
-        <section style="border-top:1px solid #e0e0e0;margin:0 20px;"></section>
-        <section style="display:inline-block;background:#fff;padding:0 12px;margin-top:-10px;position:relative;color:#4a90d9;font-size:16px;font-weight:bold;">事件聚合</section>
+    <section style="margin:24px 0 16px 0;">
+        <section style="display:flex;align-items:center;gap:8px;">
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+            <span style="color:#4a90d9;font-size:16px;font-weight:bold;white-space:nowrap;">事件聚合</span>
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+        </section>
         <section style="text-align:center;margin-top:6px;">
             <span style="display:inline-block;background:#f0f7ff;color:#4a90d9;padding:2px 10px;border-radius:12px;font-size:12px;">{{ event_count }} 个事件</span>
         </section>
@@ -110,19 +118,21 @@
 
     {% for category, category_events in events_by_category.items() %}
     {# Category header #}
-    <section style="background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #4a90d9;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
-        {{ category }}
-        <span style="float:right;color:#95a5a6;font-size:13px;font-weight:normal;">{{ category_events|length }}个事件</span>
+    <section style="display:flex;justify-content:space-between;align-items:center;background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #4a90d9;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
+        <span>{{ category }}</span>
+        <span style="color:#95a5a6;font-size:13px;font-weight:normal;flex-shrink:0;margin-left:8px;">{{ category_events|length }}个事件</span>
     </section>
 
     {% for item in category_events %}
     {# Event card #}
-    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #4a90d9;">
+    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #4a90d9;">
         {# Title row #}
-        <section style="margin-bottom:8px;">
-            <span style="display:inline-block;background:#4a90d9;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">事件</span>
-            <strong style="font-size:16px;color:#2c3e50;">{{ item.event_title }}</strong>
-            <span style="float:right;">{{ importance_badge(item.importance_score) }}</span>
+        <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
+            <span style="flex:1;min-width:0;word-break:break-word;">
+                <span style="display:inline-block;background:#4a90d9;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">事件</span>
+                <strong style="font-size:16px;color:#2c3e50;">{{ item.event_title }}</strong>
+            </span>
+            <span style="flex-shrink:0;">{{ importance_badge(item.importance_score) }}</span>
         </section>
 
         {# One-liner — always show #}
@@ -132,34 +142,39 @@
         </section>
         {% endif %}
 
-        {# Importance-based content display #}
-        {% if item.importance_score >= 5 %}
+        {% if _show_summary %}
         <p style="color:#5a6c7d;font-size:14px;margin:0 0 8px 0;line-height:1.6;">{{ item.summary }}</p>
-        {{ render_key_points(item.enhanced_data) }}
         {% endif %}
 
-        {% if item.importance_score >= 8 %}
+        {% if _show_details %}
+        {{ render_key_points(item.enhanced_data) }}
+        {% if item.importance_score >= 7 %}
         {{ render_impact(item.enhanced_data) }}
+        {% endif %}
         {{ render_actionable_items(item.enhanced_data) }}
         {% endif %}
 
         {# Related sources — plain text, no links #}
+        {% if _max_sources > 0 %}
         <section style="margin-top:10px;padding:8px 10px;background:#f8f9fa;border-radius:6px;border:1px solid #e8e8e8;">
             <section style="font-size:12px;color:#5a6c7d;font-weight:bold;margin-bottom:4px;">相关报道 ({{ item.members|length }}篇):</section>
-            {% for member in item.members[:3] %}
+            {% for member in item.members[:_max_sources] %}
             <section style="font-size:12px;color:#2c3e50;padding:3px 0;{% if not loop.last %}border-bottom:1px solid #f0f0f0;{% endif %}">
-                {{ member.title[:40] }}{% if member.title|length > 40 %}...{% endif %}
+                {{ member.title[:50] }}{% if member.title|length > 50 %}...{% endif %}
             </section>
             {% endfor %}
-            {% if item.members|length > 3 %}
+            {% if item.members|length > _max_sources %}
             <section style="font-size:11px;color:#95a5a6;font-style:italic;padding-top:4px;">
-                还有 {{ item.members|length - 3 }} 篇相关报道
+                还有 {{ item.members|length - _max_sources }} 篇相关报道
             </section>
             {% endif %}
         </section>
+        {% else %}
+        <section style="font-size:12px;color:#95a5a6;margin-top:6px;">综合 {{ item.members|length }} 篇报道</section>
+        {% endif %}
 
         {# Source badge #}
-        <section style="font-size:12px;color:#95a5a6;margin-top:8px;">
+        <section style="font-size:12px;color:#95a5a6;margin-top:8px;word-break:break-word;overflow-wrap:break-word;">
             <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;">{{ item.source_display }}</span>
         </section>
     </section>
@@ -170,9 +185,12 @@
     {# ===== SECTION 2: Regular Items (non-paper) ===== #}
     {% if regular_items_by_category %}
     {# Section divider #}
-    <section style="margin:24px 0 16px 0;text-align:center;">
-        <section style="border-top:1px solid #e0e0e0;margin:0 20px;"></section>
-        <section style="display:inline-block;background:#fff;padding:0 12px;margin-top:-10px;position:relative;color:#00b894;font-size:16px;font-weight:bold;">独立资讯</section>
+    <section style="margin:24px 0 16px 0;">
+        <section style="display:flex;align-items:center;gap:8px;">
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+            <span style="color:#00b894;font-size:16px;font-weight:bold;white-space:nowrap;">独立资讯</span>
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+        </section>
         <section style="text-align:center;margin-top:6px;">
             <span style="display:inline-block;background:#e8faf5;color:#00b894;padding:2px 10px;border-radius:12px;font-size:12px;">{{ individual_count }} 条</span>
         </section>
@@ -180,18 +198,18 @@
 
     {% for category, category_items in regular_items_by_category.items() %}
     {# Category header #}
-    <section style="background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #00b894;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
-        {{ category }}
-        <span style="float:right;color:#95a5a6;font-size:13px;font-weight:normal;">{{ category_items|length }}条</span>
+    <section style="display:flex;justify-content:space-between;align-items:center;background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #00b894;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
+        <span>{{ category }}</span>
+        <span style="color:#95a5a6;font-size:13px;font-weight:normal;flex-shrink:0;margin-left:8px;">{{ category_items|length }}条</span>
     </section>
 
     {% for item in category_items %}
     {# Regular item card #}
-    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
         {# Title row #}
-        <section style="margin-bottom:8px;">
-            <strong style="font-size:16px;color:#2c3e50;">{{ item.content_item.title[:60] }}{% if item.content_item.title|length > 60 %}...{% endif %}</strong>
-            <span style="float:right;">{{ importance_badge(item.importance_score) }}</span>
+        <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
+            <strong style="flex:1;min-width:0;font-size:16px;color:#2c3e50;word-break:break-word;">{{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}</strong>
+            <span style="flex-shrink:0;">{{ importance_badge(item.importance_score) }}</span>
         </section>
 
         {# One-liner — always show #}
@@ -201,19 +219,20 @@
         </section>
         {% endif %}
 
-        {# Importance-based content display #}
-        {% if item.importance_score >= 5 %}
+        {% if _show_summary %}
         <p style="color:#5a6c7d;font-size:14px;margin:0 0 8px 0;line-height:1.6;">{{ item.summary }}</p>
-        {{ render_key_points(item.enhanced_data) }}
         {% endif %}
 
-        {% if item.importance_score >= 8 %}
+        {% if _show_details %}
+        {{ render_key_points(item.enhanced_data) }}
+        {% if item.importance_score >= 7 %}
         {{ render_impact(item.enhanced_data) }}
+        {% endif %}
         {{ render_actionable_items(item.enhanced_data) }}
         {% endif %}
 
         {# Source meta — no external link #}
-        <section style="font-size:12px;color:#95a5a6;margin-top:8px;">
+        <section style="font-size:12px;color:#95a5a6;margin-top:8px;word-break:break-word;overflow-wrap:break-word;">
             {% if item.content_item.source_type.value == 'reddit' %}
             <span style="display:inline-block;background:#ff4500;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;margin-right:6px;">{{ item.source_display }}</span>
             {% elif item.content_item.source_type.value == 'twitter' %}
@@ -233,9 +252,12 @@
     {# ===== SECTION 3: Papers ===== #}
     {% if papers_by_category %}
     {# Section divider #}
-    <section style="margin:24px 0 16px 0;text-align:center;">
-        <section style="border-top:1px solid #e0e0e0;margin:0 20px;"></section>
-        <section style="display:inline-block;background:#fff;padding:0 12px;margin-top:-10px;position:relative;color:#6c5ce7;font-size:16px;font-weight:bold;">论文</section>
+    <section style="margin:24px 0 16px 0;">
+        <section style="display:flex;align-items:center;gap:8px;">
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+            <span style="color:#6c5ce7;font-size:16px;font-weight:bold;white-space:nowrap;">论文</span>
+            <section style="flex:1;height:1px;background:#e0e0e0;"></section>
+        </section>
         <section style="text-align:center;margin-top:6px;">
             <span style="display:inline-block;background:#f3f0ff;color:#6c5ce7;padding:2px 10px;border-radius:12px;font-size:12px;">{{ paper_count }} 篇</span>
         </section>
@@ -243,19 +265,21 @@
 
     {% for category, category_items in papers_by_category.items() %}
     {# Category header #}
-    <section style="background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #6c5ce7;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
-        {{ category }}
-        <span style="float:right;color:#95a5a6;font-size:13px;font-weight:normal;">{{ category_items|length }}篇</span>
+    <section style="display:flex;justify-content:space-between;align-items:center;background:#f8f9fa;color:#2c3e50;padding:8px 14px;border-bottom:2px solid #6c5ce7;border-radius:4px 4px 0 0;font-size:15px;font-weight:bold;margin-top:16px;">
+        <span>{{ category }}</span>
+        <span style="color:#95a5a6;font-size:13px;font-weight:normal;flex-shrink:0;margin-left:8px;">{{ category_items|length }}篇</span>
     </section>
 
     {% for item in category_items %}
     {# Paper card #}
-    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #6c5ce7;">
+    <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #6c5ce7;">
         {# Title row #}
-        <section style="margin-bottom:8px;">
-            <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">论文</span>
-            <strong style="font-size:16px;color:#2c3e50;">{{ item.content_item.title[:60] }}{% if item.content_item.title|length > 60 %}...{% endif %}</strong>
-            <span style="float:right;">{{ importance_badge(item.importance_score) }}</span>
+        <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
+            <span style="flex:1;min-width:0;word-break:break-word;">
+                <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">论文</span>
+                <strong style="font-size:16px;color:#2c3e50;">{{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}</strong>
+            </span>
+            <span style="flex-shrink:0;">{{ importance_badge(item.importance_score) }}</span>
         </section>
 
         {# One-liner — always show #}
@@ -265,19 +289,20 @@
         </section>
         {% endif %}
 
-        {# Importance-based content display #}
-        {% if item.importance_score >= 5 %}
+        {% if _show_summary %}
         <p style="color:#5a6c7d;font-size:14px;margin:0 0 8px 0;line-height:1.6;">{{ item.summary }}</p>
-        {{ render_key_points(item.enhanced_data) }}
         {% endif %}
 
-        {% if item.importance_score >= 8 %}
+        {% if _show_details %}
+        {{ render_key_points(item.enhanced_data) }}
+        {% if item.importance_score >= 7 %}
         {{ render_impact(item.enhanced_data) }}
+        {% endif %}
         {{ render_actionable_items(item.enhanced_data) }}
         {% endif %}
 
         {# Source meta — purple badge, no external link #}
-        <section style="font-size:12px;color:#95a5a6;margin-top:8px;">
+        <section style="font-size:12px;color:#95a5a6;margin-top:8px;word-break:break-word;overflow-wrap:break-word;">
             <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;margin-right:6px;">论文</span>
             作者: {{ item.content_item.author }}
         </section>
