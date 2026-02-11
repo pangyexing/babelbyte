@@ -70,6 +70,8 @@ class WechatMPClient:
         self.appsecret = appsecret
         self.token_manager = WechatMPTokenManager()
         self.session = requests.Session()
+        # Bypass local proxy for WeChat API (domestic service)
+        self.session.trust_env = False
 
     def get_access_token(self) -> str:
         """Get a valid access_token, refreshing if needed."""
