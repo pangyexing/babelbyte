@@ -326,6 +326,8 @@ class WechatMPPublisher:
     def _render_digest_html(self, digest: DigestResult) -> str:
         """Render digest to WeChat-compatible HTML using Jinja2 template."""
         template = self.jinja_env.get_template("wechat_digest.html")
+        # Estimate ~30s per item for reading time
+        reading_time = max(1, round(digest.total_items * 0.5))
         return template.render(
             date=digest.generated_at.strftime("%Y年%m月%d日"),
             total_items=digest.total_items,
@@ -337,6 +339,7 @@ class WechatMPPublisher:
             regular_items_by_category=digest.regular_items_by_category,
             papers_by_category=digest.papers_by_category,
             items=digest.items,
+            reading_time=reading_time,
         )
 
     @staticmethod
