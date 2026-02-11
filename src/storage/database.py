@@ -1381,28 +1381,42 @@ class Database:
             return [self._row_to_event_cluster(row) for row in rows]
 
     async def get_undelivered_clustered_items(
-        self, min_importance: int = 5, limit: int = 50
+        self,
+        min_importance: int = 5,
+        limit: int = 50,
+        include_delivered: bool = False,
     ) -> dict[int, list[ContentItem]]:
         """
-        Get undelivered content items that belong to event clusters.
+        Get content items that belong to event clusters.
 
         Returns items grouped by cluster_id, with members sorted by importance_score desc.
 
         Args:
             min_importance: Minimum importance score to include
             limit: Maximum total items to return
+            include_delivered: If True, also include items delivered today
 
         Returns:
             Dict mapping cluster_id to list of ContentItem
         """
+        if include_delivered:
+            # Include undelivered + delivered today (same set as today's email)
+            from datetime import time as dt_time
+
+            today_start = datetime.combine(datetime.now().date(), dt_time.min).isoformat()
+            delivered_filter = (
+                f"AND (c.delivered = 0 OR c.delivered_at >= '{today_start}')"
+            )
+        else:
+            delivered_filter = "AND c.delivered = 0"
         async with self._connection.cursor() as cursor:
             await cursor.execute(
-                """
+                f"""
                 SELECT c.*, em.event_cluster_id
                 FROM content_items c
                 INNER JOIN event_members em ON c.id = em.content_item_id
                 WHERE c.processed_at IS NOT NULL
-                  AND c.delivered = 0
+                  {delivered_filter}
                   AND c.importance_score >= ?
                 ORDER BY c.importance_score DESC, c.published_at DESC
                 LIMIT ?
@@ -1423,25 +1437,38 @@ class Database:
             return result
 
     async def get_undelivered_unclustered_items(
-        self, min_importance: int = 5, limit: int = 50
+        self,
+        min_importance: int = 5,
+        limit: int = 50,
+        include_delivered: bool = False,
     ) -> list[ContentItem]:
         """
-        Get undelivered content items that do not belong to any event cluster.
+        Get content items that do not belong to any event cluster.
 
         Args:
             min_importance: Minimum importance score to include
             limit: Maximum items to return
+            include_delivered: If True, also include items delivered today
 
         Returns:
             List of ContentItem not in any cluster
         """
+        if include_delivered:
+            from datetime import time as dt_time
+
+            today_start = datetime.combine(datetime.now().date(), dt_time.min).isoformat()
+            delivered_filter = (
+                f"AND (c.delivered = 0 OR c.delivered_at >= '{today_start}')"
+            )
+        else:
+            delivered_filter = "AND c.delivered = 0"
         async with self._connection.cursor() as cursor:
             await cursor.execute(
-                """
+                f"""
                 SELECT c.* FROM content_items c
                 LEFT JOIN event_members em ON c.id = em.content_item_id
                 WHERE c.processed_at IS NOT NULL
-                  AND c.delivered = 0
+                  {delivered_filter}
                   AND c.importance_score >= ?
                   AND em.content_item_id IS NULL
                 ORDER BY c.importance_score DESC, c.published_at DESC
@@ -2580,14 +2607,28 @@ class SyncDatabase:
         return self._run(self._async_db.get_delivered_event_clusters(target_date, limit))
 
     def get_undelivered_clustered_items(
-        self, min_importance: int = 5, limit: int = 50
+        self,
+        min_importance: int = 5,
+        limit: int = 50,
+        include_delivered: bool = False,
     ) -> dict[int, list[ContentItem]]:
-        return self._run(self._async_db.get_undelivered_clustered_items(min_importance, limit))
+        return self._run(
+            self._async_db.get_undelivered_clustered_items(
+                min_importance, limit, include_delivered
+            )
+        )
 
     def get_undelivered_unclustered_items(
-        self, min_importance: int = 5, limit: int = 50
+        self,
+        min_importance: int = 5,
+        limit: int = 50,
+        include_delivered: bool = False,
     ) -> list[ContentItem]:
-        return self._run(self._async_db.get_undelivered_unclustered_items(min_importance, limit))
+        return self._run(
+            self._async_db.get_undelivered_unclustered_items(
+                min_importance, limit, include_delivered
+            )
+        )
 
     def add_event_timeline(self, timeline: EventTimeline) -> None:
         self._run(self._async_db.add_event_timeline(timeline))

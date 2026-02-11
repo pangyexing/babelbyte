@@ -1,5 +1,6 @@
 """WeChat Official Account (公众号) delivery module for BabelByte."""
 
+import json as _json
 import logging
 import re
 import time
@@ -112,6 +113,19 @@ class WechatMPClient:
         Returns:
             Parsed JSON response.
         """
+        # Serialize JSON with ensure_ascii=False so Chinese characters are
+        # sent as raw UTF-8 instead of \uXXXX escapes.  WeChat checks field
+        # sizes against the raw JSON representation; ascii-escaped titles
+        # like "02\u670811\u65e5" inflate from 45 to 69 bytes, exceeding
+        # the 64-byte title limit (error 45003).
+        if "json" in kwargs:
+            kwargs["data"] = _json.dumps(
+                kwargs.pop("json"), ensure_ascii=False
+            ).encode("utf-8")
+            kwargs.setdefault("headers", {})["Content-Type"] = (
+                "application/json"
+            )
+
         for attempt in range(MAX_RETRIES):
             token = self.get_access_token()
 
@@ -276,19 +290,31 @@ class WechatMPPublisher:
             WechatMPResult with status and identifiers.
         """
         try:
-            # 1. Render HTML content
-            html = self._render_digest_html(digest)
-            html = self._sanitize_html(html)
+            # 1. Render HTML content (with progressive size reduction)
+            html = self._render_for_wechat(digest)
 
             # 2. Generate title and summary
             title = self._generate_title(digest)
             summary = self._generate_digest_summary(digest)
 
+            # Pre-flight diagnostics (WARNING level for visibility)
+            title_bytes = len(title.encode("utf-8"))
+            content_bytes = len(html.encode("utf-8"))
+            summary_bytes = len(summary.encode("utf-8"))
+            logger.warning(
+                "Draft fields: title='%s' (%d chars/%d bytes), "
+                "author='%s', digest='%s' (%d chars/%d bytes), "
+                "content=%d chars/%d bytes",
+                title, len(title), title_bytes,
+                self.author,
+                summary, len(summary), summary_bytes,
+                len(html), content_bytes,
+            )
+
             # 3. Upload cover image
             thumb_media_id = self._get_thumb_media_id()
 
             # 4. Create draft
-            logger.info("Creating WeChat MP draft: %s", title)
             draft_media_id = self.client.create_draft(
                 title=title,
                 content=html,
@@ -325,11 +351,114 @@ class WechatMPPublisher:
             logger.error("WeChat MP network error: %s", e)
             return WechatMPResult(success=False, message=f"Network error: {e}")
 
-    def _render_digest_html(self, digest: DigestResult) -> str:
+    # WeChat MP draft/add content limit.  The actual cap is ~2 MB; the earlier
+    # 20 KB assumption was wrong — error 45003 was caused by ensure_ascii JSON
+    # encoding inflating the title, not by content size.
+    WECHAT_MAX_CONTENT_BYTES = 2_000_000
+
+    def _render_for_wechat(self, digest: DigestResult) -> str:
+        """Render digest HTML with progressive size reduction for WeChat limits.
+
+        Tries full content first, then progressively strips detail to fit
+        within WECHAT_MAX_CONTENT_BYTES (UTF-8).
+        """
+        limit = self.WECHAT_MAX_CONTENT_BYTES
+
+        # Progressive reduction levels
+        levels = [
+            {"max_sources": 5, "show_details": True, "show_summary": True},
+            {"max_sources": 2, "show_details": False, "show_summary": True},
+            {"max_sources": 2, "show_details": False, "show_summary": False},
+        ]
+
+        for i, opts in enumerate(levels):
+            html = self._render_digest_html(digest, **opts)
+            html = self._sanitize_html(html)
+            size = len(html.encode("utf-8"))
+            if size <= limit:
+                if i > 0:
+                    logger.info("Content reduced at level %d: %d bytes", i, size)
+                return html
+            logger.info("Content at level %d: %d bytes (limit %d)", i, size, limit)
+
+        # Still too large — progressively limit events/items
+        for max_sources, event_counts in [
+            (2, (15, 10, 8)),
+            (0, (26, 15, 10, 8, 7, 6, 5, 4)),
+        ]:
+            for max_events in event_counts:
+                if max_events > len(digest.events):
+                    continue
+                html = self._render_digest_html(
+                    digest, max_sources=max_sources, show_details=False,
+                    show_summary=False, max_events=max_events,
+                    max_regular=5, max_papers=3,
+                )
+                html = self._sanitize_html(html)
+                size = len(html.encode("utf-8"))
+                if size <= limit:
+                    logger.warning(
+                        "Content trimmed to top %d events "
+                        "(sources=%d) to fit %d byte limit "
+                        "(original: %d events)",
+                        max_events, max_sources, limit,
+                        len(digest.events),
+                    )
+                    return html
+                logger.info(
+                    "Content with %d events (sources=%d): %d bytes",
+                    max_events, max_sources, size,
+                )
+
+        logger.warning("Content still %d bytes after all reductions", size)
+        return html
+
+    def _render_digest_html(
+        self,
+        digest: DigestResult,
+        max_sources: int = 5,
+        show_details: bool = True,
+        show_summary: bool = True,
+        max_events: int = 0,
+        max_regular: int = 0,
+        max_papers: int = 0,
+    ) -> str:
         """Render digest to WeChat-compatible HTML using Jinja2 template."""
         template = self.jinja_env.get_template("wechat_digest.html")
-        # Estimate ~30s per item for reading time
         reading_time = max(1, round(digest.total_items * 0.5))
+
+        # Category priority: AI and 创业 shown first
+        _priority_cats = ("AI", "创业")
+
+        events_by_cat = digest.events_by_category
+        if max_events > 0:
+            selected = self._select_priority_events(
+                digest.events, max_events, _priority_cats,
+            )
+            events_by_cat = {}
+            for ev in selected:
+                events_by_cat.setdefault(ev.category, []).append(ev)
+
+        regular_by_cat = digest.regular_items_by_category
+        if max_regular > 0:
+            all_regular = sorted(
+                digest.regular_items,
+                key=lambda x: x.importance_score, reverse=True,
+            )[:max_regular]
+            regular_by_cat = {}
+            for item in all_regular:
+                regular_by_cat.setdefault(item.category, []).append(item)
+
+        papers_by_cat = digest.papers_by_category
+        if max_papers > 0:
+            all_papers = sorted(
+                digest.papers,
+                key=lambda x: x.importance_score, reverse=True,
+            )[:max_papers]
+            papers_by_cat = {}
+            for item in all_papers:
+                papers_by_cat.setdefault(item.category, []).append(item)
+
         return template.render(
             date=digest.generated_at.strftime("%Y年%m月%d日"),
             total_items=digest.total_items,
@@ -337,12 +466,51 @@ class WechatMPPublisher:
             individual_count=len(digest.regular_items),
             paper_count=len(digest.papers),
             events=digest.events,
-            events_by_category=digest.events_by_category,
-            regular_items_by_category=digest.regular_items_by_category,
-            papers_by_category=digest.papers_by_category,
+            events_by_category=events_by_cat,
+            regular_items_by_category=regular_by_cat,
+            papers_by_category=papers_by_cat,
             items=digest.items,
             reading_time=reading_time,
+            max_sources=max_sources,
+            show_details=show_details,
+            show_summary=show_summary,
         )
+
+    @staticmethod
+    def _select_priority_events(
+        events: list, max_count: int, priority_cats: tuple[str, ...],
+    ) -> list:
+        """Select top events, guaranteeing representation from priority categories.
+
+        First reserves one slot per priority category (top by importance),
+        then fills remaining slots from all events by importance.
+        """
+        selected = []
+        selected_ids = set()
+
+        # Reserve top event from each priority category
+        for cat in priority_cats:
+            cat_events = [
+                e for e in events if e.category == cat
+            ]
+            if cat_events:
+                top = max(cat_events, key=lambda e: e.importance_score)
+                selected.append(top)
+                selected_ids.add(id(top))
+
+        # Fill remaining slots: priority categories first, then others
+        remaining = max_count - len(selected)
+        if remaining > 0:
+            rest = sorted(
+                [e for e in events if id(e) not in selected_ids],
+                key=lambda e: (
+                    e.category not in priority_cats,
+                    -e.importance_score,
+                ),
+            )
+            selected.extend(rest[:remaining])
+
+        return selected
 
     @staticmethod
     def _sanitize_html(html: str) -> str:
@@ -364,7 +532,10 @@ class WechatMPPublisher:
 
     @staticmethod
     def _generate_title(digest: DigestResult) -> str:
-        """Generate article title like 'BabelByte 02月09日 | 5个事件 20条资讯'."""
+        """Generate article title like 'BabelByte 02月09日 | 5个事件 20条资讯'.
+
+        WeChat MP title limit: 64 bytes (UTF-8).
+        """
         date_str = digest.generated_at.strftime("%m月%d日")
         parts = []
         if digest.events:
@@ -373,7 +544,11 @@ class WechatMPPublisher:
         if total_items:
             parts.append(f"{total_items}条资讯")
         detail = " ".join(parts) if parts else "每日摘要"
-        return f"BabelByte {date_str} | {detail}"
+        title = f"BabelByte {date_str} | {detail}"
+        # WeChat MP enforces 64-byte title limit
+        while len(title.encode("utf-8")) > 64:
+            title = title[:-1]
+        return title
 
     @staticmethod
     def _generate_digest_summary(digest: DigestResult) -> str:

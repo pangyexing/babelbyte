@@ -927,6 +927,7 @@ class DigestGenerator:
         clustered_data = self.db.get_undelivered_clustered_items(
             min_importance=min_importance,
             limit=max_items * 2,  # Get more to allow for grouping
+            include_delivered=include_delivered,
         )
 
         # Step 3: Build EventDigestItem for each cluster
@@ -960,6 +961,7 @@ class DigestGenerator:
             unclustered = self.db.get_undelivered_unclustered_items(
                 min_importance=individual_min,
                 limit=max_items,
+                include_delivered=include_delivered,
             )
 
             for item in unclustered:

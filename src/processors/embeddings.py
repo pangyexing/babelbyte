@@ -107,7 +107,11 @@ class SentenceTransformersProvider(EmbeddingProvider):
                     # and "LOAD REPORT" messages that bypass the logging system
                     devnull = io.StringIO()
                     with redirect_stdout(devnull), redirect_stderr(devnull):
-                        self._model = SentenceTransformer(self.model_name)
+                        # Explicit device="cpu" avoids meta-tensor init path that
+                        # fails on PyTorch 2.10+ ("Cannot copy out of meta tensor")
+                        self._model = SentenceTransformer(
+                            self.model_name, device="cpu"
+                        )
 
                 self._dimension = self._model.get_sentence_embedding_dimension()
             except ImportError:
