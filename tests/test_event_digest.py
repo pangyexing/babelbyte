@@ -143,16 +143,17 @@ def sample_event_cluster():
 class TestEventDigestItem:
     """Tests for the EventDigestItem dataclass."""
 
-    def test_event_title_includes_count(self, sample_content_items, sample_event_cluster):
-        """Test that event_title includes article count."""
+    def test_event_title_returns_cluster_title(
+        self, sample_content_items, sample_event_cluster
+    ):
+        """Test that event_title returns the cluster title."""
         members = sample_content_items[:2]
         event_item = EventDigestItem(
             event_cluster=sample_event_cluster,
             members=members,
             representative_item=members[0],
         )
-        assert "(2篇报道)" in event_item.event_title
-        assert "OpenAI GPT-5 Release" in event_item.event_title
+        assert event_item.event_title == "OpenAI GPT-5 Release"
 
     def test_importance_score_is_max(self, sample_content_items, sample_event_cluster):
         """Test that importance_score is max of members."""

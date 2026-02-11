@@ -265,8 +265,8 @@ class EventDigestItem:
 
     @property
     def event_title(self) -> str:
-        """Display title with article count."""
-        return f"{self.event_cluster.event_title} ({len(self.members)}篇报道)"
+        """Display title from the event cluster."""
+        return self.event_cluster.event_title
 
     @property
     def category(self) -> str:

@@ -154,29 +154,26 @@
         {{ render_actionable_items(item.enhanced_data) }}
         {% endif %}
 
-        {# Related sources — plain text, no links #}
+        {# Related sources with source badge #}
         {% if _max_sources > 0 %}
         <section style="margin-top:10px;padding:8px 10px;background:#f8f9fa;border-radius:6px;border:1px solid #e8e8e8;">
-            <section style="font-size:12px;color:#5a6c7d;font-weight:bold;margin-bottom:4px;">相关报道 ({{ item.members|length }}篇):</section>
-            {% for member in item.members[:_max_sources] %}
-            <section style="font-size:12px;color:#2c3e50;padding:3px 0;{% if not loop.last %}border-bottom:1px solid #f0f0f0;{% endif %}">
-                {{ member.title[:50] }}{% if member.title|length > 50 %}...{% endif %}
+            <section style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                <span style="font-size:12px;color:#5a6c7d;font-weight:bold;">相关报道 ({{ item.members|length }}篇)</span>
+                <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:bold;">{{ item.source_display }}</span>
             </section>
+            {% for member in item.members[:_max_sources] %}
+            <section style="font-size:12px;color:#2c3e50;padding:4px 0;{% if not loop.last %}border-bottom:1px solid #f0f0f0;{% endif %}line-height:1.5;">{{ loop.index }}. {{ member.title[:60] }}{% if member.title|length > 60 %}...{% endif %}</section>
             {% endfor %}
             {% if item.members|length > _max_sources %}
-            <section style="font-size:11px;color:#95a5a6;font-style:italic;padding-top:4px;">
-                还有 {{ item.members|length - _max_sources }} 篇相关报道
-            </section>
+            <section style="font-size:11px;color:#95a5a6;font-style:italic;padding-top:4px;">还有 {{ item.members|length - _max_sources }} 篇相关报道</section>
             {% endif %}
         </section>
         {% else %}
-        <section style="font-size:12px;color:#95a5a6;margin-top:6px;">综合 {{ item.members|length }} 篇报道</section>
-        {% endif %}
-
-        {# Source badge #}
-        <section style="font-size:12px;color:#95a5a6;margin-top:8px;word-break:break-word;overflow-wrap:break-word;">
-            <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;">{{ item.source_display }}</span>
+        <section style="display:flex;align-items:center;gap:8px;font-size:12px;color:#95a5a6;margin-top:6px;">
+            <span>综合 {{ item.members|length }} 篇报道</span>
+            <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:bold;">{{ item.source_display }}</span>
         </section>
+        {% endif %}
     </section>
     {% endfor %}
     {% endfor %}
