@@ -692,25 +692,33 @@ class WechatMPPublisher:
         title = "BabelByte"
         subtitle = f"每日摘要 {date_str}"
 
-        # Try to use a good font, fall back to default
-        try:
-            font_large = ImageFont.truetype(
-                "/System/Library/Fonts/PingFang.ttc", 56
-            )
-            font_small = ImageFont.truetype(
-                "/System/Library/Fonts/PingFang.ttc", 24
-            )
-        except (OSError, IOError):
+        # Try CJK-capable fonts first, then Latin fallbacks
+        font_paths = [
+            # Linux CJK
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            # macOS
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            # Windows
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+            # Latin fallback (no CJK support)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+        font_large = None
+        for path in font_paths:
             try:
-                font_large = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 56
-                )
-                font_small = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24
-                )
+                font_large = ImageFont.truetype(path, 56)
+                font_small = ImageFont.truetype(path, 24)
+                break
             except (OSError, IOError):
-                font_large = ImageFont.load_default()
-                font_small = ImageFont.load_default()
+                continue
+        if font_large is None:
+            font_large = ImageFont.load_default()
+            font_small = ImageFont.load_default()
 
         # Center title
         bbox = draw.textbbox((0, 0), title, font=font_large)
