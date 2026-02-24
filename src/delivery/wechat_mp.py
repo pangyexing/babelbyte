@@ -596,8 +596,24 @@ class WechatMPPublisher:
         # Try FLUX generation
         bg = self._generate_flux_cover(width, height, date_str)
         if bg is None:
-            # Fallback: solid gradient
-            bg = Image.new("RGB", (width, height), color=(74, 144, 217))
+            # Fallback: random gradient
+            import random
+            import numpy as np
+
+            palettes = [
+                ((30, 60, 140), (74, 144, 217)),    # deep blue → sky blue
+                ((80, 20, 100), (170, 80, 180)),     # dark purple → violet
+                ((10, 60, 80), (30, 160, 160)),      # dark teal → teal
+                ((20, 20, 60), (60, 80, 160)),       # midnight → indigo
+                ((50, 20, 70), (130, 60, 120)),      # plum → magenta
+            ]
+            c1, c2 = random.choice(palettes)
+            arr = np.zeros((height, width, 3), dtype=np.uint8)
+            for ch in range(3):
+                arr[:, :, ch] = np.linspace(c1[ch], c2[ch], height).reshape(
+                    -1, 1
+                ).astype(np.uint8)
+            bg = Image.fromarray(arr)
 
         # Draw text overlay
         img = self._draw_cover_text(bg, date_str)
@@ -627,8 +643,8 @@ class WechatMPPublisher:
                 timeout=ig_cfg.timeout,
             )
 
-            # Pick a prompt variant based on date for daily variety
-            import hashlib
+            # Pick a random prompt variant for variety across publishes
+            import random
             prompts = [
                 (
                     "dark cinematic landscape, neon city skyline at night, "
@@ -650,8 +666,20 @@ class WechatMPPublisher:
                     "dark abstract fluid art, deep midnight blue and dark purple, "
                     "subtle golden light particles, cinematic wide"
                 ),
+                (
+                    "dark mountain landscape at twilight, aurora borealis, "
+                    "deep emerald and midnight blue sky, cinematic wide"
+                ),
+                (
+                    "dark rainy cyberpunk alley, neon signs reflecting on wet ground, "
+                    "magenta and electric blue tones, cinematic depth"
+                ),
+                (
+                    "dark dense forest canopy at night, fireflies glowing, "
+                    "deep green and dark teal atmosphere, mystical"
+                ),
             ]
-            idx = int(hashlib.md5(date_str.encode()).hexdigest(), 16) % len(prompts)
+            idx = random.randrange(len(prompts))
             prompt = (
                 f"{prompts[idx]}, "
                 "ultra wide angle, panoramic, cinematic lighting, "
