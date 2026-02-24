@@ -20,14 +20,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DouyinContent:
-    """Content for a single Douyin short video (15-30s)."""
+    """Content for a single Douyin short video (15-30s).
+
+    Uses 3 semantic segments instead of a single body field:
+    - seg_fact: core facts (60-90 chars)
+    - seg_detail: key details/data (60-90 chars)
+    - seg_impact: impact analysis (60-90 chars)
+    """
 
     hook: str  # 3-second hook (8-15 chars)
     headline: str  # Title (8-15 chars)
-    body: str  # Full narration body (150-250 chars)
+    seg_fact: str  # Segment 1: core facts (60-90 chars)
+    seg_detail: str  # Segment 2: key details/data (60-90 chars)
+    seg_impact: str  # Segment 3: impact analysis (60-90 chars)
     ending: str  # Ending: summary + engagement question (30-50 chars)
     image_prompt: str  # FLUX illustration prompt (English)
     hashtags: list[str] = field(default_factory=list)  # 5 topic hashtags
+
+    @property
+    def body(self) -> str:
+        """Full narration body for backward compatibility."""
+        return f"{self.seg_fact}{self.seg_detail}{self.seg_impact}"
+
+    @property
+    def segments(self) -> list[str]:
+        """3 body segments for slide rendering."""
+        return [self.seg_fact, self.seg_detail, self.seg_impact]
 
 
 @dataclass
@@ -133,7 +151,7 @@ class BulletinGenerator:
 
 直接返回脚本文本："""
 
-    # Prompt for Douyin single-event content generation
+    # Prompt for Douyin single-event content generation (3-segment structure)
     DOUYIN_CONTENT_PROMPT = """你是抖音科技号运营专家。基于以下新闻事件和原文资料，撰写短视频口播文案。
 
 事件信息：
@@ -141,24 +159,48 @@ class BulletinGenerator:
 
 {article_context}
 
-要求：
-1. hook: 3秒钩子（8-15字），疑问/冲突/悬念角度
-2. headline: 标题（8-15字）
-3. body: 完整口播正文（150-250字），要求：
-   - 基于原文，引用具体数据、时间、人物
-   - 自然流畅适合朗读，短句为主
-   - 用"。"分隔句子，至少6句
-   - 覆盖：事件经过、关键细节、影响分析、行动建议
-   - 每句必须包含明确主语
-4. ending: 结尾（30-50字），先用一句总结观点，再提出引导评论的问题
-5. image_prompt: 英文配图描述（30-50词），漫画风格，不含文字
-6. hashtags: 5个话题标签
+## Hook模式（选一种最适合的）
+- 反问型："XX居然能做到这个？"
+- 数字冲击："3天暴涨200%，这家公司做了什么？"
+- 悬念型："一个决定，让整个行业震动了"
+- 对比型："去年还在亏损，今年已经盈利百亿"
+- 紧迫型："再不关注这个，你就落后了"
+
+## 分类风格参考
+- AI类：侧重数据对比、模型参数、性能提升倍数
+- 金融类：侧重金额涨跌、融资规模、市场反应
+- 创业类：侧重里程碑、用户增长、融资进展
+- 科技/技术类：侧重技术突破、应用场景、产品功能
+
+## 字段要求
+1. hook: 3秒钩子（8-15字），用上面的模式之一
+2. headline: 标题（8-15字），精炼概括事件核心
+3. seg_fact: 核心事实（60-90字）——事件是什么、谁做了什么、什么时候
+   - 基于原文引用具体数据/时间/人物，短句为主，适合朗读
+4. seg_detail: 关键细节（60-90字）——具体数据、技术参数、对比信息
+   - 突出关键数字和对比，让观众感受到"量级"
+5. seg_impact: 影响分析（60-90字）——对行业/用户/市场的影响
+   - 从"这对你意味着什么"的角度切入
+6. ending: 结尾（30-50字），先总结观点，再提一个引导评论的问题
+7. image_prompt: 英文配图描述（30-50词），漫画风格，不含文字/字母/数字
+8. hashtags: 5个标签，分别是：核心关键词、大流量词、行业词、情绪词、品牌词
 
 【重要】每个字段都必须包含明确主语（公司名/产品名/人物名），禁止省略主体。
+每个seg_字段用"。"分隔句子，至少3句。
+
+## 示例输出
+{{"hook": "OpenAI这次玩大了？",
+  "headline": "GPT-5正式发布",
+  "seg_fact": "OpenAI在旧金山总部召开发布会，正式推出GPT-5大语言模型。GPT-5采用全新MoE架构，参数量达到2万亿。这是OpenAI时隔18个月的首次重大模型更新。",
+  "seg_detail": "GPT-5在MMLU基准测试中得分92.3分，比GPT-4提升了15个百分点。推理速度提升3倍，API调用成本降低60%。企业版支持100万token的超长上下文窗口。",
+  "seg_impact": "GPT-5的发布将直接影响国内大模型厂商的定价策略。开发者可以用更低成本构建AI应用。对于普通用户来说，AI助手的理解能力将出现质的飞跃。",
+  "ending": "GPT-5标志着AI进入新阶段。你觉得国产大模型还能追上吗？",
+  "image_prompt": "dramatic tech conference stage with futuristic holographic AI brain display, bold comic ink outlines, flat vibrant blue and cyan colors, pop art style, clean composition, no text",
+  "hashtags": ["GPT5", "人工智能", "AI大模型", "科技震撼", "OpenAI"]}}
 
 返回JSON：
-{{"hook":"...", "headline":"...", "body":"...",
-  "ending":"...", "image_prompt":"...",
+{{"hook":"...", "headline":"...", "seg_fact":"...", "seg_detail":"...",
+  "seg_impact":"...", "ending":"...", "image_prompt":"...",
   "hashtags":["...", "..."]}}
 
 仅返回JSON，无其他文字："""
@@ -1058,10 +1100,23 @@ class BulletinGenerator:
 
             data = json.loads(response[json_start:json_end])
 
+            # Support both new 3-segment and legacy single-body format
+            seg_fact = data.get("seg_fact", "")[:120]
+            seg_detail = data.get("seg_detail", "")[:120]
+            seg_impact = data.get("seg_impact", "")[:120]
+
+            # Fallback: if LLM returned old-style "body", split it into 3
+            if not seg_fact and data.get("body"):
+                body = data["body"][:300]
+                parts = self._split_body_into_segments(body)
+                seg_fact, seg_detail, seg_impact = parts
+
             return DouyinContent(
                 hook=data.get("hook", "")[:25],
                 headline=data.get("headline", "")[:20],
-                body=data.get("body", "")[:300],
+                seg_fact=seg_fact,
+                seg_detail=seg_detail,
+                seg_impact=seg_impact,
                 ending=data.get("ending", "")[:80],
                 image_prompt=data.get("image_prompt", ""),
                 hashtags=data.get("hashtags", [])[:5],
@@ -1070,6 +1125,49 @@ class BulletinGenerator:
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             logger.warning(f"Failed to parse douyin content response: {e}")
             return self._fallback_douyin_content(cluster, rep)
+
+    @staticmethod
+    def _split_body_into_segments(body: str) -> tuple[str, str, str]:
+        """Split a single body string into 3 roughly equal segments.
+
+        Used as fallback when LLM returns old-style single body field.
+
+        Returns:
+            (seg_fact, seg_detail, seg_impact) tuple.
+        """
+        import re
+
+        parts = re.split(r"(?<=[。！？；])", body.strip())
+        sentences = [s.strip() for s in parts if s.strip()]
+
+        if len(sentences) <= 1:
+            return (body, body, body)
+
+        if len(sentences) <= 3:
+            result = list(sentences) + [sentences[-1]] * (3 - len(sentences))
+            return (result[0], result[1], result[2])
+
+        total_chars = sum(len(s) for s in sentences)
+        target = total_chars / 3
+        segments: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for s in sentences:
+            current.append(s)
+            current_len += len(s)
+            remaining_groups = 3 - len(segments)
+            if remaining_groups > 1 and current_len >= target:
+                segments.append("".join(current))
+                current = []
+                current_len = 0
+
+        if current:
+            segments.append("".join(current))
+        while len(segments) < 3:
+            segments.append(segments[-1])
+
+        return (segments[0], segments[1], segments[2])
 
     def _fallback_douyin_content(
         self,
@@ -1086,18 +1184,18 @@ class BulletinGenerator:
             try:
                 impact_data = json.loads(rep.impact_assessment)
                 short_term = impact_data.get("short_term", "")
+                long_term = impact_data.get("long_term", "")
                 if short_term:
                     impact = short_term[:60]
+                elif long_term:
+                    impact = long_term[:60]
             except json.JSONDecodeError:
                 pass
 
-        # Build body from summary + one_liner + impact
-        body_parts = [summary]
-        if one_liner:
-            body_parts.append(one_liner)
-        if impact:
-            body_parts.append(impact)
-        body = "。".join(p.rstrip("。") for p in body_parts if p) + "。"
+        # Map fields to 3 semantic segments
+        seg_fact = (summary.rstrip("。") + "。") if summary else headline + "。"
+        seg_detail = (one_liner.rstrip("。") + "。") if one_liner else seg_fact
+        seg_impact = (impact.rstrip("。") + "。") if impact else seg_fact
 
         hook = headline[:25]
         ending = (one_liner or headline) + "。你觉得呢？"
@@ -1105,7 +1203,9 @@ class BulletinGenerator:
         return DouyinContent(
             hook=hook,
             headline=headline[:20],
-            body=body[:300],
+            seg_fact=seg_fact[:120],
+            seg_detail=seg_detail[:120],
+            seg_impact=seg_impact[:120],
             ending=ending[:80],
             image_prompt="",
             hashtags=[cluster.category or "科技", "AI", "科技前沿", "每日科技", "巴别情报站"],

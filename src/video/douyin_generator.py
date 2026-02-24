@@ -91,6 +91,7 @@ class DouyinVideoGenerator:
             font_size=50,
             y_position=int(self.config.height * 0.75),
             max_chars_per_line=20,
+            panel_enabled=self.douyin_cfg.subtitle_panel,
         )
 
         # Cover generator
@@ -188,14 +189,23 @@ class DouyinVideoGenerator:
             segment_audios = []
             segment_durations = []
 
-            segments = self._split_body_segments(content.body, 3)
-            tts_scripts = [content.hook] + segments + [content.ending]
+            tts_scripts = [content.hook] + content.segments + [content.ending]
+
+            # Per-segment minimum durations
+            min_durations = [
+                self.MIN_DURATION_HOOK,    # hook
+                self.MIN_DURATION_BODY,    # seg_fact
+                self.MIN_DURATION_BODY,    # seg_detail
+                self.MIN_DURATION_BODY,    # seg_impact
+                self.MIN_DURATION_ENDING,  # ending
+            ]
 
             for i, script in enumerate(tts_scripts[:5]):
                 seg_dir = audio_dir / f"segment_{i}"
                 seg_audio, _ = self.tts.synthesize_with_timestamps(script, seg_dir)
                 seg_duration = self._get_audio_duration(seg_audio)
-                seg_duration = max(self.config.min_slide_duration, seg_duration)
+                min_dur = min_durations[i] if i < len(min_durations) else self.config.min_slide_duration
+                seg_duration = max(min_dur, seg_duration)
                 segment_audios.append(seg_audio)
                 segment_durations.append(seg_duration)
 
@@ -220,7 +230,7 @@ class DouyinVideoGenerator:
                 script = tts_scripts[i] if i < len(tts_scripts) else ""
                 clip = self._create_animated_clip(
                     slide_img, duration,
-                    has_illustration=(i == 1 and illustration is not None),
+                    slide_index=i,
                     subtitle_script=script if self.douyin_cfg.subtitle_enabled else "",
                 )
                 video_clips.append(clip)
@@ -394,6 +404,11 @@ class DouyinVideoGenerator:
         except Exception:
             return None
 
+    # Per-segment minimum durations (seconds)
+    MIN_DURATION_HOOK = 2.0
+    MIN_DURATION_BODY = 3.5
+    MIN_DURATION_ENDING = 3.0
+
     def _render_slides(
         self,
         content: DouyinContent,
@@ -403,20 +418,20 @@ class DouyinVideoGenerator:
     ) -> list["PILImage"]:
         """Render 5 slides for the Douyin video.
 
-        Slides: hook → body segment 1 (with illustration) → body segment 2
-        → body segment 3 → ending.
+        Slides: hook → fact (card+illust) → detail (open text) → impact (card)
+        → ending. Visual rhythm: full-screen → card → open → card → full-screen.
 
         Returns:
             List of 5 PIL images.
         """
-        segments = self._split_body_segments(content.body, 3)
+        segments = content.segments
 
         slides = [
-            # Slide 1: Hook
+            # Slide 1: Hook (full-screen text)
             self.template.render_hook_slide(
-                content.hook, category, date_str,
+                content.hook, category, date_str, segment_index=0,
             ),
-            # Slide 2: Body segment 1 + illustration
+            # Slide 2: Fact — event card + illustration
             self.template.render_event_card(
                 headline=content.headline,
                 summary=segments[0],
@@ -424,44 +439,63 @@ class DouyinVideoGenerator:
                 source_count=0,
                 illustration=illustration,
                 date_str=date_str,
+                segment_index=1,
             ),
-            # Slide 3: Body segment 2 (impact slide style, no fixed title)
+            # Slide 3: Detail — open text, no card (visually distinct)
+            self.template.render_detail_slide(
+                segments[1], category, date_str, segment_index=2,
+            ),
+            # Slide 4: Impact — glass card style
             self.template.render_impact_slide(
-                segments[1], category, date_str, title="",
+                segments[2], category, date_str, title="",
+                segment_index=3,
             ),
-            # Slide 4: Body segment 3 (event card style, no headline)
-            self.template.render_event_card(
-                headline="",
-                summary=segments[2],
-                category=category,
-                source_count=0,
-                date_str=date_str,
-            ),
-            # Slide 5: Ending
+            # Slide 5: Ending (full-screen text)
             self.template.render_cta_slide(
-                content.ending, date_str,
+                content.ending, date_str, segment_index=4,
             ),
         ]
 
         return slides
 
+    # Per-slide-type Ken Burns motion profiles:
+    # (max_zoom, max_pan_dx, ease_type)
+    # ease_type: "linear", "ease_out" (decelerate), "ease_in" (accelerate)
+    MOTION_PROFILES = {
+        "hook": (0.05, 6, "ease_out"),      # Impact opening, decelerating
+        "fact": (0.03, 8, "linear"),         # Steady pan right
+        "detail": (0.02, -8, "linear"),      # Gentle, pan left (reverse)
+        "impact": (0.04, 6, "ease_in"),      # Builds intensity
+        "ending": (0.01, 2, "linear"),       # Near-static, focus on text
+    }
+
+    SLIDE_TYPE_ORDER = ["hook", "fact", "detail", "impact", "ending"]
+
+    @staticmethod
+    def _ease_progress(p: float, ease_type: str) -> float:
+        """Apply easing function to linear progress [0,1]."""
+        if ease_type == "ease_out":
+            return 1.0 - (1.0 - p) ** 2
+        elif ease_type == "ease_in":
+            return p ** 2
+        return p  # linear
+
     def _create_animated_clip(
         self,
         img: "PILImage",
         duration: float,
-        has_illustration: bool = False,
+        slide_index: int = 0,
         subtitle_script: str = "",
     ) -> VideoClip:
-        """Create a video clip with Ken Burns motion and optional subtitles.
+        """Create a video clip with differentiated Ken Burns motion and subtitles.
 
-        Motion effects:
-        - Ken Burns: slow zoom 1.0 → 1.04 (4% over duration)
-        - Micro-pan: 8px horizontal drift
+        Each slide type gets its own zoom, pan, and easing profile for visual
+        rhythm variation across the 5-segment video.
 
         Args:
             img: PIL Image for the slide.
             duration: Clip duration in seconds.
-            has_illustration: Whether slide has illustration (stronger zoom).
+            slide_index: Index (0-4) to select motion profile.
             subtitle_script: TTS script for subtitle overlay.
 
         Returns:
@@ -487,15 +521,17 @@ class DouyinVideoGenerator:
             if sub_segments:
                 sub_seg_duration = duration / len(sub_segments)
 
-        max_zoom = 0.04 if has_illustration else 0.03
-        max_dx = 8
+        # Select motion profile for this slide
+        slide_type = self.SLIDE_TYPE_ORDER[min(slide_index, 4)]
+        max_zoom, max_dx, ease_type = self.MOTION_PROFILES[slide_type]
 
         def make_frame(t):
             progress = t / max(duration, 0.001)
 
             if motion_enabled:
-                scale = 1.0 + max_zoom * progress
-                dx = int(max_dx * progress)
+                eased = self._ease_progress(progress, ease_type)
+                scale = 1.0 + max_zoom * eased
+                dx = int(max_dx * eased)
 
                 new_w = int(w / scale)
                 new_h = int(h / scale)
@@ -579,15 +615,20 @@ class DouyinVideoGenerator:
     ) -> Optional[Path]:
         """Generate Douyin publish metadata file.
 
+        Description combines hook + ending for maximum engagement.
+
         Returns:
             Path to meta file, or None on failure.
         """
         try:
             hashtags = " ".join(f"#{tag}" for tag in content.hashtags)
+            description = f"{content.hook} {content.ending}"
             meta_text = (
                 f"【标题】{content.headline}\n"
                 f"【话题】{hashtags}\n"
-                f"【描述】{content.ending}\n"
+                f"【描述】{description}\n"
+                f"【钩子】{content.hook}\n"
+                f"【正文】{content.body}\n"
             )
 
             meta_path = output_dir / f"{output_name}_meta.txt"

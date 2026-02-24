@@ -572,6 +572,9 @@ class DouyinConfig:
     motion_enabled: bool = field(
         default_factory=lambda: os.getenv("DOUYIN_MOTION_ENABLED", "true").lower() == "true"
     )
+    subtitle_panel: bool = field(
+        default_factory=lambda: os.getenv("DOUYIN_SUBTITLE_PANEL", "true").lower() == "true"
+    )
 
 
 @dataclass

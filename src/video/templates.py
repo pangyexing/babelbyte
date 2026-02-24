@@ -1523,6 +1523,7 @@ class BulletinTemplate(VideoTemplate):
         actions: list[str] = None,
         illustration: Optional[Image.Image] = None,
         date_str: str = "",
+        segment_index: int = -1,
     ) -> Image.Image:
         """Render a comic/manga-style event card slide.
 
@@ -1602,6 +1603,12 @@ class BulletinTemplate(VideoTemplate):
             # Halftone dot pattern overlay for comic paper texture
             img = self._draw_halftone_overlay(img, card_coords, accent)
             draw = ImageDraw.Draw(img)
+
+        # Progress indicator (Douyin 5-segment bar at top)
+        if segment_index >= 0:
+            self._draw_progress_indicator(
+                draw, segment_index, accent=accent, is_dark=is_dark,
+            )
 
         # --- Content inside card ---
         content_y = card_top + 30
@@ -2217,11 +2224,51 @@ class BulletinTemplate(VideoTemplate):
 
         return img
 
+    def _draw_progress_indicator(
+        self,
+        draw: ImageDraw.ImageDraw,
+        segment_index: int,
+        total_segments: int = 5,
+        accent: tuple = (100, 120, 255),
+        is_dark: bool = True,
+    ):
+        """Draw a 5-segment progress bar at the top of a slide.
+
+        Current and previous segments use accent color, future segments are dim.
+
+        Args:
+            draw: PIL ImageDraw object.
+            segment_index: Current segment (0-based).
+            total_segments: Total number of segments.
+            accent: Accent color for active segments.
+            is_dark: Whether background is dark (affects dim color).
+        """
+        cfg = self.config
+        margin = 30
+        bar_y = margin + 12
+        bar_height = 4
+        gap = 6
+        total_width = cfg.width - 2 * margin
+        seg_width = (total_width - gap * (total_segments - 1)) // total_segments
+
+        dim_color = (60, 60, 80) if is_dark else (200, 200, 195)
+
+        for i in range(total_segments):
+            x1 = margin + i * (seg_width + gap)
+            x2 = x1 + seg_width
+            color = accent if i <= segment_index else dim_color
+            draw.rounded_rectangle(
+                [x1, bar_y, x2, bar_y + bar_height],
+                radius=bar_height // 2,
+                fill=color,
+            )
+
     def render_hook_slide(
         self,
         hook_text: str,
         category: str,
         date_str: str = "",
+        segment_index: int = 0,
     ) -> Image.Image:
         """Render Douyin hook slide — large text on FLUX dark background.
 
@@ -2229,6 +2276,7 @@ class BulletinTemplate(VideoTemplate):
             hook_text: 3-second hook text (8-15 chars).
             category: Event category for accent color.
             date_str: Date string for FLUX background selection.
+            segment_index: Current segment index for progress bar.
 
         Returns:
             Hook slide image.
@@ -2241,6 +2289,11 @@ class BulletinTemplate(VideoTemplate):
         hook_font = self._get_font(100, bold=True)
         brand_font = self._get_font(36)
         caption_font = self._get_font(cfg.caption_font_size)
+
+        # Progress indicator
+        self._draw_progress_indicator(
+            draw, segment_index, accent=accent, is_dark=is_dark,
+        )
 
         center_y = cfg.height // 2
 
@@ -2307,6 +2360,7 @@ class BulletinTemplate(VideoTemplate):
         category: str,
         date_str: str = "",
         title: str = "影响分析",
+        segment_index: int = -1,
     ) -> Image.Image:
         """Render Douyin impact/body slide with optional title.
 
@@ -2339,6 +2393,12 @@ class BulletinTemplate(VideoTemplate):
             outline=frame_color,
             width=frame_width,
         )
+
+        # Progress indicator (Douyin 5-segment bar)
+        if segment_index >= 0:
+            self._draw_progress_indicator(
+                draw, segment_index, accent=accent, is_dark=is_dark,
+            )
 
         # Glass card for content
         card_margin = 60
@@ -2390,16 +2450,100 @@ class BulletinTemplate(VideoTemplate):
 
         return img
 
+    def render_detail_slide(
+        self,
+        detail_text: str,
+        category: str,
+        date_str: str = "",
+        segment_index: int = -1,
+    ) -> Image.Image:
+        """Render Douyin detail slide — open text on background, no card frame.
+
+        Visually distinct from impact_slide (which uses a glass card).
+        Creates a rhythm of: card → open → card in the 5-slide sequence.
+
+        Args:
+            detail_text: Key detail/data text to display.
+            category: Event category.
+            date_str: Date string for FLUX background selection.
+            segment_index: Current segment index for progress bar.
+
+        Returns:
+            Detail slide image.
+        """
+        cfg = self.config
+        accent = self._get_accent_color(category)
+        img, is_dark = self._get_flux_background(date_str=date_str)
+        draw = ImageDraw.Draw(img)
+
+        body_font = self._get_font(cfg.body_font_size + 4)
+
+        center_y = cfg.height // 2
+
+        # Panel frame
+        frame_margin = 30
+        frame_color = self.TEXT_SECONDARY if is_dark else self.COMIC_BLACK
+        frame_width = 3 if is_dark else 5
+        draw.rounded_rectangle(
+            [frame_margin, frame_margin, cfg.width - frame_margin, cfg.height - frame_margin],
+            radius=cfg.card_radius,
+            outline=frame_color,
+            width=frame_width,
+        )
+
+        # Progress indicator
+        if segment_index >= 0:
+            self._draw_progress_indicator(
+                draw, segment_index, accent=accent, is_dark=is_dark,
+            )
+
+        # Horizontal accent bar (distinct from impact slide's vertical bar)
+        bar_width = 120
+        bar_x = (cfg.width - bar_width) // 2
+        bar_y = center_y - 200
+        draw.rectangle(
+            [bar_x, bar_y, bar_x + bar_width, bar_y + 5],
+            fill=accent,
+        )
+
+        # Body text — directly on background with stroke, no card
+        content_width = cfg.width - 2 * cfg.padding - 60
+        detail_lines = self._wrap_text(detail_text, body_font, content_width)
+        line_h = int((cfg.body_font_size + 4) * 1.4)
+        total_h = len(detail_lines[:7]) * line_h
+        text_y = center_y - total_h // 2
+
+        h_fill = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
+        h_stroke = self.COMIC_BLACK if is_dark else (255, 255, 255)
+        for line in detail_lines[:7]:
+            line_bbox = body_font.getbbox(line)
+            line_x = (cfg.width - line_bbox[2]) // 2
+            self._draw_stroked_text(
+                draw, (line_x, text_y), line, body_font,
+                fill=h_fill, stroke_color=h_stroke, stroke_width=2,
+            )
+            text_y += line_h
+
+        # Bottom accent bar (mirror of top)
+        draw.rectangle(
+            [bar_x, text_y + 30, bar_x + bar_width, text_y + 35],
+            fill=accent,
+        )
+
+        return img
+
     def render_cta_slide(
         self,
         cta_text: str,
         date_str: str = "",
+        segment_index: int = -1,
     ) -> Image.Image:
         """Render Douyin ending slide with summary + engagement prompt.
 
         Args:
             cta_text: Ending text with summary and question (30-50 chars).
             date_str: Date string for FLUX background selection.
+            segment_index: Current segment index for progress bar.
 
         Returns:
             CTA slide image.
@@ -2425,6 +2569,12 @@ class BulletinTemplate(VideoTemplate):
             outline=frame_color,
             width=frame_width,
         )
+
+        # Progress indicator
+        if segment_index >= 0:
+            self._draw_progress_indicator(
+                draw, segment_index, accent=accent, is_dark=is_dark,
+            )
 
         # Ending text — centered with stroke
         cta_lines = self._wrap_text(cta_text, cta_font, cfg.width - 2 * cfg.padding - 60)

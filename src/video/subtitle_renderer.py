@@ -29,6 +29,7 @@ class SubtitleRenderer:
         stroke_width: int = 3,
         y_position: int = 1450,
         max_chars_per_line: int = 16,
+        panel_enabled: bool = True,
     ):
         self.font_size = font_size
         self.color = color
@@ -36,6 +37,7 @@ class SubtitleRenderer:
         self.stroke_width = stroke_width
         self.y_position = y_position
         self.max_chars_per_line = max_chars_per_line
+        self.panel_enabled = panel_enabled
         self._font = None
 
     def _get_font(self) -> ImageFont.FreeTypeFont:
@@ -150,14 +152,36 @@ class SubtitleRenderer:
             return frame_array
 
         img = Image.fromarray(frame_array)
-        draw = ImageDraw.Draw(img)
         font = self._get_font()
 
         # Center horizontally
         text_bbox = font.getbbox(text)
         text_width = text_bbox[2]
+        text_height = text_bbox[3]
         x = (width - text_width) // 2
 
+        # Semi-transparent rounded panel behind subtitle text
+        if self.panel_enabled:
+            panel_pad_x = 24
+            panel_pad_y = 12
+            panel_radius = 16
+            panel_opacity = 140
+
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            ov_draw = ImageDraw.Draw(overlay)
+            ov_draw.rounded_rectangle(
+                [
+                    x - panel_pad_x,
+                    self.y_position - panel_pad_y,
+                    x + text_width + panel_pad_x,
+                    self.y_position + text_height + panel_pad_y,
+                ],
+                radius=panel_radius,
+                fill=(0, 0, 0, panel_opacity),
+            )
+            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+        draw = ImageDraw.Draw(img)
         self._draw_stroked_text(draw, (x, self.y_position), text, font)
 
         return np.array(img)
