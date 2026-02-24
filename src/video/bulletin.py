@@ -24,12 +24,9 @@ class DouyinContent:
 
     hook: str  # 3-second hook (8-15 chars)
     headline: str  # Title (8-15 chars)
-    summary: str  # Core fact (40-50 chars)
-    impact: str  # Impact analysis (20-35 chars)
-    action: str  # Actionable advice (15-25 chars)
-    cta: str  # Engagement CTA (10-15 chars)
+    body: str  # Full narration body (150-250 chars)
+    ending: str  # Ending: summary + engagement question (30-50 chars)
     image_prompt: str  # FLUX illustration prompt (English)
-    segment_scripts: list[str]  # 5-segment TTS scripts
     hashtags: list[str] = field(default_factory=list)  # 5 topic hashtags
 
 
@@ -137,35 +134,32 @@ class BulletinGenerator:
 直接返回脚本文本："""
 
     # Prompt for Douyin single-event content generation
-    DOUYIN_CONTENT_PROMPT = """你是抖音科技号运营专家。为以下单条新闻事件生成15-30秒短视频的全部内容。
+    DOUYIN_CONTENT_PROMPT = """你是抖音科技号运营专家。基于以下新闻事件和原文资料，撰写短视频口播文案。
 
 事件信息：
 {event_json}
 
+{article_context}
+
 要求：
-1. hook: 3秒钩子文案（8-15个中文字），使用疑问/冲突/震惊/悬念角度，直入主题
-2. headline: 标题（8-15个中文字）
-3. summary: 核心事实（40-50字，正经讲事实）
-4. impact: 影响分析（20-35字，如"短期利好XX，长期推动XX"）
-5. action: 行动建议（15-25字，具体可操作的完整句子）
-6. cta: 评论引导问题（10-15字），让观众想在评论区表达看法
-7. image_prompt: 英文配图描述（30-50单词），用于AI图像生成，漫画插画风格
-8. segment_scripts: 5段TTS脚本数组，分别对应：
-   - [0] hook播报（8-15字，直接抛出悬念/问题）
-   - [1] 核心事实播报（40-50字）
-   - [2] 影响分析播报（20-35字）
-   - [3] 行动建议播报（15-25字）
-   - [4] CTA引导（15-20字，如"你觉得呢？评论区聊聊"）
-9. hashtags: 5个相关话题标签（混合热门+垂直，不带#号）
+1. hook: 3秒钩子（8-15字），疑问/冲突/悬念角度
+2. headline: 标题（8-15字）
+3. body: 完整口播正文（150-250字），要求：
+   - 基于原文，引用具体数据、时间、人物
+   - 自然流畅适合朗读，短句为主
+   - 用"。"分隔句子，至少6句
+   - 覆盖：事件经过、关键细节、影响分析、行动建议
+   - 每句必须包含明确主语
+4. ending: 结尾（30-50字），先用一句总结观点，再提出引导评论的问题
+5. image_prompt: 英文配图描述（30-50词），漫画风格，不含文字
+6. hashtags: 5个话题标签
 
 【重要】每个字段都必须包含明确主语（公司名/产品名/人物名），禁止省略主体。
-image_prompt中不要包含任何文字、字母、数字。
 
-返回JSON格式：
-{{"hook": "...", "headline": "...", "summary": "...", "impact": "...",
-  "action": "...", "cta": "...", "image_prompt": "...",
-  "segment_scripts": ["...", "...", "...", "...", "..."],
-  "hashtags": ["...", "...", "...", "...", "..."]}}
+返回JSON：
+{{"hook":"...", "headline":"...", "body":"...",
+  "ending":"...", "image_prompt":"...",
+  "hashtags":["...", "..."]}}
 
 仅返回JSON，无其他文字："""
 
@@ -924,6 +918,43 @@ image_prompt中不要包含任何文字、字母、数字。
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             logger.warning(f"Failed to parse image prompt response: {e}")
 
+    @staticmethod
+    def _gather_enrichment_context(members: list["ContentItem"]) -> str:
+        """Gather original article content from cluster members for richer LLM context.
+
+        Budget: representative article gets 3000 chars, next 3 articles share the
+        remainder up to 8000 chars total.
+
+        Args:
+            members: Member content items sorted by importance.
+
+        Returns:
+            Formatted context string, or empty string if no content available.
+        """
+        sorted_members = sorted(members, key=lambda m: m.importance_score or 0, reverse=True)
+        total_budget = 8000
+        rep_budget = 3000
+        parts: list[str] = []
+        used = 0
+
+        for i, m in enumerate(sorted_members[:4]):
+            text = m.content.strip() if m.content else ""
+            if not text:
+                text = m.summary.strip() if m.summary else ""
+            if not text:
+                continue
+
+            budget = rep_budget if i == 0 else (total_budget - used) // max(1, 4 - i)
+            truncated = text[:budget]
+            parts.append(f"[来源{i + 1}] {m.title or ''}\n{truncated}")
+            used += len(truncated)
+            if used >= total_budget:
+                break
+
+        if not parts:
+            return ""
+        return "原文资料：\n" + "\n\n".join(parts)
+
     def generate_douyin_content(
         self,
         cluster: "EventCluster",
@@ -931,8 +962,8 @@ image_prompt中不要包含任何文字、字母、数字。
     ) -> Optional[DouyinContent]:
         """Generate Douyin short video content for a single event.
 
-        Produces hook, headline, summary, impact, action, CTA, image prompt,
-        5-segment TTS scripts, and hashtags in one Ollama call.
+        Produces hook, headline, body, ending, image prompt,
+        and hashtags in one Ollama call.
 
         Args:
             cluster: Event cluster.
@@ -976,8 +1007,11 @@ image_prompt中不要包含任何文字、字母、数字。
             except json.JSONDecodeError:
                 pass
 
+        article_context = self._gather_enrichment_context(members)
+
         prompt = self.DOUYIN_CONTENT_PROMPT.format(
             event_json=json.dumps(event, ensure_ascii=False, indent=2),
+            article_context=article_context,
         )
 
         processor = self._get_processor()
@@ -990,7 +1024,7 @@ image_prompt中不要包含任何文字、字母、数字。
         success, response, error = processor._call_api(
             prompt,
             model=processor.model,
-            max_tokens=1024,
+            max_tokens=1536,
             disable_thinking=True,
         )
         duration_ms = int((time.time() - start_time) * 1000)
@@ -1024,27 +1058,12 @@ image_prompt中不要包含任何文字、字母、数字。
 
             data = json.loads(response[json_start:json_end])
 
-            scripts = data.get("segment_scripts", [])
-            if len(scripts) < 5:
-                # Pad with defaults
-                defaults = [
-                    data.get("hook", ""),
-                    data.get("summary", ""),
-                    data.get("impact", ""),
-                    data.get("action", ""),
-                    data.get("cta", "你觉得呢？评论区聊聊"),
-                ]
-                scripts = (scripts + defaults)[:5]
-
             return DouyinContent(
-                hook=data.get("hook", "")[:15],
-                headline=data.get("headline", "")[:15],
-                summary=data.get("summary", "")[:60],
-                impact=data.get("impact", "")[:40],
-                action=data.get("action", "")[:30],
-                cta=data.get("cta", "你觉得呢？")[:20],
+                hook=data.get("hook", "")[:25],
+                headline=data.get("headline", "")[:20],
+                body=data.get("body", "")[:300],
+                ending=data.get("ending", "")[:80],
                 image_prompt=data.get("image_prompt", ""),
-                segment_scripts=scripts,
                 hashtags=data.get("hashtags", [])[:5],
             )
 
@@ -1059,7 +1078,7 @@ image_prompt中不要包含任何文字、字母、数字。
     ) -> DouyinContent:
         """Create fallback Douyin content without AI."""
         headline = self._extract_headline(cluster, rep)
-        summary = rep.summary[:60] if rep.summary else headline
+        summary = rep.summary[:120] if rep.summary else headline
         one_liner = rep.one_liner[:30] if rep.one_liner else ""
 
         impact = ""
@@ -1068,28 +1087,26 @@ image_prompt中不要包含任何文字、字母、数字。
                 impact_data = json.loads(rep.impact_assessment)
                 short_term = impact_data.get("short_term", "")
                 if short_term:
-                    impact = short_term[:40]
+                    impact = short_term[:60]
             except json.JSONDecodeError:
                 pass
 
-        hook = headline[:15]
-        cta = "你觉得呢？评论区聊聊"
-        action = one_liner[:25] if one_liner else "关注后续发展"
+        # Build body from summary + one_liner + impact
+        body_parts = [summary]
+        if one_liner:
+            body_parts.append(one_liner)
+        if impact:
+            body_parts.append(impact)
+        body = "。".join(p.rstrip("。") for p in body_parts if p) + "。"
+
+        hook = headline[:25]
+        ending = (one_liner or headline) + "。你觉得呢？"
 
         return DouyinContent(
             hook=hook,
-            headline=headline,
-            summary=summary,
-            impact=impact or "值得持续关注",
-            action=action,
-            cta=cta,
+            headline=headline[:20],
+            body=body[:300],
+            ending=ending[:80],
             image_prompt="",
-            segment_scripts=[
-                hook,
-                summary,
-                impact or "值得持续关注",
-                action,
-                cta,
-            ],
             hashtags=[cluster.category or "科技", "AI", "科技前沿", "每日科技", "巴别情报站"],
         )

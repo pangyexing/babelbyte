@@ -54,6 +54,103 @@ def _has_speakable_content(text: str) -> bool:
     return len(clean) > 0
 
 
+# --- Chinese number normalization for TTS ---
+
+_DIGITS_CN = "零一二三四五六七八九"
+
+
+def _int_to_chinese(n: int) -> str:
+    """Convert a non-negative integer to Chinese number words.
+
+    Examples: 0→零, 10→十, 35→三十五, 350→三百五十, 1500→一千五百
+    """
+    if n == 0:
+        return "零"
+    parts: list[str] = []
+
+    # 亿
+    if n >= 1_0000_0000:
+        parts.append(_int_to_chinese(n // 1_0000_0000) + "亿")
+        n %= 1_0000_0000
+        if 0 < n < 1000_0000:
+            parts.append("零")
+
+    # 万
+    if n >= 1_0000:
+        parts.append(_int_to_chinese(n // 1_0000) + "万")
+        n %= 1_0000
+        if 0 < n < 1000:
+            parts.append("零")
+
+    # 千
+    if n >= 1000:
+        parts.append(_DIGITS_CN[n // 1000] + "千")
+        n %= 1000
+        if 0 < n < 100:
+            parts.append("零")
+
+    # 百
+    if n >= 100:
+        parts.append(_DIGITS_CN[n // 100] + "百")
+        n %= 100
+        if 0 < n < 10:
+            parts.append("零")
+
+    # 十
+    if n >= 10:
+        d = n // 10
+        if not parts and d == 1:
+            parts.append("十")  # 10→十 not 一十
+        else:
+            parts.append(_DIGITS_CN[d] + "十")
+        n %= 10
+
+    # 个
+    if n > 0:
+        parts.append(_DIGITS_CN[n])
+
+    return "".join(parts)
+
+
+def _normalize_text_for_tts(text: str) -> str:
+    """Convert Arabic numerals to Chinese words for reliable TTS pronunciation.
+
+    Handles: integers (350→三百五十), decimals (3.5→三点五),
+    percentages (35%→百分之三十五), years before 年 (2024年→二零二四年).
+    """
+
+    def _num_to_cn(num_str: str) -> str:
+        if "." in num_str:
+            int_str, dec_str = num_str.split(".", 1)
+            int_part = _int_to_chinese(int(int_str)) if int_str else "零"
+            dec_digits = "".join(_DIGITS_CN[int(d)] for d in dec_str)
+            return f"{int_part}点{dec_digits}"
+        return _int_to_chinese(int(num_str))
+
+    def _year_digits(num_str: str) -> str:
+        """Read year digit-by-digit: 2024→二零二四."""
+        return "".join(_DIGITS_CN[int(d)] for d in num_str)
+
+    # 1. Percentages: 35% → 百分之三十五
+    text = re.sub(
+        r"(\d+\.?\d*)%",
+        lambda m: "百分之" + _num_to_cn(m.group(1)),
+        text,
+    )
+
+    # 2. Years: 4-digit number followed by 年 → digit-by-digit
+    text = re.sub(
+        r"(\d{4})年",
+        lambda m: _year_digits(m.group(1)) + "年",
+        text,
+    )
+
+    # 3. All remaining numbers
+    text = re.sub(r"\d+\.?\d*", lambda m: _num_to_cn(m.group()), text)
+
+    return text
+
+
 class EdgeTTS:
     """Edge TTS wrapper for text-to-speech synthesis."""
 
@@ -483,6 +580,9 @@ class QwenTTS:
         """
         if not _has_speakable_content(text):
             raise ValueError(f"Text has no speakable content: {text!r}")
+
+        # Normalize numbers to Chinese words for reliable pronunciation
+        text = _normalize_text_for_tts(text)
 
         import soundfile as sf
 

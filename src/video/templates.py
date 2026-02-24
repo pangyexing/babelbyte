@@ -1,5 +1,6 @@
 """Video templates for different content types."""
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -262,23 +263,45 @@ class VideoTemplate:
 
         return self._font_cache[cache_key]
 
+    # CJK punctuation that must not start a new line
+    _NO_BREAK_BEFORE = set("。，！？；：、）》」】…—·～")
+
     def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-        """Wrap text to fit within max_width."""
-        lines = []
-        current_line = ""
+        """Wrap text respecting English word boundaries and CJK punctuation rules.
 
-        for char in text:
-            test_line = current_line + char
-            bbox = font.getbbox(test_line)
-            if bbox[2] <= max_width:
-                current_line = test_line
+        - ASCII words/numbers are kept together (never split "DeepMind")
+        - CJK punctuation (。，！etc.) is absorbed into the previous line
+          rather than starting a new line
+        """
+        # Tokenize: ASCII word/number runs stay together, everything else is individual
+        tokens = re.findall(r"[a-zA-Z0-9]+(?:[.\-_][a-zA-Z0-9]+)*|.", text)
+
+        lines: list[str] = []
+        current = ""
+        for token in tokens:
+            test = current + token
+            if font.getbbox(test)[2] <= max_width:
+                current = test
+            elif not current:
+                # Single token exceeds width — force char-by-char split
+                for ch in token:
+                    test = current + ch
+                    if font.getbbox(test)[2] <= max_width:
+                        current = test
+                    else:
+                        if current:
+                            lines.append(current)
+                        current = ch
+            elif token in self._NO_BREAK_BEFORE:
+                # Absorb punctuation into current line (slight overflow OK)
+                lines.append(current + token)
+                current = ""
             else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = char
+                lines.append(current)
+                current = token
 
-        if current_line:
-            lines.append(current_line)
+        if current:
+            lines.append(current)
 
         return lines
 
@@ -1621,7 +1644,8 @@ class BulletinTemplate(VideoTemplate):
         # Speed lines behind headline area
         head_line_h = int((cfg.title_font_size + 10) * cfg.line_spacing)
         headline_lines = self._wrap_text(headline, headline_font, content_width)
-        headline_block_h = len(headline_lines[:2]) * head_line_h
+        max_head_lines = min(3, len(headline_lines))
+        headline_block_h = max_head_lines * head_line_h
         speed_color = (255, 255, 255, 50) if is_dark else (
             (*accent, 120) if len(accent) == 3 else accent
         )
@@ -1639,7 +1663,7 @@ class BulletinTemplate(VideoTemplate):
             h_fill, h_stroke = self.TEXT_WHITE, self.COMIC_BLACK
         else:
             h_fill, h_stroke = self.COMIC_BLACK, (255, 255, 255)
-        for line in headline_lines[:2]:
+        for line in headline_lines[:3]:
             self._draw_stroked_text(
                 draw, (content_x, content_y), line, headline_font,
                 fill=h_fill, stroke_color=h_stroke, stroke_width=2,
@@ -1699,7 +1723,7 @@ class BulletinTemplate(VideoTemplate):
         if summary and content_y < max_y - 60:
             sum_line_h = int(cfg.body_font_size * cfg.line_spacing)
             remaining = max_y - content_y
-            max_sum_lines = min(3, max(1, (remaining - 100) // sum_line_h))
+            max_sum_lines = min(6, max(1, (remaining - 100) // sum_line_h))
             summary_lines = self._wrap_text(summary, summary_font, content_width)
             for line in summary_lines[:max_sum_lines]:
                 draw.text(
@@ -1772,19 +1796,20 @@ class BulletinTemplate(VideoTemplate):
                     content_y += fact_line_h
                 content_y += 3
 
-        # Source badge: starburst below the card
-        badge_text = f"综合{source_count}家报道"
-        badge_center_x = cfg.width // 2
-        badge_center_y = card_bottom + 60
-        self._draw_starburst(
-            draw,
-            badge_center_x,
-            badge_center_y,
-            badge_text,
-            caption_font,
-            accent,
-            text_color=self.COMIC_BLACK,
-        )
+        # Source badge: starburst below the card (only if source_count > 0)
+        if source_count > 0:
+            badge_text = f"综合{source_count}家报道"
+            badge_center_x = cfg.width // 2
+            badge_center_y = card_bottom + 60
+            self._draw_starburst(
+                draw,
+                badge_center_x,
+                badge_center_y,
+                badge_text,
+                caption_font,
+                accent,
+                text_color=self.COMIC_BLACK,
+            )
 
         return img
 
@@ -2281,13 +2306,15 @@ class BulletinTemplate(VideoTemplate):
         impact: str,
         category: str,
         date_str: str = "",
+        title: str = "影响分析",
     ) -> Image.Image:
-        """Render Douyin impact analysis slide.
+        """Render Douyin impact/body slide with optional title.
 
         Args:
-            impact: Impact analysis text (20-35 chars).
+            impact: Body text to display.
             category: Event category.
             date_str: Date string for FLUX background selection.
+            title: Card title (pass empty string to hide).
 
         Returns:
             Impact slide image.
@@ -2298,7 +2325,7 @@ class BulletinTemplate(VideoTemplate):
         draw = ImageDraw.Draw(img)
 
         title_font = self._get_font(cfg.title_font_size, bold=True)
-        body_font = self._get_font(cfg.body_font_size + 4)
+        body_font = self._get_font(cfg.body_font_size + 2)
 
         center_y = cfg.height // 2
 
@@ -2313,10 +2340,10 @@ class BulletinTemplate(VideoTemplate):
             width=frame_width,
         )
 
-        # Glass card for impact content
+        # Glass card for content
         card_margin = 60
-        card_top = center_y - 200
-        card_bottom = center_y + 200
+        card_top = center_y - 240
+        card_bottom = center_y + 240
         card_coords = (card_margin, card_top, cfg.width - card_margin, card_bottom)
 
         if is_dark:
@@ -2345,18 +2372,19 @@ class BulletinTemplate(VideoTemplate):
             fill=accent,
         )
 
-        # Title
-        title_text = "影响分析"
-        title_y = card_top + 40
-        title_color = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
-        draw.text((content_x + 20, title_y), title_text, font=title_font, fill=accent)
+        # Title (optional)
+        text_y = card_top + 40
+        if title:
+            draw.text(
+                (content_x + 20, text_y), title, font=title_font, fill=accent,
+            )
+            text_y += int(cfg.title_font_size * 1.5)
 
-        # Impact text
-        text_y = title_y + int(cfg.title_font_size * 1.5)
+        # Body text
         text_color = self.TEXT_WHITE if is_dark else self.TEXT_DARK
         impact_lines = self._wrap_text(impact, body_font, content_width - 30)
-        line_h = int((cfg.body_font_size + 4) * 1.4)
-        for line in impact_lines[:4]:
+        line_h = int((cfg.body_font_size + 2) * 1.4)
+        for line in impact_lines[:6]:
             draw.text((content_x + 20, text_y), line, font=body_font, fill=text_color)
             text_y += line_h
 
@@ -2367,10 +2395,10 @@ class BulletinTemplate(VideoTemplate):
         cta_text: str,
         date_str: str = "",
     ) -> Image.Image:
-        """Render Douyin CTA slide with engagement prompt.
+        """Render Douyin ending slide with summary + engagement prompt.
 
         Args:
-            cta_text: Engagement CTA question (10-15 chars).
+            cta_text: Ending text with summary and question (30-50 chars).
             date_str: Date string for FLUX background selection.
 
         Returns:
@@ -2381,7 +2409,7 @@ class BulletinTemplate(VideoTemplate):
         img, is_dark = self._get_flux_background(date_str=date_str)
         draw = ImageDraw.Draw(img)
 
-        cta_font = self._get_font(80, bold=True)
+        cta_font = self._get_font(60, bold=True)
         guide_font = self._get_font(cfg.body_font_size)
         caption_font = self._get_font(cfg.caption_font_size)
 
@@ -2398,15 +2426,15 @@ class BulletinTemplate(VideoTemplate):
             width=frame_width,
         )
 
-        # CTA question — large centered text
+        # Ending text — centered with stroke
         cta_lines = self._wrap_text(cta_text, cta_font, cfg.width - 2 * cfg.padding - 60)
-        line_h = int(80 * 1.4)
-        total_h = len(cta_lines[:3]) * line_h
+        line_h = int(60 * 1.4)
+        total_h = len(cta_lines[:5]) * line_h
         text_y = center_y - total_h // 2 - 60
 
         h_fill = self.TEXT_WHITE if is_dark else self.COMIC_BLACK
         h_stroke = self.COMIC_BLACK if is_dark else (255, 255, 255)
-        for line in cta_lines[:3]:
+        for line in cta_lines[:5]:
             line_bbox = cta_font.getbbox(line)
             line_x = (cfg.width - line_bbox[2]) // 2
             self._draw_stroked_text(

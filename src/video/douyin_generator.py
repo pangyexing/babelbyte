@@ -2,7 +2,8 @@
 
 Generates 15-30s single-event short videos optimized for Douyin:
 - AI-generated hook (3s attention grab)
-- 5-segment structure: hook → core fact → impact → action → CTA
+- 5-segment structure: hook → body×3 → ending
+- Body split at sentence boundaries for 3 content slides
 - Burned-in subtitles synced to TTS
 - Ken Burns zoom + micro-pan motion effects
 - 3-text-line Douyin cover image
@@ -57,10 +58,10 @@ class DouyinVideoGenerator:
 
     Each video is 15-30s with 5 segments:
     1. Hook slide (3s attention grab)
-    2. Core fact (event card with illustration)
-    3. Impact analysis
-    4. Action suggestion
-    5. CTA (engagement prompt)
+    2. Body segment 1 (event card with illustration)
+    3. Body segment 2 (impact slide style)
+    4. Body segment 3 (event card style)
+    5. Ending (summary + engagement question)
     """
 
     def __init__(self, config: Optional[VideoConfig] = None, ai_bg: bool = True):
@@ -85,10 +86,11 @@ class DouyinVideoGenerator:
             self._template_config, image_generator=image_generator,
         )
 
-        # Subtitle renderer
+        # Subtitle renderer — 50px fits ~20 CJK chars in 1080px width
         self.subtitle_renderer = SubtitleRenderer(
-            font_size=60,
+            font_size=50,
             y_position=int(self.config.height * 0.75),
+            max_chars_per_line=20,
         )
 
         # Cover generator
@@ -186,7 +188,10 @@ class DouyinVideoGenerator:
             segment_audios = []
             segment_durations = []
 
-            for i, script in enumerate(content.segment_scripts[:5]):
+            segments = self._split_body_segments(content.body, 3)
+            tts_scripts = [content.hook] + segments + [content.ending]
+
+            for i, script in enumerate(tts_scripts[:5]):
                 seg_dir = audio_dir / f"segment_{i}"
                 seg_audio, _ = self.tts.synthesize_with_timestamps(script, seg_dir)
                 seg_duration = self._get_audio_duration(seg_audio)
@@ -212,11 +217,7 @@ class DouyinVideoGenerator:
             for i, (slide_img, duration) in enumerate(
                 zip(slides, segment_durations)
             ):
-                script = (
-                    content.segment_scripts[i]
-                    if i < len(content.segment_scripts)
-                    else ""
-                )
+                script = tts_scripts[i] if i < len(tts_scripts) else ""
                 clip = self._create_animated_clip(
                     slide_img, duration,
                     has_illustration=(i == 1 and illustration is not None),
@@ -318,6 +319,64 @@ class DouyinVideoGenerator:
 
         return results
 
+    @staticmethod
+    def _split_body_segments(body: str, n: int = 3) -> list[str]:
+        """Split body text into n segments at sentence boundaries.
+
+        Splits on Chinese sentence-ending punctuation (。！？；) and distributes
+        sentences into roughly equal-length groups.
+
+        Args:
+            body: Full body text.
+            n: Number of segments to produce.
+
+        Returns:
+            List of n text segments.
+        """
+        import re
+
+        # Split on sentence-ending punctuation, keeping the delimiter
+        parts = re.split(r"(?<=[。！？；])", body.strip())
+        sentences = [s.strip() for s in parts if s.strip()]
+
+        if not sentences:
+            return [body] * n
+
+        if len(sentences) <= n:
+            # Not enough sentences — pad shorter segments
+            result = []
+            for i in range(n):
+                result.append(sentences[i] if i < len(sentences) else sentences[-1])
+            return result
+
+        # Distribute sentences into n groups by character count
+        total_chars = sum(len(s) for s in sentences)
+        target = total_chars / n
+
+        segments: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for s in sentences:
+            current.append(s)
+            current_len += len(s)
+            # Flush when we've exceeded the target and still have groups left
+            remaining_groups = n - len(segments)
+            if remaining_groups > 1 and current_len >= target:
+                segments.append("".join(current))
+                current = []
+                current_len = 0
+
+        # Last segment gets the rest
+        if current:
+            segments.append("".join(current))
+
+        # Ensure exactly n segments
+        while len(segments) < n:
+            segments.append(segments[-1])
+
+        return segments[:n]
+
     def _generate_illustration(
         self, category: str, headline: str, image_prompt: str = "",
     ) -> Optional["PILImage"]:
@@ -344,49 +403,45 @@ class DouyinVideoGenerator:
     ) -> list["PILImage"]:
         """Render 5 slides for the Douyin video.
 
+        Slides: hook → body segment 1 (with illustration) → body segment 2
+        → body segment 3 → ending.
+
         Returns:
             List of 5 PIL images.
         """
-        slides = []
+        segments = self._split_body_segments(content.body, 3)
 
-        # Slide 1: Hook
-        hook_slide = self.template.render_hook_slide(
-            content.hook, category, date_str,
-        )
-        slides.append(hook_slide)
-
-        # Slide 2: Core fact (event card)
-        event_card = self.template.render_event_card(
-            headline=content.headline,
-            summary=content.summary,
-            category=category,
-            source_count=1,
-            illustration=illustration,
-            date_str=date_str,
-        )
-        slides.append(event_card)
-
-        # Slide 3: Impact analysis
-        impact_slide = self.template.render_impact_slide(
-            content.impact, category, date_str,
-        )
-        slides.append(impact_slide)
-
-        # Slide 4: Action suggestion (reuse event card style, no illustration)
-        action_slide = self.template.render_event_card(
-            headline="行动建议",
-            summary=content.action,
-            category=category,
-            source_count=0,
-            date_str=date_str,
-        )
-        slides.append(action_slide)
-
-        # Slide 5: CTA
-        cta_slide = self.template.render_cta_slide(
-            content.cta, date_str,
-        )
-        slides.append(cta_slide)
+        slides = [
+            # Slide 1: Hook
+            self.template.render_hook_slide(
+                content.hook, category, date_str,
+            ),
+            # Slide 2: Body segment 1 + illustration
+            self.template.render_event_card(
+                headline=content.headline,
+                summary=segments[0],
+                category=category,
+                source_count=0,
+                illustration=illustration,
+                date_str=date_str,
+            ),
+            # Slide 3: Body segment 2 (impact slide style, no fixed title)
+            self.template.render_impact_slide(
+                segments[1], category, date_str, title="",
+            ),
+            # Slide 4: Body segment 3 (event card style, no headline)
+            self.template.render_event_card(
+                headline="",
+                summary=segments[2],
+                category=category,
+                source_count=0,
+                date_str=date_str,
+            ),
+            # Slide 5: Ending
+            self.template.render_cta_slide(
+                content.ending, date_str,
+            ),
+        ]
 
         return slides
 
@@ -532,7 +587,7 @@ class DouyinVideoGenerator:
             meta_text = (
                 f"【标题】{content.headline}\n"
                 f"【话题】{hashtags}\n"
-                f"【描述】{content.cta}\n"
+                f"【描述】{content.ending}\n"
             )
 
             meta_path = output_dir / f"{output_name}_meta.txt"

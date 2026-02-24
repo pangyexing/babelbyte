@@ -61,8 +61,13 @@ class SubtitleRenderer:
         self._font = ImageFont.load_default()
         return self._font
 
+    # Regex to tokenize mixed CJK/ASCII: ASCII words stay together
+    _TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9]+(?:[.\-_][a-zA-Z0-9]+)*|.")
+
     def _segment_text(self, script: str) -> list[str]:
         """Split script into display segments by punctuation.
+
+        Respects English word boundaries when hard-splitting long segments.
 
         Args:
             script: Full TTS script text.
@@ -77,17 +82,31 @@ class SubtitleRenderer:
         if not segments:
             return [script.strip()] if script.strip() else [""]
 
-        # Further split segments that are too long
+        # Further split segments that are too long (word-boundary aware)
+        max_len = self.max_chars_per_line
         result = []
         for seg in segments:
-            if len(seg) <= self.max_chars_per_line:
+            if len(seg) <= max_len:
                 result.append(seg)
             else:
-                # Split at max_chars_per_line boundaries
-                for i in range(0, len(seg), self.max_chars_per_line):
-                    chunk = seg[i : i + self.max_chars_per_line]
-                    if chunk:
-                        result.append(chunk)
+                # Tokenize to keep English words intact
+                tokens = self._TOKEN_PATTERN.findall(seg)
+                current = ""
+                for token in tokens:
+                    if len(current) + len(token) <= max_len:
+                        current += token
+                    else:
+                        if current:
+                            result.append(current)
+                        # If single token exceeds max_len, force split it
+                        if len(token) > max_len:
+                            for i in range(0, len(token), max_len):
+                                result.append(token[i : i + max_len])
+                            current = ""
+                        else:
+                            current = token
+                if current:
+                    result.append(current)
 
         return result if result else [script.strip()]
 

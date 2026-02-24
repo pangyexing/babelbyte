@@ -745,10 +745,8 @@ def douyin(
                     console.print(f"\n[bold]#{i} {cluster.event_title[:40]}[/bold]")
                     console.print(f"  Hook: {content.hook}")
                     console.print(f"  Headline: {content.headline}")
-                    console.print(f"  Summary: {content.summary}")
-                    console.print(f"  Impact: {content.impact}")
-                    console.print(f"  Action: {content.action}")
-                    console.print(f"  CTA: {content.cta}")
+                    console.print(f"  Body: {content.body[:100]}...")
+                    console.print(f"  Ending: {content.ending}")
                     console.print(f"  Hashtags: {' '.join('#' + t for t in content.hashtags)}")
                 else:
                     console.print(f"\n[red]#{i} Content generation failed[/red]")

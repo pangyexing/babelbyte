@@ -4,6 +4,7 @@ Generates 1080x1920 cover images with 3-text-line layout:
 category tag, headline, and hook text on a FLUX dark background.
 """
 
+import re
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
@@ -66,23 +67,37 @@ class DouyinCoverGenerator:
         """Get accent color for category."""
         return self.CATEGORY_COLORS.get(category, self.CATEGORY_COLORS["default"])
 
+    # CJK punctuation that must not start a new line
+    _NO_BREAK_BEFORE = set("。，！？；：、）》」】…—·～")
+
     def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-        """Wrap text to fit within max_width."""
-        lines = []
-        current_line = ""
+        """Wrap text respecting English word boundaries and CJK punctuation rules."""
+        tokens = re.findall(r"[a-zA-Z0-9]+(?:[.\-_][a-zA-Z0-9]+)*|.", text)
 
-        for char in text:
-            test_line = current_line + char
-            bbox = font.getbbox(test_line)
-            if bbox[2] <= max_width:
-                current_line = test_line
+        lines: list[str] = []
+        current = ""
+        for token in tokens:
+            test = current + token
+            if font.getbbox(test)[2] <= max_width:
+                current = test
+            elif not current:
+                for ch in token:
+                    test = current + ch
+                    if font.getbbox(test)[2] <= max_width:
+                        current = test
+                    else:
+                        if current:
+                            lines.append(current)
+                        current = ch
+            elif token in self._NO_BREAK_BEFORE:
+                lines.append(current + token)
+                current = ""
             else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = char
+                lines.append(current)
+                current = token
 
-        if current_line:
-            lines.append(current_line)
+        if current:
+            lines.append(current)
 
         return lines
 
