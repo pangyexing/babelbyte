@@ -61,7 +61,7 @@
 {% set _show_summary = show_summary | default(true) %}
 
 {# ── Template Body ── #}
-<section style="max-width:600px;margin:0 auto;padding:12px;font-family:'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif;color:#2c3e50;line-height:1.6;font-size:14px;word-break:break-word;overflow-wrap:break-word;">
+<section style="max-width:600px;margin:0 auto;padding:12px;font-family:'PingFang SC','Microsoft YaHei','Helvetica Neue',Arial,sans-serif;color:#2c3e50;line-height:1.6;font-size:14px;word-break:break-word;overflow-wrap:break-word;text-align:left;">
 
     {# ── Header ── #}
     <section style="text-align:center;padding:16px 0;margin-bottom:16px;">
@@ -128,7 +128,7 @@
     <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #4a90d9;">
         {# Title row #}
         <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
-            <span style="flex:1;min-width:0;word-break:break-word;">
+            <span style="flex:1;min-width:0;word-break:break-word;text-align:left;">
                 <span style="display:inline-block;background:#4a90d9;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">事件</span>
                 <strong style="font-size:16px;color:#2c3e50;">{{ item.event_title }}</strong>
             </span>
@@ -203,7 +203,7 @@
     <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
         {# Title row #}
         <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
-            <strong style="flex:1;min-width:0;font-size:16px;color:#2c3e50;word-break:break-word;">{{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}</strong>
+            <strong style="flex:1;min-width:0;font-size:16px;color:#2c3e50;word-break:break-word;text-align:left;">{{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}</strong>
             <span style="flex-shrink:0;">{{ importance_badge(item.importance_score) }}</span>
         </section>
 
@@ -268,7 +268,7 @@
     <section style="margin:10px 0;background:#fff;border-radius:8px;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);border-left:4px solid #6c5ce7;">
         {# Title row #}
         <section style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;">
-            <span style="flex:1;min-width:0;word-break:break-word;">
+            <span style="flex:1;min-width:0;word-break:break-word;text-align:left;">
                 <span style="display:inline-block;background:#6c5ce7;color:#fff;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;vertical-align:middle;margin-right:6px;">论文</span>
                 <strong style="font-size:16px;color:#2c3e50;">{{ item.content_item.title[:80] }}{% if item.content_item.title|length > 80 %}...{% endif %}</strong>
             </span>
