@@ -312,7 +312,7 @@ class WechatMPPublisher:
             )
 
             # 3. Upload cover image
-            thumb_media_id = self._get_thumb_media_id()
+            thumb_media_id = self._get_thumb_media_id(digest)
 
             # 4. Create draft
             draft_media_id = self.client.create_draft(
@@ -567,7 +567,91 @@ class WechatMPPublisher:
             summary = summary[:61] + "..."
         return summary
 
-    def _get_thumb_media_id(self) -> str:
+    def _generate_cover_prompt(
+        self, digest: DigestResult
+    ) -> tuple[str, str]:
+        """Use LLM to generate a cover image prompt based on today's digest content.
+
+        Returns (flux_prompt, subtitle). Falls back to ("", "每日摘要") on failure.
+        """
+        date_str = digest.generated_at.strftime("%m月%d日")
+        fallback = ("", f"每日摘要 {date_str}")
+
+        # Collect top events by importance
+        top_events = sorted(
+            digest.events, key=lambda e: e.importance_score, reverse=True
+        )[:8]
+
+        if not top_events:
+            return fallback
+
+        # Build content summary for LLM
+        lines = []
+        for i, ev in enumerate(top_events, 1):
+            lines.append(f"{i}. [{ev.category}] {ev.summary[:120]}")
+        content_block = "\n".join(lines)
+
+        prompt = (
+            "你是一个视觉设计助手。"
+            "根据以下今日新闻摘要，生成两个内容：\n"
+            "1. background: 一段英文FLUX图像生成提示词"
+            "(30-50词)，描述一个暗色电影风格的"
+            "宽屏背景画面，要与今日新闻主题相关。"
+            "要求：dark cinematic style, panoramic, "
+            "适合叠加白色文字，不含任何文字、人物面孔。\n"
+            "2. subtitle: 一个8-15字的中文副标题，"
+            "概括今天的新闻焦点主题。\n\n"
+            f"今日新闻摘要：\n{content_block}\n\n"
+            '请只返回JSON格式：'
+            '{"background": "...", "subtitle": "..."}'
+        )
+
+        try:
+            from src.processors.digest_processor import get_ai_processor
+
+            processor = get_ai_processor()
+            if not hasattr(processor, "_call_api"):
+                return fallback
+
+            success, response, error = processor._call_api(
+                prompt, max_tokens=256, disable_thinking=True,
+            )
+            if not success:
+                logger.warning("Cover prompt generation failed: %s", error)
+                return fallback
+
+            # Parse JSON from response
+            import json
+
+            text = response.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            json_start = text.find("{")
+            json_end = text.rfind("}") + 1
+            if json_start == -1 or json_end <= json_start:
+                logger.warning("Cover prompt: no JSON found in response")
+                return fallback
+
+            data = json.loads(text[json_start:json_end])
+            bg_prompt = data.get("background", "").strip()
+            subtitle = data.get("subtitle", "").strip()
+
+            if not bg_prompt:
+                return fallback
+            if not subtitle:
+                subtitle = f"每日摘要 {date_str}"
+
+            logger.info("Cover prompt generated: subtitle='%s'", subtitle)
+            return bg_prompt, subtitle
+
+        except Exception as e:
+            logger.warning("Cover prompt generation error: %s", e)
+            return fallback
+
+    def _get_thumb_media_id(
+        self, digest: Optional[DigestResult] = None
+    ) -> str:
         """Get the thumb media_id for the cover image.
 
         Priority:
@@ -580,11 +664,13 @@ class WechatMPPublisher:
             thumb_path = PROJECT_ROOT / thumb_path
 
         if not thumb_path.exists():
-            thumb_path = self._generate_cover()
+            thumb_path = self._generate_cover(digest)
 
         return self.client.upload_thumb(thumb_path)
 
-    def _generate_cover(self) -> Path:
+    def _generate_cover(
+        self, digest: Optional[DigestResult] = None
+    ) -> Path:
         """Generate a 900x383 cover image. Uses FLUX if available, else Pillow."""
         from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -593,8 +679,14 @@ class WechatMPPublisher:
         cover_path = PROJECT_ROOT / "data" / "wechat_cover_generated.jpg"
         cover_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Generate content-aware prompt and subtitle via LLM
+        flux_prompt = ""
+        subtitle = ""
+        if digest is not None:
+            flux_prompt, subtitle = self._generate_cover_prompt(digest)
+
         # Try FLUX generation
-        bg = self._generate_flux_cover(width, height, date_str)
+        bg = self._generate_flux_cover(width, height, date_str, flux_prompt)
         if bg is None:
             # Fallback: random gradient
             import random
@@ -616,16 +708,23 @@ class WechatMPPublisher:
             bg = Image.fromarray(arr)
 
         # Draw text overlay
-        img = self._draw_cover_text(bg, date_str)
+        img = self._draw_cover_text(bg, date_str, subtitle)
         img.save(cover_path, "JPEG", quality=92)
         logger.info("Generated cover: %s", cover_path)
         return cover_path
 
     @staticmethod
     def _generate_flux_cover(
-        width: int, height: int, date_str: str
+        width: int, height: int, date_str: str, prompt_override: str = ""
     ) -> "Optional[Image.Image]":
         """Try to generate a cover background via FLUX pipeline.
+
+        Args:
+            width: Image width.
+            height: Image height.
+            date_str: Date string for logging.
+            prompt_override: If non-empty, use this as the base prompt instead
+                of picking a random one.
 
         Returns PIL Image on success, None if FLUX is not available.
         """
@@ -643,45 +742,49 @@ class WechatMPPublisher:
                 timeout=ig_cfg.timeout,
             )
 
-            # Pick a random prompt variant for variety across publishes
-            import random
-            prompts = [
-                (
-                    "dark cinematic landscape, neon city skyline at night, "
-                    "deep blue and purple atmosphere, moody reflections"
-                ),
-                (
-                    "dark abstract cosmic scene, distant galaxies and nebula, "
-                    "deep indigo and violet tones, cinematic depth"
-                ),
-                (
-                    "dark futuristic control room panorama, holographic displays, "
-                    "dim ambient lighting, teal and midnight blue"
-                ),
-                (
-                    "dark atmospheric ocean panorama, bioluminescent waves, "
-                    "deep navy and cyan glow, cinematic wide angle"
-                ),
-                (
-                    "dark abstract fluid art, deep midnight blue and dark purple, "
-                    "subtle golden light particles, cinematic wide"
-                ),
-                (
-                    "dark mountain landscape at twilight, aurora borealis, "
-                    "deep emerald and midnight blue sky, cinematic wide"
-                ),
-                (
-                    "dark rainy cyberpunk alley, neon signs reflecting on wet ground, "
-                    "magenta and electric blue tones, cinematic depth"
-                ),
-                (
-                    "dark dense forest canopy at night, fireflies glowing, "
-                    "deep green and dark teal atmosphere, mystical"
-                ),
-            ]
-            idx = random.randrange(len(prompts))
+            if prompt_override:
+                base_prompt = prompt_override
+            else:
+                # Pick a random prompt variant for variety across publishes
+                import random
+                prompts = [
+                    (
+                        "dark cinematic landscape, neon city skyline at night, "
+                        "deep blue and purple atmosphere, moody reflections"
+                    ),
+                    (
+                        "dark abstract cosmic scene, distant galaxies and nebula, "
+                        "deep indigo and violet tones, cinematic depth"
+                    ),
+                    (
+                        "dark futuristic control room panorama, holographic displays, "
+                        "dim ambient lighting, teal and midnight blue"
+                    ),
+                    (
+                        "dark atmospheric ocean panorama, bioluminescent waves, "
+                        "deep navy and cyan glow, cinematic wide angle"
+                    ),
+                    (
+                        "dark abstract fluid art, deep midnight blue and dark purple, "
+                        "subtle golden light particles, cinematic wide"
+                    ),
+                    (
+                        "dark mountain landscape at twilight, aurora borealis, "
+                        "deep emerald and midnight blue sky, cinematic wide"
+                    ),
+                    (
+                        "dark rainy cyberpunk alley, neon signs reflecting on wet ground, "
+                        "magenta and electric blue tones, cinematic depth"
+                    ),
+                    (
+                        "dark dense forest canopy at night, fireflies glowing, "
+                        "deep green and dark teal atmosphere, mystical"
+                    ),
+                ]
+                base_prompt = prompts[random.randrange(len(prompts))]
+
             prompt = (
-                f"{prompts[idx]}, "
+                f"{base_prompt}, "
                 "ultra wide angle, panoramic, cinematic lighting, "
                 "no text, no objects, no people"
             )
@@ -708,9 +811,9 @@ class WechatMPPublisher:
 
     @staticmethod
     def _draw_cover_text(
-        bg: "Image.Image", date_str: str
+        bg: "Image.Image", date_str: str, subtitle: str = ""
     ) -> "Image.Image":
-        """Draw 'BabelByte' title and date on a background image."""
+        """Draw 'BabelByte' title and subtitle on a background image."""
         from PIL import ImageDraw, ImageFont
 
         img = bg.copy()
@@ -718,7 +821,8 @@ class WechatMPPublisher:
         width, height = img.size
 
         title = "BabelByte"
-        subtitle = f"每日摘要 {date_str}"
+        if not subtitle:
+            subtitle = f"每日摘要 {date_str}"
 
         # Try CJK-capable fonts first, then Latin fallbacks
         font_paths = [
