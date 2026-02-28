@@ -532,23 +532,42 @@ class WechatMPPublisher:
 
     @staticmethod
     def _generate_title(digest: DigestResult) -> str:
-        """Generate article title like 'BabelByte 02月09日 | 5个事件 20条资讯'.
+        """Generate title like 'BabelByte 02月28日 | GPT-5发布等30条 3篇论文'.
 
+        Uses the top event headline as a hook, with total count and paper count.
         WeChat MP title limit: 64 bytes (UTF-8).
         """
         date_str = digest.generated_at.strftime("%m月%d日")
-        parts = []
+        prefix = f"BabelByte {date_str} | "
+
+        total = len(digest.events) + len(digest.regular_items)
+        paper_count = len(digest.papers)
+
+        # Build suffix: total count + paper count
+        suffix_parts = []
+        if total:
+            suffix_parts.append(f"等{total}条")
+        if paper_count:
+            suffix_parts.append(f"{paper_count}篇论文")
+        suffix = " ".join(suffix_parts)
+
+        # Use Chinese one_liner as headline hook
+        headline = ""
         if digest.events:
-            parts.append(f"{len(digest.events)}个事件")
-        total_items = len(digest.regular_items) + len(digest.papers)
-        if total_items:
-            parts.append(f"{total_items}条资讯")
-        detail = " ".join(parts) if parts else "每日摘要"
-        title = f"BabelByte {date_str} | {detail}"
-        # WeChat MP enforces 64-byte title limit
-        while len(title.encode("utf-8")) > 64:
-            title = title[:-1]
-        return title
+            headline = digest.events[0].one_liner or ""
+        elif digest.regular_items:
+            headline = digest.regular_items[0].content_item.one_liner or ""
+
+        if headline:
+            # Trim headline to fit: prefix + headline + suffix <= 64 bytes
+            max_headline_bytes = 64 - len(prefix.encode("utf-8")) - len(suffix.encode("utf-8"))
+            while len(headline.encode("utf-8")) > max_headline_bytes and headline:
+                headline = headline[:-1]
+            detail = f"{headline}{suffix}" if headline else suffix
+        else:
+            detail = suffix or "每日摘要"
+
+        return f"{prefix}{detail}"
 
     @staticmethod
     def _generate_digest_summary(digest: DigestResult) -> str:
