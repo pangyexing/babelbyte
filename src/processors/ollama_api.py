@@ -659,7 +659,7 @@ low: 渐进改进/综述/复现/微调
         }
 
         # Disable thinking mode for qwen3 models (faster, fewer tokens)
-        if disable_thinking:
+        if disable_thinking and "qwen" in use_model.lower():
             payload["think"] = False
 
         try:

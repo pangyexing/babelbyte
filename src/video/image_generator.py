@@ -1,4 +1,4 @@
-"""AI image generation via diffusers pipeline (FLUX.2 Klein 4B).
+"""AI image generation via diffusers pipeline (Z-Image-Turbo 6B).
 
 Generates background images for video slides using a local diffusers pipeline
 running directly on the host GPU. No Docker or API server required.
@@ -130,8 +130,8 @@ class ImageGenerator:
 
     def __init__(
         self,
-        model_id: str = "black-forest-labs/FLUX.2-klein-4B",
-        num_inference_steps: int = 4,
+        model_id: str = "Tongyi-MAI/Z-Image-Turbo",
+        num_inference_steps: int = 9,
         timeout: int = 120,
         cache_dir: Optional[Path] = None,
     ):
@@ -151,10 +151,10 @@ class ImageGenerator:
         self._unload_ollama_models()
 
         import torch
-        from diffusers import Flux2KleinPipeline
+        from diffusers import ZImagePipeline
 
         logger.info(f"Loading diffusers pipeline: {self.model_id}")
-        self._pipeline = Flux2KleinPipeline.from_pretrained(
+        self._pipeline = ZImagePipeline.from_pretrained(
             self.model_id,
             torch_dtype=torch.bfloat16,
         )

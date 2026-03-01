@@ -191,7 +191,7 @@ class OllamaConfig:
     """
 
     base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:32b"))
+    model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "glm-4.7-flash"))
     model_light: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_LIGHT", ""))
     model_screen: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL_SCREEN", ""))
     timeout: int = field(default_factory=lambda: int(os.getenv("OLLAMA_TIMEOUT", "120")))
@@ -447,10 +447,10 @@ class ImageGenConfig:
     )
     model_id: str = field(
         default_factory=lambda: os.getenv(
-            "IMAGE_GEN_MODEL_ID", "black-forest-labs/FLUX.2-klein-4B"
+            "IMAGE_GEN_MODEL_ID", "Tongyi-MAI/Z-Image-Turbo"
         )
     )
-    steps: int = field(default_factory=lambda: int(os.getenv("IMAGE_GEN_STEPS", "4")))
+    steps: int = field(default_factory=lambda: int(os.getenv("IMAGE_GEN_STEPS", "9")))
     timeout: int = field(default_factory=lambda: int(os.getenv("IMAGE_GEN_TIMEOUT", "120")))
     auto_release: bool = field(
         default_factory=lambda: os.getenv("IMAGE_GEN_AUTO_RELEASE", "true").lower() == "true"
