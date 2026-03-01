@@ -176,10 +176,11 @@ class DouyinVideoGenerator:
             category = cluster.category or "资讯"
             date_str = datetime.now().strftime("%m月%d日")
 
-            # 2. Generate illustration
+            # 2. Generate illustration (then release GPU for TTS)
             illustration = self._generate_illustration(
                 category, content.headline, content.image_prompt,
             )
+            self._auto_release_image_generator()
 
             # 3. Render 5 slides
             slides = self._render_slides(content, category, date_str, illustration)

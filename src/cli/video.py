@@ -574,6 +574,17 @@ def bulletin(platform, voice, output_dir, dry_run, min_articles, days, limit, ai
 
         # Generate bulletin
         console.print("\n[cyan]Generating bulletin content...[/cyan]")
+
+        # Warm up Ollama model to avoid cold-start failures
+        try:
+            from src.processors.digest_processor import get_ai_processor
+
+            processor = get_ai_processor()
+            if hasattr(processor, "warmup"):
+                processor.warmup()
+        except Exception:
+            pass
+
         bulletin_gen = BulletinGenerator()
         bulletin_result = bulletin_gen.generate_bulletin(filtered_clusters, members_dict)
 
@@ -779,6 +790,19 @@ def douyin(
         console.print(f"\n[cyan]Generating {len(selected)} Douyin short videos...[/cyan]")
 
         generator = DouyinVideoGenerator(config, ai_bg=True)
+
+        # Warm up Ollama model to avoid cold-start failures
+        try:
+            from src.processors.digest_processor import get_ai_processor
+
+            processor = get_ai_processor()
+            if hasattr(processor, "warmup"):
+                console.print("[dim]Warming up Ollama model...[/dim]")
+                processor.warmup()
+                console.print("[dim]Model ready.[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]Model warmup skipped: {e}[/yellow]")
+
         success_count = 0
 
         for i, (cluster, members, score, _) in enumerate(selected, 1):

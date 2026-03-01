@@ -383,10 +383,18 @@ class ImageGenerator:
     def unload(self):
         """Unload the pipeline and release GPU memory for Ollama."""
         if self._pipeline is not None:
-            del self._pipeline
-            self._pipeline = None
+            import gc
+
             import torch
 
+            # Move all components to CPU first to release GPU tensors
+            try:
+                self._pipeline.to("cpu")
+            except Exception:
+                pass
+            del self._pipeline
+            self._pipeline = None
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("Pipeline unloaded, GPU memory released")

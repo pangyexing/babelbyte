@@ -209,6 +209,12 @@ class OllamaConfig:
     keep_alive: int = field(
         default_factory=lambda: int(os.getenv("OLLAMA_KEEP_ALIVE", "1800"))
     )
+    # Context window size (limits KV cache memory per parallel slot)
+    # With OLLAMA_NUM_PARALLEL=4, each slot allocates KV cache for num_ctx tokens.
+    # Default 0 = use model default. Set to 4096-8192 to reduce VRAM on 24GB GPUs.
+    num_ctx: int = field(
+        default_factory=lambda: int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+    )
 
     # Thinking mode for qwen3 models (affects CONTENT_HIGH tasks)
     # true: Enable thinking for better reasoning (slower, ~43s per item)

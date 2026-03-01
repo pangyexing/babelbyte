@@ -98,6 +98,7 @@ class OllamaAPI(BaseAIProcessor):
         self._model_screen = model_screen or settings.ollama.model_screen
         self._timeout = timeout or settings.ollama.timeout
         self._keep_alive = settings.ollama.keep_alive
+        self._num_ctx = settings.ollama.num_ctx
 
         # Check Ollama parallel config on init if concurrent enabled
         if settings.ollama.concurrent_enabled:
@@ -593,6 +594,50 @@ low: 渐进改进/综述/复现/微调
 
         logger.info(f"Unloaded {len(models_to_unload)} models from GPU memory")
 
+    def warmup(self, model: Optional[str] = None) -> bool:
+        """Send a minimal request to pre-load the model into GPU memory.
+
+        Call this before batch processing to avoid cold-start failures.
+
+        Args:
+            model: Model name to warm up. If None, warms up the heavy model.
+
+        Returns:
+            True if model is ready, False otherwise.
+        """
+        use_model = model or self._model
+        url = f"{self.base_url}/api/generate"
+        keep_alive_str = f"{self._keep_alive}s"
+        payload = {
+            "model": use_model,
+            "prompt": "hi",
+            "stream": False,
+            "keep_alive": keep_alive_str,
+            "options": {
+                "num_predict": 1,
+                **({"num_ctx": self._num_ctx} if self._num_ctx else {}),
+            },
+        }
+
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                logger.info(f"Warming up model: {use_model} (attempt {attempt + 1})")
+                response = self.session.post(url, json=payload, timeout=self._timeout)
+                response.raise_for_status()
+                logger.info(f"Model {use_model} is ready")
+                return True
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    wait = 10 * (attempt + 1)
+                    logger.warning(f"Warmup failed: {e}, retrying in {wait}s...")
+                    import time
+
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Model warmup failed after {max_attempts} attempts: {e}")
+        return False
+
     def get_model(self, task_type: Optional[TaskType] = None) -> str:
         """Get the model name based on task type.
 
@@ -655,6 +700,7 @@ low: 渐进改进/综述/复现/微调
             "options": {
                 "temperature": 0.3,
                 "num_predict": num_predict,
+                **({"num_ctx": self._num_ctx} if self._num_ctx else {}),
             },
         }
 
@@ -662,27 +708,43 @@ low: 渐进改进/综述/复现/微调
         if disable_thinking and "qwen" in use_model.lower():
             payload["think"] = False
 
-        try:
-            response = self.session.post(
-                url,
-                json=payload,
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-            result = response.json()
-            return True, result.get("response", ""), None
+        # Retry on 500 errors (model cold start) with exponential backoff
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.session.post(
+                    url,
+                    json=payload,
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                result = response.json()
+                return True, result.get("response", ""), None
 
-        except requests.HTTPError as e:
-            error_body = e.response.text if e.response else str(e)
-            return False, "", f"HTTP {e.response.status_code}: {error_body}"
-        except requests.ConnectionError as e:
-            return False, "", f"Connection error: {e}"
-        except requests.Timeout:
-            return False, "", f"Request timeout after {self._timeout}s"
-        except json.JSONDecodeError as e:
-            return False, "", f"Invalid JSON response: {e}"
-        except requests.RequestException as e:
-            return False, "", f"Request error: {e}"
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if status == 500 and attempt < max_retries - 1:
+                    wait = 5 * (attempt + 1)
+                    logger.warning(
+                        f"Ollama 500 error (model loading?), "
+                        f"retry {attempt + 1}/{max_retries - 1} in {wait}s..."
+                    )
+                    import time
+
+                    time.sleep(wait)
+                    continue
+                error_body = e.response.text if e.response is not None else str(e)
+                return False, "", f"HTTP {status}: {error_body}"
+            except requests.ConnectionError as e:
+                return False, "", f"Connection error: {e}"
+            except requests.Timeout:
+                return False, "", f"Request timeout after {self._timeout}s"
+            except json.JSONDecodeError as e:
+                return False, "", f"Invalid JSON response: {e}"
+            except requests.RequestException as e:
+                return False, "", f"Request error: {e}"
+
+        return False, "", f"Failed after {max_retries} retries"
 
     def _get_ai_call_type(self, task_type: TaskType) -> AICallType:
         """Map task type to AI call type for tracking."""
